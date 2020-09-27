@@ -745,6 +745,35 @@ def run_complete_reduction(
         amplitude_modulation_full = np.delete(amplitude_modulation_full, bad_frames, axis=1)
         print("Amplitude variation: {}".format(np.std(amplitude_modulation_full, axis=0)))
 
+    # Configure known companion information
+    if reduction_parameters.yx_known_companion_position is not None:
+        reduction_parameters.yx_known_companion_position = np.array(reduction_parameters.yx_known_companion_position)
+        # If ndim == 1, just one companion present, make new dimension for more companions
+        if reduction_parameters.yx_known_companion_position.ndim == 1:
+            reduction_parameters.yx_known_companion_position = np.expand_dims(
+                reduction_parameters.yx_known_companion_position, axis=0)
+        elif reduction_parameters.yx_known_companion_position.ndim > 2:
+            raise ValueError("Dimensionality of known companion position array too large.")
+
+    if reduction_parameters.known_companion_contrast is not None:
+        assert reduction_parameters.yx_known_companion_position is not None, "No position for known companion given."
+
+        reduction_parameters.known_companion_contrast = np.array(reduction_parameters.known_companion_contrast)
+
+        number_of_wavelengths = data_full.shape[0]
+        number_of_companions = reduction_parameters.yx_known_companion_position.shape[0]
+
+        assert reduction_parameters.known_companion_contrast.shape[-1] == number_of_companions, \
+            "The same number of known companion positions and contrasts need to be provided."
+
+        if reduction_parameters.known_companion_contrast.ndim == 1 and number_of_wavelengths == 1:
+            reduction_parameters.known_companion_contrast = np.expand_dims(
+                reduction_parameters.known_companion_contrast, axis=0)
+        elif reduction_parameters.known_companion_contrast.ndim == 1 and number_of_wavelengths > 1:
+            raise ValueError("For multi-wavelength data, a known contrast has to be defined for every wavelength.")
+        elif reduction_parameters.known_companion_contrast.ndim > 2:
+            raise ValueError("Dimensionality of known companion contrast array too large.")
+
     # Configure number of principal components
     number_of_components = np.round(
         data_full.shape[1] * np.array(temporal_components_fraction)).astype('int')
@@ -858,18 +887,25 @@ def run_complete_reduction(
                     yx_center = (data_crop_size // 2., data_crop_size // 2.)
 
             # Make companion mask before cropping to be consistent
+            # Do this for each wavelength separately to account for PSF size
+            # and differing center position
             if reduction_parameters.yx_known_companion_position is not None:
                 if yx_center_injection_full is not None:
                     yx_center_before_crop = yx_center_injection_full[:, wavelength_index]
                 else:
                     yx_center_before_crop = None
-                _, known_companion_mask = regressor_selection.make_mask_from_psf_track(
-                    yx_position=reduction_parameters.yx_known_companion_position,
-                    psf_size=reduction_parameters.signal_mask_psf_size,
-                    pa=pa, image_size=data_full.shape[-1],
-                    image_center=yx_center_before_crop,
-                    yx_anamorphism=reduction_parameters.yx_anamorphism,
-                    right_handed=reduction_parameters.right_handed)
+
+                known_companion_masks = []
+                for yx_pos in reduction_parameters.yx_known_companion_position:
+                    _, known_companion_mask = regressor_selection.make_mask_from_psf_track(
+                        yx_position=yx_pos,
+                        psf_size=reduction_parameters.signal_mask_psf_size,
+                        pa=pa, image_size=data_full.shape[-1],
+                        image_center=yx_center_before_crop,
+                        yx_anamorphism=reduction_parameters.yx_anamorphism,
+                        right_handed=reduction_parameters.right_handed)
+                    known_companion_masks.append(known_companion_mask)
+                known_companion_mask = np.logical_or.reduce(known_companion_masks)
 
                 if data_crop_size is not None:
                     known_companion_mask = crop_box_from_image(
@@ -967,17 +1003,19 @@ def run_complete_reduction(
 
             if reduction_parameters.remove_known_companions:
                 # NOTE: This currently doesn't remove photon noise from variance map
-                known_companion_contrast = reduction_parameters.known_companion_contrast[wavelength_index] * \
-                    amplitude_modulation
-                data = addsource(
-                    data, reduction_parameters.yx_known_companion_position,
-                    pa, flux_psf, image_center=yx_center_injection,
-                    norm=-1 * known_companion_contrast,
-                    jitter=0, poisson_noise=False,
-                    yx_anamorphism=reduction_parameters.yx_anamorphism,
-                    right_handed=reduction_parameters.right_handed,
-                    subpixel=True,
-                    verbose=False)
+
+                for companion_index, known_companion_contrast in enumerate(
+                        reduction_parameters.known_companion_contrast[wavelength_index]):
+                    known_companion_contrast *= amplitude_modulation
+                    data = addsource(
+                        data, reduction_parameters.yx_known_companion_position[companion_index],
+                        pa, flux_psf, image_center=yx_center_injection,
+                        norm=-1 * known_companion_contrast,
+                        jitter=0, poisson_noise=False,
+                        yx_anamorphism=reduction_parameters.yx_anamorphism,
+                        right_handed=reduction_parameters.right_handed,
+                        subpixel=True,
+                        verbose=False)
 
             print('PSF Size: {}'.format(reduction_parameters.reduction_mask_psf_size))
             if reduction_parameters.reduce_single_position:
