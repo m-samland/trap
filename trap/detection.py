@@ -146,9 +146,20 @@ def make_contrast_curve(detection_image, radial_bounds=None,
         radial_bounds = [1, int(separation_max)]
 
     if yx_known_companion_position is not None:
-        detected_signal_mask = regressor_selection.make_signal_mask(
-            yx_dim, yx_known_companion_position, companion_mask_radius,
-            relative_pos=True, yx_center=None)
+        yx_known_companion_position = np.array(yx_known_companion_position)
+        if yx_known_companion_position.ndim == 1:
+            detected_signal_mask = regressor_selection.make_signal_mask(
+                yx_dim, yx_known_companion_position, companion_mask_radius,
+                relative_pos=True, yx_center=None)
+        elif yx_known_companion_position.ndim == 2:
+            detected_signal_masks = []
+            for yx_pos in yx_known_companion_position:
+                detected_signal_masks.append(regressor_selection.make_signal_mask(
+                    yx_dim, yx_pos, companion_mask_radius,
+                    relative_pos=True, yx_center=None))
+            detected_signal_mask = np.logical_or.reduce(detected_signal_masks)
+        else:
+            raise ValueError("Dimensionality of known companion positions for contrast curve too large.")
     else:
         detected_signal_mask = None
         # detected_signal_mask = np.zeros(detection_image[0].shape, dtype='bool')
