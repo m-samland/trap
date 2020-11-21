@@ -9,12 +9,13 @@ from __future__ import (absolute_import, division, print_function,
 
 import numpy as np
 from photutils import CircularAnnulus
+from scipy.ndimage.morphology import binary_dilation
 
 from .embed_shell import ipsh
 from .image_coordinates import (absolute_yx_to_relative_yx,
                                 relative_yx_to_absolute_yx,
                                 relative_yx_to_rhophi, rhophi_to_relative_yx)
-from .makesource import addsource
+from .makesource import inject_model_into_data
 from .plotting_tools import plot_scale
 
 __all__ = [
@@ -49,7 +50,7 @@ def make_signal_mask(yx_dim, pos_yx, mask_radius, oversampling=1, relative_pos=F
 
 def make_mask_from_psf_track(
         yx_position, psf_size, pa, image_size, image_center=None,
-        yx_anamorphism=[1., 1.], right_handed=True):
+        yx_anamorphism=np.array([1., 1.]), right_handed=True, return_cube=False):
     # Make reduction mask, should be the same for all steps!
     ntime = len(pa)
     flux_psf_form = np.ones((psf_size, psf_size))
@@ -58,21 +59,53 @@ def make_mask_from_psf_track(
         (psf_size // 2., psf_size // 2.),
         mask_radius=psf_size // 2)
     flux_psf_form[~psf_mask] = 0
-    signal_pix_mask_per_frame = np.zeros((ntime, image_size, image_size))
-
-    signal_pix_mask_per_frame = addsource(
-        flux_arr=signal_pix_mask_per_frame,
+    if return_cube:
+        signal_pix_mask = np.zeros((ntime, image_size, image_size))
+    else:
+        signal_pix_mask = np.zeros((image_size, image_size))
+    # signal_pix_mask_per_frame = addsource(
+    #     flux_arr=signal_pix_mask_per_frame,
+    #     pos=yx_position,
+    #     pa=pa,
+    #     psf_arr=flux_psf_form,
+    #     image_center=image_center,
+    #     norm=np.ones(ntime),
+    #     jitter=0,
+    #     poisson_noise=False,
+    #     yx_anamorphism=yx_anamorphism,
+    #     right_handed=right_handed,
+    #     subpixel=False,
+    #     copy=False,
+    #     verbose=False)
+    signal_pix_mask = inject_model_into_data(
+        flux_arr=signal_pix_mask,
         pos=yx_position,
         pa=pa,
-        psf_arr=flux_psf_form,
+        psf_model=flux_psf_form,
         image_center=image_center,
-        norm=1, jitter=0, poisson_noise=False,
+        norm=np.ones(ntime),
         yx_anamorphism=yx_anamorphism,
         right_handed=right_handed,
-        subpixel=False, verbose=False)
-    signal_pix_mask_per_frame = np.array(signal_pix_mask_per_frame, dtype=bool)
+        subpixel=False,
+        copy=False)
 
-    return signal_pix_mask_per_frame, np.any(signal_pix_mask_per_frame, axis=0)
+    signal_pix_mask = signal_pix_mask.astype('bool')
+
+    if return_cube:
+        return np.any(signal_pix_mask, axis=0), signal_pix_mask
+    else:
+        return signal_pix_mask
+
+
+def make_mirrored_mask(mask, yx_center):
+    mirrored_indices = relative_yx_to_absolute_yx(
+        absolute_yx_to_relative_yx(
+            np.argwhere(mask), image_center_yx=yx_center) * (-1),
+        image_center_yx=yx_center).astype('int')
+    mirrored_mask = np.zeros_like(mask).astype('bool')
+    for idx in mirrored_indices:
+        mirrored_mask[idx[0], idx[1]] = True
+    return mirrored_mask
 
 
 def alternative_signal_positions(signal_position, fov_rotation, number_of_areas):
@@ -98,14 +131,16 @@ def plot_alternative_signal_positions(signal_position, alt_positions):
 
 def alternative_reduction_areas(
         positions, pa,
-        reduction_parameters, image_size, right_handed):
+        reduction_parameters, image_size, yx_anamorphism, right_handed):
     reduction_areas = []
     for pos in positions:
         area = make_mask_from_psf_track(
             yx_position=pos,
             psf_size=reduction_parameters.reduction_mask_psf_size,
             pa=pa, image_size=image_size,
-            right_handed=right_handed)
+            yx_anamorphism=yx_anamorphism,
+            right_handed=right_handed,
+            return_cube=False)
         reduction_areas.append(area)
     return reduction_areas
 
@@ -256,23 +291,25 @@ def make_regressor_pool_for_pixel(
 
     radial_regressor_mask = np.zeros((yx_dim), dtype=bool)
     if reduction_parameters.add_radial_regressors:
-        radial_mask = []
-        for i, radial_shift in enumerate(
-                reduction_parameters.radial_separation_from_source):
-            if radial_shift is not None:
-                rhophi = relative_yx_to_rhophi(
-                    absolute_yx_to_relative_yx(yx_pixel, yx_center))
-                rhophi[0] += radial_shift
-                track_position = rhophi_to_relative_yx(rhophi)
-                _, radial_shifted_psf_track = make_mask_from_psf_track(
-                    yx_position=track_position,
-                    psf_size=reduction_parameters.reduction_mask_psf_size,
-                    pa=pa, image_size=yx_dim[0],
-                    image_center=yx_center_injection,
-                    yx_anamorphism=reduction_parameters.yx_anamorphism,
-                    right_handed=right_handed)
-                radial_mask.append(radial_shifted_psf_track)
-        radial_regressor_mask = np.logical_or.reduce(radial_mask)
+        # radial_mask = []
+        # for i, radial_shift in enumerate(
+        #         reduction_parameters.radial_separation_from_source):
+        #     if radial_shift is not None:
+        #         rhophi = relative_yx_to_rhophi(
+        #             absolute_yx_to_relative_yx(yx_pixel, yx_center))
+        #         rhophi[0] += radial_shift
+        #         track_position = rhophi_to_relative_yx(rhophi)
+        #         radial_shifted_psf_track = make_mask_from_psf_track(
+        #             yx_position=track_position,
+        #             psf_size=reduction_parameters.reduction_mask_psf_size,
+        #             pa=pa, image_size=yx_dim[0],
+        #             image_center=yx_center_injection,
+        #             yx_anamorphism=reduction_parameters.yx_anamorphism,
+        #             right_handed=right_handed,
+        #             return_cube=False)
+        #         radial_mask.append(radial_shifted_psf_track)
+        # radial_regressor_mask = np.logical_or.reduce(radial_mask)
+        radial_regressor_mask = binary_dilation(signal_mask, iterations=7)
 
     inclusion = np.logical_or(annulus_mask, radial_regressor_mask)
     if additional_regressors is not None:

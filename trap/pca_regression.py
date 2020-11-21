@@ -6,10 +6,12 @@ Routines used in TRAP
 """
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
+from scipy import sparse
 
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
+from numba import jit
 from sklearn import preprocessing
 
 from . import regressor_selection
@@ -56,7 +58,7 @@ def matrix_scaling(matrix, scaling):
     return matrix
 
 
-def compute_SVD(training_matrix, n_components, scaling='temp-median'):
+def compute_SVD(training_matrix, n_components, scaling='temp-median', compute_robust_lambda=False):
     """ Computes the singular value decomposition of the reference pixel matrix
         after scaling/centering it. It also returns the median squared amplitudes
         used instead of the singular values for the regression.
@@ -88,8 +90,11 @@ def compute_SVD(training_matrix, n_components, scaling='temp-median'):
         S = S[:n_components]
         V = V[:n_components, :]
     # lambdas are median squared amplitudes ~ similar to singular values but should be more robust
-    n_pixel = training_matrix.shape[-1] - 1
-    lambdas = np.median(np.square(np.dot(U.T, training_matrix)), axis=1) * n_pixel
+    if compute_robust_lambda:
+        n_pixel = training_matrix.shape[-1] - 1
+        lambdas = np.median(np.square(np.dot(U.T, training_matrix)), axis=1) * n_pixel
+    else:
+        lambdas = None
 
     return U, lambdas, S, V
 
@@ -137,6 +142,106 @@ def solve_linear_equation_simple(design_matrix, data, inverse_covariance_matrix=
         Vinv = inverse_covariance_matrix
         AVinvy = np.linalg.multi_dot((A, Vinv, data))
         AVinvAT = np.linalg.multi_dot((A, Vinv, A.T))
+    P = np.linalg.solve(AVinvAT, AVinvy)
+    # Plstsq = np.linalg.lstsq(AVinvAT, AVinvy)
+    # ipsh()
+    P_sigma_squared = np.diag(np.linalg.inv(AVinvAT))
+
+    return P, P_sigma_squared
+
+
+@jit(nopython=True)
+def solve_ordinary_lsq_optimized(design_matrix, data):
+
+    A = design_matrix
+    AVinvy = np.dot(A, data)
+    AVinvAT = np.dot(A, A.T)
+
+    P = np.linalg.solve(AVinvAT, AVinvy)
+    P_sigma_squared = np.diag(np.linalg.inv(AVinvAT))
+
+    return P, P_sigma_squared
+
+
+@jit(nopython=True)
+def multi_dot_three(A, B, C, out):  # , out):  # , out=None):
+    """
+    Find the best order for three arrays and do the multiplication.
+    For three arguments `_multi_dot_three` is approximately 15 times faster
+    than `_multi_dot_matrix_chain_order`
+    """
+    a0, a1b0 = A.shape
+    b1c0, c1 = C.shape
+    # cost1 = cost((AB)C) = a0*a1b0*b1c0 + a0*b1c0*c1
+    cost1 = a0 * b1c0 * (a1b0 + c1)
+    # cost2 = cost(A(BC)) = a1b0*b1c0*c1 + a0*a1b0*c1
+    cost2 = a1b0 * c1 * (a0 + b1c0)
+
+    # out = np.ones((A.shape[0], C.shape[-1]), dtype='float64')
+
+    if cost1 < cost2:
+        return np.dot(np.dot(A, B), C, out=out)
+    else:
+        return np.dot(A, np.dot(B, C), out=out)
+
+
+# np.random.seed(0)
+# A = np.random.random((10000, 100))
+# B = np.random.random((1000, 1000))
+# Bsp = sparse.diags(np.diag(B), offsets=0)
+# C = np.random.random((1000, 1))
+# a0, a1b0 = A.shape
+# b1c0, c1 = C.shape
+# cost1 = a0 * b1c0 * (a1b0 + c1)
+# # cost2 = cost(A(BC)) = a1b0*b1c0*c1 + a0*a1b0*c1
+# cost2 = a1b0 * c1 * (a0 + b1c0)
+# # print(cost1)
+# # print(cost2)
+# out = np.ones((A.shape[0], C.shape[-1]), dtype='float64')
+# %timeit multi_dot_three(A, B, C])#, out)
+#
+#
+# b = multi_dot_three(A, B, C, out)
+# # 1.42 ms ± 16.2 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+# a = multi_dot_three(A, B, C, out)
+# d = multi_dot_three(A, B, C, out)
+# %timeit np.dot(np.dot(A, B), C)
+# %timeit np.dot(A, np.dot(B, C))
+# %timeit np.dot(A, Bsp.dot(C))
+#
+# %timeit np.dot(np.dot(A, B), A.T)
+# %timeit np.dot(A, np.dot(B, A.T))
+# %timeit np.dot(A, Bsp.dot(A.T))
+
+# %timeit np.dot(A.dot(Bsp), C)
+# %timeit np.dot(np.dot(A, B), C)
+# ## -- End pasted text --
+# 292 µs ± 6.27 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
+# In [53]: paste
+# %timeit np.dot(A, np.dot(B, C))
+# ## -- End pasted text --
+# 18.1 µs ± 220 ns per loop (mean ± std. dev. of 7 runs, 100000 loops each)
+
+# In [54]: paste
+# %timeit np.dot(A, Bsp.dot(C))
+# ## -- End pasted text --
+# 11.7 µs ± 88.3 ns per loop (mean ± std. dev. of 7 runs, 100000 loops each)
+
+# In [55]: paste
+# %timeit np.dot(A.dot(Bsp), C)
+# ## -- End pasted text --
+# 6.17 s ± 55.7 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+
+@jit(nopython=True)
+def solve_lsq_optimized(design_matrix, data, inverse_covariance_matrix):
+
+    A = design_matrix
+
+    Vinv = inverse_covariance_matrix
+    AVinvy = np.linalg.multi_dot((A, Vinv, data))
+    AVinvAT = np.linalg.multi_dot((A, Vinv, A.T))
     P = np.linalg.solve(AVinvAT, AVinvy)
     # Plstsq = np.linalg.lstsq(AVinvAT, AVinvy)
     P_sigma_squared = np.diag(np.linalg.inv(AVinvAT))

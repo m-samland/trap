@@ -11,9 +11,9 @@ import numpy as np
 import numpy.fft as fft
 import scipy as sp
 from scipy import linalg, ndimage
+from scipy.ndimage.interpolation import spline_filter
 from scipy.signal import medfilt
 from tqdm import tqdm
-
 from trap import regressor_selection
 from trap.embed_shell import ipsh
 
@@ -48,11 +48,12 @@ def prepare_psf(psf_cube, psf_size):
         mask = np.logical_or(mask_negative, ~mask_psf)
         psf_image[mask] = 0.
         psf_image = np.pad(psf_image, pad_width=[(1,), (1,)], mode='constant', constant_values=0.)
+        psf_image = spline_filter(psf_image.astype('float64'))
         psf_list.append(psf_image)
     return psf_list
 
 
-def bin_frames(image_cube, bad_frame_indices, binsize):
+def bin_frames(data_cube, bad_frame_indices, binsize):
     mask = np.zeros(data_cube.shape[1], dtype='bool')
     mask[bad_frame_indices] = True
     data_cube[:, mask, :, :] = np.nan
@@ -60,7 +61,7 @@ def bin_frames(image_cube, bad_frame_indices, binsize):
         data_cube.shape[0], int(data_cube.shape[1] / binsize), binsize,
         data_cube.shape[2], data_cube.shape[3])
     data_cube3 = np.nanmean(data_cube2, axis=2)
-    return
+    return data_cube3
 
 
 def determine_maximum_contrast_for_injection(data, flux_psf, reduction_mask, percentile=99.):
@@ -165,13 +166,13 @@ def resize_cube(arr, new_dim):
     """ Takes a four dimensional data cube (wavelength, frame number, x, y)
         and returns the same data cube with resized frames)
     """
-#    if new_dim % 2 == 0:
-#        new_dim = new_dim + 1
+    # if new_dim % 2 == 0:
+    # new_dim = new_dim + 1
     assert len(np.asarray(arr).shape) == 4, "Function arr_resize expects a 4D data cube"
     resized_arr = np.zeros((arr.shape[0], arr.shape[1], new_dim, new_dim))
     for i in range(arr.shape[0]):
         for j in range(arr.shape[1]):
-            #print("Resizing Channel {0}: Frame {1}".format(i+1, j+1))
+            # print("Resizing Channel {0}: Frame {1}".format(i+1, j+1))
             resized_arr[i, j] = resize_arr(arr[i, j], new_dim)
     return resized_arr
 
@@ -193,7 +194,7 @@ def mask_center(arr, dim, r_init=3, fwhm=5, maskvalue=0.):
     y = np.arange(arr.shape[1]).reshape(-1, 1)
     dist = np.sqrt((x - xcen)**2 + (y - ycen)**2)
     mask1 = dist < mask_size
-#    mask2 = dist < r1
+    # mask2 = dist < r1
     np.putmask(arr, mask1, maskvalue)
     return arr
 
@@ -331,8 +332,8 @@ def plot_pa(parameters, angle):
 
     ax1.plot(x, y)
     ax2.plot(x_diff, y_diff)
-#    ax2.plot(x_space, f_y2, 'k', lw=3, color=colors[i], alpha=0.6)
-    #plt.plot(x, y, color="black", alpha=0.6)
+    # ax2.plot(x_space, f_y2, 'k', lw=3, color=colors[i], alpha=0.6)
+    # plt.plot(x, y, color="black", alpha=0.6)
     # plt.ylabel('$dPA$')
     # plt.xlabel('$Frame$')
     ax1.set_xlabel('Frame')
@@ -371,3 +372,18 @@ def det_max_ncomp_specific(r_planet, fwhm, delta, pa):
         max_ncomp[j, 0] = np.sum(pa_mask[j])
     max_ncomp[:, 1] = np.min(max_ncomp[:, 0])
     return max_ncomp, pa_mask
+
+
+def combine_reduction_regions(small_image, large_image):
+    small_image_size = small_image.shape[0]
+    large_image_size = large_image.shape[0]
+
+    assert small_image_size <= large_image_size, \
+        "The small image needs to be smaller or equal the size of the larger image."
+    if small_image_size < large_image_size:
+        padding_size = int(round(large_image_size - small_image_size) / 2)
+        small_image = np.pad(small_image, padding_size, constant_values=np.nan)
+    mask = np.isfinite(small_image)
+    large_image[mask] = small_image[mask]
+
+    return large_image

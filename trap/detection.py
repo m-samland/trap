@@ -28,7 +28,7 @@ from trap.embed_shell import ipsh
 # plt.style.use("paper")
 
 # rcParams['font.size'] = 12
-rc('font', **{'family': "Helvetica", 'size': "12"})
+rc('font', **{'family': "DejaVu Sans", 'size': "12"})
 rc('legend', **{'fontsize': "11"})
 
 # rc('text', usetex=True)
@@ -374,11 +374,9 @@ def plot_contrast_curve(
     # else:
     #     ax0.set_ylim(ymin - y_text_shift * 15, ymax)
     # if yscale == 'log':
-    #     ipsh()
     #     ax0.set_ylim(ymin - y_text_shift * 20, ymax)
     if yscale == 'linear':
         ax0.set_ylim(ymin - y_text_shift, ymax)
-    # ipsh()
     ymin, ymax = ax0.get_ylim()
     if yscale == 'log':
         y_text_shift = np.abs((np.log10(ymax) - np.log10(ymin))) / 100 * 6
@@ -570,7 +568,6 @@ def plot_contrast_curve_ratio(
     if yscale == 'linear':
         # ax0.set_ylim(ymin - y_text_shift * 15, ymax)
         ax0.set_ylim(0, ymax)
-    # ipsh()
     ymin, ymax = ax0.get_ylim()
     if yscale == 'log':
         y_text_shift = np.abs((np.log10(ymax) - np.log10(ymin))) / 100 * 2

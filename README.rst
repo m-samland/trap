@@ -19,7 +19,7 @@ Dependencies
 TRAP requires the following packages in a reasonably up-to-date version
 to function:
 
-- 'numpy', 'scipy', 'matplotlib', 'scikit-learn', 'seaborn', 'tqdm', 'natsort'
+- 'numpy', 'scipy', 'matplotlib', 'scikit-learn', 'numba', 'seaborn', 'tqdm'
 - 'astropy', 'photutils'
 
 

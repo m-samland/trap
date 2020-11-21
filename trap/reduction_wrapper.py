@@ -16,12 +16,10 @@ from multiprocessing import Pool
 import numpy as np
 from astropy import units as u
 from astropy.io import fits
-from natsort import natsorted
 from tqdm import tqdm
 from trap import (detection, image_coordinates, makesource, regression,
                   regressor_selection)
 from trap.embed_shell import ipsh
-from trap.makesource import addsource
 from trap.utils import (crop_box_from_3D_cube, crop_box_from_image,
                         determine_psf_stampsizes, high_pass_filter,
                         high_pass_filter_cube, prepare_psf, round_up_to_odd)
@@ -93,7 +91,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
     if guess_position is not None:
         reduction_parameters.guess_position = guess_position
         position_absolute = image_coordinates.relative_yx_to_absolute_yx(guess_position, yx_center).astype('int')
-    signal_position = reduction_parameters.guess_position
+    signal_position = np.array(reduction_parameters.guess_position)
 
     if contrast_map is not None:
         reduction_parameters.true_contrast = contrast_map[position_absolute[0], position_absolute[1]]
@@ -102,40 +100,48 @@ def trap_one_position(guess_position, data, flux_psf, pa,
     #     true_rhophi = image_coordinates.relative_yx_to_rhophi(
     #         reduction_parameters.true_position)
 
-    injected_model_cube = np.zeros_like(data)
-    injected_model_cube = makesource.addsource(
-        injected_model_cube, reduction_parameters.guess_position, pa,
-        flux_psf,
-        image_center=yx_center_injection,
-        norm=amplitude_modulation, jitter=0, poisson_noise=False,
-        yx_anamorphism=reduction_parameters.yx_anamorphism,
-        right_handed=reduction_parameters.right_handed,
-        verbose=False)
-
     planet_absolute_yx_pos = image_coordinates.relative_yx_to_absolute_yx(
         signal_position, yx_center)
 
-    reduction_mask_local, reduction_mask = regressor_selection.make_mask_from_psf_track(
-        yx_position=signal_position,
-        psf_size=reduction_parameters.reduction_mask_psf_size,
-        pa=pa, image_size=data.shape[-1],
+    injected_model_cube = np.zeros_like(data)
+    injected_model_cube = makesource.inject_model_into_data(
+        flux_arr=injected_model_cube,
+        pos=signal_position,
+        pa=pa,
+        psf_model=flux_psf,
         image_center=yx_center_injection,
+        norm=amplitude_modulation,
         yx_anamorphism=reduction_parameters.yx_anamorphism,
-        right_handed=reduction_parameters.right_handed)
-    if reduction_parameters.reduction_mask_psf_size != reduction_parameters.signal_mask_psf_size:
-        signal_mask_local, signal_mask = regressor_selection.make_mask_from_psf_track(
+        right_handed=reduction_parameters.right_handed,
+        subpixel=True,
+        remove_interpolation_artifacts=True,
+        copy=False)
+    # injected_model_cube = makesource.addsource(
+    #     injected_model_cube, reduction_parameters.guess_position, pa,
+    #     flux_psf,
+    #     image_center=yx_center_injection,
+    #     norm=amplitude_modulation, jitter=0, poisson_noise=False,
+    #     yx_anamorphism=reduction_parameters.yx_anamorphism,
+    #     right_handed=reduction_parameters.right_handed,
+    #     verbose=False)
+
+    signal_mask_local = injected_model_cube > 0.
+    signal_mask = np.any(signal_mask_local, axis=0)
+    if reduction_parameters.reduction_mask_psf_size == reduction_parameters.signal_mask_psf_size:
+        # reduction_mask_local = signal_mask_local
+        reduction_mask = signal_mask
+    else:
+        reduction_mask = regressor_selection.make_mask_from_psf_track(
             yx_position=signal_position,
-            psf_size=reduction_parameters.signal_mask_psf_size,
+            psf_size=reduction_parameters.reduction_mask_psf_size,
             pa=pa, image_size=data.shape[-1],
             image_center=yx_center_injection,
             yx_anamorphism=reduction_parameters.yx_anamorphism,
-            right_handed=reduction_parameters.right_handed)
-    else:
-        signal_mask_local = reduction_mask_local
-        signal_mask = reduction_mask
+            right_handed=reduction_parameters.right_handed,
+            return_cube=False)
 
     # Remove interpolation effects of model PSF
-    injected_model_cube[~signal_mask_local] = 0.
+    # injected_model_cube[~signal_mask_local] = 0.
 
     if reduction_parameters.inject_fake:
         # Add artificial model to data
@@ -164,26 +170,18 @@ def trap_one_position(guess_position, data, flux_psf, pa,
 
     if reduction_parameters.temporal_model:
         if reduction_parameters.include_opposite_regressors:
-            _, opposite_mask = regressor_selection.make_mask_from_psf_track(
-                yx_position=-1 * signal_position,
-                psf_size=reduction_parameters.reduction_mask_psf_size,
-                pa=pa, image_size=data.shape[-1],
-                image_center=yx_center_injection,
-                yx_anamorphism=reduction_parameters.yx_anamorphism,
-                right_handed=reduction_parameters.right_handed)
+            # opposite_mask, _ = regressor_selection.make_mask_from_psf_track(
+            #     yx_position=-1 * signal_position,
+            #     psf_size=reduction_parameters.reduction_mask_psf_size,
+            #     pa=pa, image_size=data.shape[-1],
+            #     image_center=yx_center_injection,
+            #     yx_anamorphism=reduction_parameters.yx_anamorphism,
+            #     right_handed=reduction_parameters.right_handed,
+            #     return_cube=True)
+            # NOTE: use `signal_mask` instead?
+            opposite_mask = regressor_selection.make_mirrored_mask(reduction_mask, yx_center)
         else:
             opposite_mask = None
-
-        # if reduction_parameters.reduction_mask_psf_size != reduction_parameters.signal_mask_psf_size:
-        #     _, signal_mask = regressor_selection.make_mask_from_psf_track(
-        #         yx_position=signal_position,
-        #         psf_size=reduction_parameters.signal_mask_psf_size,
-        #         pa=pa, image_size=data.shape[-1],
-        #         image_center=yx_center_injection,
-        #         yx_anamorphism=reduction_parameters.yx_anamorphism,
-        #         right_handed=reduction_parameters.right_handed)
-        # else:
-        #     signal_mask = reduction_mask
 
         regressor_pool_mask = regressor_selection.make_regressor_pool_for_pixel(
             reduction_parameters=reduction_parameters,
@@ -403,7 +401,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         yx_center = (yx_dim[0] // 2, yx_dim[1] // 2)
 
     if amplitude_modulation is None:
-        amplitude_modulation = 1.
+        amplitude_modulation = np.ones(data.shape[0])
 
     search_region = reduction_parameters.search_region
     search_coordinates = np.argwhere(search_region) * oversampling
@@ -704,6 +702,7 @@ def run_complete_reduction(
             max_shift = np.max([max_shift_x, max_shift_y]) * 2
             print("The center varies by a maximum of in x or y: {}".format(max_shift / 2))
         # print("Center variation: {}".format(np.std(amplitude_modulation_full, axis=0)))
+    reduction_parameters.yx_anamorphism = np.array(reduction_parameters.yx_anamorphism)
 
     # Decide crop size for images
     if reduction_parameters.data_auto_crop:
@@ -762,7 +761,7 @@ def run_complete_reduction(
 
         number_of_wavelengths = data_full.shape[0]
         number_of_companions = reduction_parameters.yx_known_companion_position.shape[0]
-
+        ipsh()
         assert reduction_parameters.known_companion_contrast.shape[-1] == number_of_companions, \
             "The same number of known companion positions and contrasts need to be provided."
 
@@ -876,15 +875,15 @@ def run_complete_reduction(
             # based on cropping or no cropping
             if yx_center_full is None:
                 if data_crop_size is None:
-                    yx_center = (data_full.shape[-2] // 2., data_full.shape[-1] // 2.)
+                    yx_center = np.array((data_full.shape[-2] // 2., data_full.shape[-1] // 2.))
                 else:
-                    yx_center = (data_crop_size // 2., data_crop_size // 2.)
+                    yx_center = np.array((data_crop_size // 2., data_crop_size // 2.))
             else:
                 # try:
                 if data_crop_size is None:
-                    yx_center = yx_center_full[wavelength_index]
+                    yx_center = np.array(yx_center_full[wavelength_index])
                 else:
-                    yx_center = (data_crop_size // 2., data_crop_size // 2.)
+                    yx_center = np.array((data_crop_size // 2., data_crop_size // 2.))
 
             # Make companion mask before cropping to be consistent
             # Do this for each wavelength separately to account for PSF size
@@ -897,13 +896,15 @@ def run_complete_reduction(
 
                 known_companion_masks = []
                 for yx_pos in reduction_parameters.yx_known_companion_position:
-                    _, known_companion_mask = regressor_selection.make_mask_from_psf_track(
+                    # TODO: CHECK
+                    known_companion_mask = regressor_selection.make_mask_from_psf_track(
                         yx_position=yx_pos,
                         psf_size=reduction_parameters.signal_mask_psf_size,
                         pa=pa, image_size=data_full.shape[-1],
                         image_center=yx_center_before_crop,
                         yx_anamorphism=reduction_parameters.yx_anamorphism,
-                        right_handed=reduction_parameters.right_handed)
+                        right_handed=reduction_parameters.right_handed,
+                        return_cube=False)
                     known_companion_masks.append(known_companion_mask)
                 known_companion_mask = np.logical_or.reduce(known_companion_masks)
 
@@ -997,17 +998,20 @@ def run_complete_reduction(
                     center_yx=None)
 
             if amplitude_modulation_full is None:
-                amplitude_modulation = 1.
+                amplitude_modulation = np.ones(data_full.shape[1])
             else:
                 amplitude_modulation = amplitude_modulation_full[:, wavelength_index]
 
             if reduction_parameters.remove_known_companions:
                 # NOTE: This currently doesn't remove photon noise from variance map
+                # NOTE: Change to faster implementation of `inject_model_into_data`
 
                 for companion_index, known_companion_contrast in enumerate(
                         reduction_parameters.known_companion_contrast[wavelength_index]):
+                    # NOTE: Check format of known_companion_contrast and amplitude_modulation
                     known_companion_contrast *= amplitude_modulation
-                    data = addsource(
+
+                    data = makesource.addsource(
                         data, reduction_parameters.yx_known_companion_position[companion_index],
                         pa, flux_psf, image_center=yx_center_injection,
                         norm=-1 * known_companion_contrast,

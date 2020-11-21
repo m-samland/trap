@@ -5,6 +5,8 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import numpy as np
+
 
 class Instrument(object):
     """Important information on the instrument.
@@ -360,7 +362,7 @@ class Reduction_parameters(object):
             plot_all_diagnostics=False,
             fit_planet=True,
             number_of_pca_regressors=20,
-            yx_anamorphism=[1., 1.],
+            yx_anamorphism=np.array([1., 1.]),
             pca_scaling='temp-median',
             method_of_regressor_selection=None,
             auxiliary_frame=None,
@@ -458,22 +460,3 @@ class Reduction_parameters(object):
         self.return_input_data = return_input_data
         self.plot_all_diagnostics = plot_all_diagnostics
         self.verbose = verbose
-
-
-# parameters = Reduction_parameters(
-#     inject_fake=True,
-#     number_of_pca_regressors=20,
-#     pca_scaling='temp-median',
-#     method_of_regressor_selection=None,
-#     # auxiliary_frame=None,
-#     annulus_width=9,
-#     annulus_offset=0,
-#     reduction_mask_psf_size=9,
-#     signal_mask_psf_size=19,
-#     target_pix_mask_radius=0,
-#     use_relative_position=False,
-#     compute_inverse_once=True,
-#     make_reconstructed_lightcurve=True)
-
-
-# TODO look up compute_inverse_once, use_provided_regressor_matrix, return_only_noise_model

@@ -186,7 +186,7 @@ class Result(object):
         residual_image = np.zeros_like(self.reduction_mask, dtype='float32')
         residual_image[self.reduction_mask] = np.median(self.residuals, axis=1)
         mask = residual_image == 0
-        residual_image[mask] = np.NAN
+        residual_image[mask] = np.nan
         plotting_tools.plot_scale(
             residual_image, yx_coords=self.yx_center, point_size1=120,
             plot_star_not_circle=True, show=True)
@@ -280,7 +280,7 @@ def run_trap_with_model_temporal(
         plot_all_diagnostics=False,
         verbose=False):
     """Core function of the TRAP analysis. Builds the temporal regression
-    model and perform model fits for all time series vector in the
+    model and perform model fitting for all time series vectors in the
     `reduction_mask` as described in Samland et al. 2020.
 
     Parameters
@@ -373,10 +373,10 @@ def run_trap_with_model_temporal(
 
     # Make array to contain stellar PSF model result
     model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
-    model_cube[:] = np.NAN
+    model_cube[:] = np.nan
 
     noise_model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
-    noise_model_cube[:] = np.NAN
+    noise_model_cube[:] = np.nan
 
     if model is None:
         diagnostic_image = None
@@ -394,17 +394,17 @@ def run_trap_with_model_temporal(
 
         if model is not None:
             diagnostic_image = np.empty((4, yx_dim[0], yx_dim[1],))
-            diagnostic_image[:] = np.NAN
+            diagnostic_image[:] = np.nan
 
             reduced_result = np.empty((n_reduction_pix, 3))
-            reduced_result[:] = np.NAN
+            reduced_result[:] = np.nan
 
         else:
             diagnostic_image = None
             reduced_result = None
 
         # coefficients = np.empty((n_reduction_pix, number_of_pca_regressors))
-        # coefficients[:] = np.NAN
+        # coefficients[:] = np.nan
 
     if regressor_matrix is None:
         if compute_inverse_once:
@@ -507,7 +507,7 @@ def run_trap_with_model_temporal(
                 inverse_covariance_matrix = np.identity(len(y)) * (1. / y)
         else:
             inverse_covariance_matrix = None
-
+        # ipsh()
         P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
             design_matrix=A.T,
             data=y,
@@ -738,14 +738,14 @@ def run_trap_with_model_spatial(
 
     # Make array to contain stellar PSF model result
     model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
-    model_cube[:] = np.NAN
+    model_cube[:] = np.nan
 
     noise_model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
-    noise_model_cube[:] = np.NAN
+    noise_model_cube[:] = np.nan
 
     # Contrast, uncertainty, snr for each fit
     reduced_result = np.empty((ntime, 3))
-    reduced_result[:] = np.NAN
+    reduced_result[:] = np.nan
 
     psf_amplitude = np.zeros(ntime)
     psf_sigma_squared = np.zeros(ntime)
@@ -854,7 +854,7 @@ def run_trap_with_model_spatial(
             reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
 
         refined_speckle_subtraction = np.empty((yx_dim[0], yx_dim[1]))
-        refined_speckle_subtraction[:] = np.NAN
+        refined_speckle_subtraction[:] = np.nan
         refined_speckle_subtraction[reduction_mask] = data[idx][reduction_mask] - reconstructed_systematics
 
         psf_mask = model[idx] > 0.
