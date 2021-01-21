@@ -755,7 +755,7 @@ def run_trap_with_model_spatial(
     separation = np.sqrt(
         planet_relative_yx_pos[0]**2 + planet_relative_yx_pos[1]**2)
 
-    _, time_masks = det_max_ncomp_specific(
+    max_ncomp, time_masks = det_max_ncomp_specific(
         r_planet=separation,
         fwhm=reduction_parameters.fwhm,
         delta=reduction_parameters.protection_angle,
@@ -789,15 +789,16 @@ def run_trap_with_model_spatial(
         # Transpose training matrix as opposed to temporal approach
         B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
             training_matrix.T, n_components=None, scaling=pca_scaling)
-        cummulative_variance = np.cumsum(S_full) / np.sum(S_full)
+        # cummulative_variance = np.cumsum(S_full) / np.sum(S_full)
 
-        try:
-            number_of_pca_regressors = np.where(
-                cummulative_variance < reduction_parameters.spatial_variance_explained)[0][-1] + 1
-        except:
-            print('Returning None because nPCA could not be determined')
-            return None
+        # try:
+        #     number_of_pca_regressors = np.where(
+        #         cummulative_variance < reduction_parameters.spatial_variance_explained)[0][-1] + 1
+        # except:
+        #     print('Returning None because nPCA could not be determined')
+        #     return None
 
+        number_of_pca_regressors = int(np.round(max_ncomp[idx][0] * reduction_parameters.spatial_components_fraction))
         B = B_full[:, :number_of_pca_regressors]
         # S = S_full[:number_of_pca_regressors]
         # V = V_full[:number_of_pca_regressors, :]

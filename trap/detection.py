@@ -782,7 +782,7 @@ def fit_planet_detection(
 def plot_planet_detection(model, stamp):
     plt.close()
     plt.figure(200)
-    plt.imshow(model, origin='bottom', interpolation='nearest')
+    plt.imshow(model, origin='lower', interpolation='nearest')
     plt.figure(300)
-    plt.imshow(stamp, origin='bottom', interpolation='nearest')
+    plt.imshow(stamp, origin='lower', interpolation='nearest')
     plt.show()

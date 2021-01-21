@@ -659,6 +659,8 @@ def run_complete_reduction(
         stamp_sizes_reduction = np.repeat(
             reduction_parameters.reduction_mask_psf_size,
             len(wavelengths))
+    if flux_psf_full.shape[-1] < np.max(stamp_sizes):
+        raise ValueError("The provided PSF images are too small for the chosen parameters.")
     psf_stamps = prepare_psf(
         flux_psf_full, psf_size=stamp_sizes)
 
@@ -761,7 +763,7 @@ def run_complete_reduction(
 
         number_of_wavelengths = data_full.shape[0]
         number_of_companions = reduction_parameters.yx_known_companion_position.shape[0]
-        ipsh()
+
         assert reduction_parameters.known_companion_contrast.shape[-1] == number_of_companions, \
             "The same number of known companion positions and contrasts need to be provided."
 
@@ -890,7 +892,7 @@ def run_complete_reduction(
             # and differing center position
             if reduction_parameters.yx_known_companion_position is not None:
                 if yx_center_injection_full is not None:
-                    yx_center_before_crop = yx_center_injection_full[:, wavelength_index]
+                    yx_center_before_crop = yx_center_injection_full[wavelength_index, :]
                 else:
                     yx_center_before_crop = None
 
@@ -968,10 +970,10 @@ def run_complete_reduction(
                 try:
                     if yx_center_injection_full.ndim == 3:
                         if data_crop_size is None:
-                            yx_center_injection = yx_center_injection_full[:, wavelength_index]
+                            yx_center_injection = yx_center_injection_full[wavelength_index, :]
                         else:
                             # Image centers in cropped frame
-                            yx_center_injection = yx_center_injection_full[:, wavelength_index] - np.round(yx_center_full[wavelength_index]) \
+                            yx_center_injection = yx_center_injection_full[wavelength_index, :] - np.round(yx_center_full[wavelength_index]) \
                                 + yx_center
                             # np.round(yx_center_full[wavelength_index]) - yx_center_injection_full[:, wavelength_index] \
                             # + yx_center
