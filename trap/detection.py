@@ -488,7 +488,10 @@ def plot_contrast_curve(
         plt.gca().invert_yaxis()
     if savefig is not None:
         plt.savefig(savefig, dpi=300)
-        pdf.savefig(bbox_inches='tight')
+        try:
+            pdf.savefig(bbox_inches='tight')
+        except RuntimeError:
+            print("Could not output pdf-version of contrast curve (this may be a Mac issue).")
         pdf.close()
 
     if show is True:
@@ -670,7 +673,10 @@ def plot_contrast_curve_ratio(
         plt.gca().invert_yaxis()
     if savefig is not None:
         plt.savefig(savefig, dpi=300)
-        pdf.savefig(bbox_inches='tight')
+        try:
+            pdf.savefig(bbox_inches='tight')
+        except RuntimeError:
+            print("Could not output pdf-version of contrast curve (this may be a Mac issue).")
         pdf.close()
 
     if show is True:
