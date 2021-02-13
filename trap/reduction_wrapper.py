@@ -9,6 +9,7 @@ Routines used in TRAP
 import multiprocessing
 import os
 from collections import OrderedDict
+from copy import copy
 from functools import partial
 from glob import glob
 from multiprocessing import Pool
@@ -140,6 +141,16 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             right_handed=reduction_parameters.right_handed,
             return_cube=False)
 
+    # Due to interpolation edge effects some pixels at the edge of the trajectory can be negative
+    total_flux_in_pixel = np.sum(injected_model_cube, axis=0)
+    relative_flux_in_pixel = total_flux_in_pixel / np.max(total_flux_in_pixel)
+    # excluding pixels with low contribution to over-all signal
+    low_contribution_mask = relative_flux_in_pixel <= reduction_parameters.threshold_pixel_by_contribution
+    reduction_mask[low_contribution_mask] = False
+
+    if bad_pixel_mask is not None:
+        reduction_mask_wo_badpixels = np.logical_and(reduction_mask, ~bad_pixel_mask)
+
     # Remove interpolation effects of model PSF
     # injected_model_cube[~signal_mask_local] = 0.
 
@@ -160,11 +171,23 @@ def trap_one_position(guess_position, data, flux_psf, pa,
         if variance is None:
             # NOTE: Uses photon noise from data itself.
             # May not be valid based on pre-processing steps done
-            variance_reduction_area = data_reduce[:, reduction_mask].copy() + read_noise**2
+            if bad_pixel_mask is not None:
+                variance_reduction_area = data_reduce[:, reduction_mask_wo_badpixels].copy() + read_noise**2
+            else:
+                variance_reduction_area = data_reduce[:, reduction_mask].copy() + read_noise**2
+
         else:
-            variance_reduction_area = variance[:, reduction_mask]
+            if bad_pixel_mask is not None:
+                variance_reduction_area = variance[:, reduction_mask_wo_badpixels]
+            else:
+                variance_reduction_area = variance[:, reduction_mask]
     else:
         variance_reduction_area = None
+
+    if bad_pixel_mask is not None:
+        reduction_mask_used = reduction_mask_wo_badpixels.copy()
+    else:
+        reduction_mask_used = reduction_mask.copy()
 
     results = {}
 
@@ -196,9 +219,6 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             right_handed=reduction_parameters.right_handed,
             pa=pa)
 
-        if bad_pixel_mask is not None:
-            reduction_mask = np.logical_and(reduction_mask, ~bad_pixel_mask)
-
         result = regression.run_trap_with_model_temporal(
             data=data_reduce,
             model=model,
@@ -206,7 +226,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             pa=pa,
             reduction_parameters=reduction_parameters,
             planet_relative_yx_pos=signal_position,
-            reduction_mask=reduction_mask,
+            reduction_mask=reduction_mask_used,
             known_companion_mask=known_companion_mask,
             opposite_mask=opposite_mask,
             yx_center=yx_center,
@@ -229,20 +249,16 @@ def trap_one_position(guess_position, data, flux_psf, pa,
         results['temporal'] = result
 
     if reduction_parameters.spatial_model:
-        if bad_pixel_mask is not None:
-            reduction_mask = np.logical_and(reduction_mask, ~bad_pixel_mask)
-
         result = regression.run_trap_with_model_spatial(
             data=data_reduce,
             model=model,
             pa=pa,
             reduction_parameters=reduction_parameters,
             planet_relative_yx_pos=signal_position,
-            reduction_mask=reduction_mask,
+            reduction_mask=reduction_mask_used,
             yx_center=yx_center,
             yx_center_injection=yx_center_injection,
             variance_reduction_area=variance_reduction_area,
-            bad_pixel_mask=bad_pixel_mask,
             true_contrast=true_contrast,
             training_data=None,
             return_input_data=False,
@@ -267,7 +283,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
                 pa=pa,
                 reduction_parameters=reduction_parameters,
                 planet_relative_yx_pos=signal_position,
-                reduction_mask=reduction_mask,
+                reduction_mask=reduction_mask_used,
                 known_companion_mask=known_companion_mask,
                 opposite_mask=opposite_mask,
                 yx_center=yx_center,
@@ -297,25 +313,30 @@ def trap_one_position(guess_position, data, flux_psf, pa,
         if reduction_parameters.remove_bad_residuals_for_spatial_model:
             bad_residual_mask = np.zeros(
                 (data_reduce.shape[-2], data_reduce.shape[-1])).astype('bool')
-            bad_residual_mask[reduction_mask] = ~results['temporal'].good_residual_mask
+            bad_residual_mask[reduction_mask_used] = ~results['temporal'].good_residual_mask
+
             if bad_pixel_mask is None:
                 bad_pixel_mask = bad_residual_mask
             else:
                 bad_pixel_mask = np.logical_or(bad_pixel_mask, bad_residual_mask)
             if variance_reduction_area is not None:
-                variance_reduction_area = variance_reduction_area.copy()[:, ~bad_pixel_mask[reduction_mask]]
+                variance_reduction_area = variance_reduction_area[:, ~bad_residual_mask[reduction_mask_used]]
+            reduction_mask_used = np.logical_and(reduction_mask_used, ~bad_residual_mask)
+
+        reduction_parameters_alternative = copy(reduction_parameters)
+        reduction_parameters_alternative.spatial_components_fraction = \
+            reduction_parameters.spatial_components_fraction_after_trap
 
         result = regression.run_trap_with_model_spatial(
             data=data_reduce_noise_subtracted,
             model=model,
             pa=pa,
-            reduction_parameters=reduction_parameters,
+            reduction_parameters=reduction_parameters_alternative,
             planet_relative_yx_pos=signal_position,
-            reduction_mask=reduction_mask,
+            reduction_mask=reduction_mask_used,
             yx_center=yx_center,
             yx_center_injection=yx_center_injection,
             variance_reduction_area=variance_reduction_area,
-            bad_pixel_mask=bad_pixel_mask,
             true_contrast=true_contrast,
             training_data=training_data,
             return_input_data=False,

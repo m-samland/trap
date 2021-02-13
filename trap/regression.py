@@ -382,14 +382,8 @@ def run_trap_with_model_temporal(
         diagnostic_image = None
         reduced_result = None
     else:
-        maximum_counts = np.max(model)
+        # maximum_counts = np.max(model)
         # number_of_frames_affected = np.sum(model > 0, axis=0)
-        total_flux_in_pixel = np.sum(model, axis=0)
-        relative_flux_in_pixel = total_flux_in_pixel / np.max(total_flux_in_pixel)
-        # excluding pixels with low contribution to over-all signal
-        low_contribution_mask = relative_flux_in_pixel < reduction_parameters.threshold_pixel_by_contribution
-
-        reduction_mask[low_contribution_mask] = False
         n_reduction_pix = np.sum(reduction_mask)
 
         if model is not None:
@@ -666,7 +660,6 @@ def run_trap_with_model_spatial(
         yx_center=None,
         yx_center_injection=None,
         variance_reduction_area=None,
-        bad_pixel_mask=None,
         true_contrast=None,
         training_data=None,
         return_input_data=False,
@@ -699,9 +692,6 @@ def run_trap_with_model_spatial(
     variance_reduction_area : array_like, optional
         Variance for pixels in `reduction_mask`. Use if `include_noise`
         in `reduction_parameters` is True.
-    bad_pixel_mask : array_like, optional
-        Boolean mask of bad pixels. Will be excluded from
-        `regressor_pool_mask` and `reduction_mask`.
     true_contrast : scalar, optional
         The true contrast of an injected signal.
     return_input_data : boolean, optional
@@ -764,8 +754,8 @@ def run_trap_with_model_spatial(
     for idx, psf_model_frame in enumerate(model):
         if local_model:
             reduction_mask = psf_model_frame > 0.
-        if bad_pixel_mask is not None:
-            reduction_mask = np.logical_and(reduction_mask, ~bad_pixel_mask)
+        # if bad_pixel_mask is not None:
+        #     reduction_mask = np.logical_and(reduction_mask, ~bad_pixel_mask)
 
         time_mask = time_masks[idx]
         # Pixel data to fit
