@@ -81,9 +81,9 @@ def plot_scale(
     rcParams['lines.markeredgewidth'] = 1
 
     if normalization is None:
-        if scale is 'zscale':
+        if scale == 'zscale':
             norm = ImageNormalize(image, interval=ZScaleInterval())
-        elif scale is 'minmax':
+        elif scale == 'minmax':
             norm = ImageNormalize(image, interval=MinMaxInterval())
         elif isinstance(scale, collections.Iterable):
             norm = None

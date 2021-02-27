@@ -11,12 +11,18 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 from astropy.stats import mad_std, sigma_clip
+from scipy import spatial
+from scipy.linalg import inv, pinv
+from scipy.optimize import curve_fit
+from trap.utils import (compute_empirical_correlation_matrix,
+                        det_max_ncomp_specific, exponential_kernel,
+                        matern32_kernel, matern52_kernel)
 
 from . import (image_coordinates, pca_regression, plotting_tools,
                regressor_selection)
-from trap.utils import det_max_ncomp_specific
 from .embed_shell import ipsh
 
 
@@ -37,7 +43,9 @@ class Result(object):
             diagnostic_image=None, reduced_result=None,
             residuals=None, reduction_mask=None,
             data=None, number_of_pca_regressors=None,
-            true_contrast=None, yx_center=None):
+            true_contrast=None, yx_center=None,
+            compute_residual_correlation=False,
+            use_residual_correlation=False):
         """Initializer.
 
         Parameters
@@ -85,8 +93,10 @@ class Result(object):
         self.relative_uncertainty = None
         self.relative_deviation_from_true = None
         self.wrong_in_sigma = None
+        self.compute_residual_correlation = compute_residual_correlation
+        self.use_residual_correlation = use_residual_correlation
         if self.residuals is not None:
-            self.compute_good_residual_mask()
+            self.good_residual_mask = self.compute_good_residual_mask()
         if reduced_result is not None:
             self.compute_contrast_weighted_average()
         if yx_center is None:
@@ -94,18 +104,53 @@ class Result(object):
                               self.model_cube.shape[-1])
         else:
             self.yx_center = yx_center
+        if compute_residual_correlation:
+            self.correlation_info = self.compute_empirical_correlation(
+                return_correlation=False, return_covariance=False,
+                make_dataframes=True,
+                return_distance_matrix=True,
+                return_complete_dataframe=False,
+                up_to_separation=10, show=False)
+            self.correlation_info['corr_length_exponential'], _ = self.fit_kernel_to_correlation(
+                'exponential')
+            self.correlation_info['corr_length_matern32'], _ = self.fit_kernel_to_correlation(
+                'matern32')
+            self.correlation_info['corr_length_matern52'], _ = self.fit_kernel_to_correlation(
+                'matern52')
+            if use_residual_correlation:
+                self.compute_contrast_with_correlation(kernel='matern32', show=False)
 
     def __str__(self):
         if self.true_contrast is not None:
-            descr = "n_pix_reg: {}\ntrue contrast: {}\nmeasured contrast: {} +/- {}\nrel. uncertainty: {}\nSNR: {}\nrel. dev. from true: {}\nwrong in sigma: {}\n\n".format(
-                self.number_of_pca_regressors,
-                self.true_contrast,
-                self.measured_contrast,
-                self.contrast_uncertainty,
-                self.relative_uncertainty,
-                self.snr,
-                self.relative_deviation_from_true,
-                self.wrong_in_sigma)
+            if self.use_residual_correlation:
+                descr = "n_pix_reg: {}\ntrue contrast: {}\nmeasured contrast: {} +/- {}\nrel. uncertainty: {}\nSNR: {}\nrel. dev. from true: {}\nwrong in sigma: {}\n\n".format(
+                    self.number_of_pca_regressors,
+                    self.true_contrast,
+                    self.measured_contrast,
+                    self.contrast_uncertainty,
+                    self.relative_uncertainty,
+                    self.snr,
+                    self.relative_deviation_from_true,
+                    self.wrong_in_sigma)
+                descr += "true contrast: {}\nmeasured contrast corr: {} +/- {}\nrel. uncertainty corr: {}\nSNR: {}\nrel. dev. from true corr: {}\nwrong in sigma corr: {}\n\n".format(
+                    self.true_contrast,
+                    self.measured_contrast_with_corr,
+                    self.contrast_uncertainty_with_corr,
+                    self.relative_uncertainty_with_corr,
+                    self.snr_with_corr,
+                    self.relative_deviation_from_true_with_corr,
+                    self.wrong_in_sigma_with_corr)
+            else:
+                descr = "n_pix_reg: {}\ntrue contrast: {}\nmeasured contrast: {} +/- {}\nrel. uncertainty: {}\nSNR: {}\nrel. dev. from true: {}\nwrong in sigma: {}\n\n".format(
+                    self.number_of_pca_regressors,
+                    self.true_contrast,
+                    self.measured_contrast,
+                    self.contrast_uncertainty,
+                    self.relative_uncertainty,
+                    self.snr,
+                    self.relative_deviation_from_true,
+                    self.wrong_in_sigma)
+
         else:
             descr = "n_pix_reg: {}\nmeasured contrast: {} +/- {}\nrel. uncertainty: {}\nSNR: {}\n\n".format(
                 self.number_of_pca_regressors,
@@ -154,7 +199,114 @@ class Result(object):
                            axis=None, copy=True).mask)
 
         mask = np.logical_or.reduce(mask)
-        self.good_residual_mask = ~mask
+        return ~mask
+
+    def compute_distance_matrix(self):
+        reduction_mask = self.reduction_mask
+
+        good_residual_image_mask = np.zeros_like(reduction_mask).astype('bool')
+        good_residual_image_mask[reduction_mask] = self.good_residual_mask
+
+        good_pixel_mask = np.logical_and(
+            reduction_mask,
+            good_residual_image_mask)
+
+        coordinates = np.argwhere(good_pixel_mask)
+        distance_matrix = spatial.distance_matrix(coordinates, coordinates)
+        return distance_matrix
+
+    def compute_empirical_correlation(
+            self,
+            return_correlation=False, return_covariance=False,
+            make_dataframes=True,
+            return_distance_matrix=False,
+            return_complete_dataframe=False,
+            up_to_separation=10, show=False):
+
+        uncertainties = np.sqrt(self.reduced_result[:, 1])
+        residuals = self.residuals
+        good_residual_mask = self.good_residual_mask
+
+        if good_residual_mask is None:
+            good_residual_mask = np.ones(residuals.shape[0]).astype('bool')
+
+        residuals = residuals[good_residual_mask]
+        uncertainties = uncertainties[good_residual_mask]
+
+        psi_ij = compute_empirical_correlation_matrix(residuals)
+        cov_ij = uncertainties[:, None] * psi_ij * uncertainties[None, :]
+
+        distance_matrix = self.compute_distance_matrix()
+        mask = distance_matrix < up_to_separation
+
+        if make_dataframes:
+            data_columns = {}
+            data_columns['distance'] = distance_matrix[mask].flatten()
+            data_columns['empirical_correlation'] = psi_ij[mask].flatten()
+            data_columns['empirical_covariance'] = cov_ij[mask].flatten()
+
+            df = pd.DataFrame(data_columns)
+
+            df_binned = df.groupby('distance').median()
+            df_count = df.groupby('distance').count()
+            covariance_times_npixel = df_binned['empirical_covariance'] * df_count['empirical_covariance']
+            # plt.plot(np.cumsum(correlation_times_npixel[0:6]) / np.sum(correlation_times_npixel[0:6]))
+
+            if show:
+                plt.close()
+                plt.plot(np.cumsum(covariance_times_npixel) / np.sum(covariance_times_npixel))
+                plt.show()
+                s = 15
+                plt.close()
+                plt.scatter(x=df_binned.index, y=df_count['empirical_covariance'],
+                            s=s, alpha=1, color='black', label='number of points')
+                plt.xlabel("Separation (pixel)")
+                plt.ylabel("Number of pixel")
+                plt.legend()
+                plt.show()
+
+                plt.close()
+                plt.scatter(x=df_binned.index, y=df_binned['empirical_correlation'],
+                            s=s, alpha=1, color='black', label='data')
+                plt.xlabel('Separation (pixel)')
+                plt.ylabel('Correlation')
+                plt.legend()
+                plt.show()
+
+                plt.close()
+                plt.scatter(x=df_binned.index, y=df_binned['empirical_covariance'],
+                            s=s, alpha=1, color='black', label='data')
+                plt.xlabel('Separation (pixel)')
+                plt.ylabel('Correlation')
+                plt.legend()
+                plt.show()
+
+        correlation_info = {}
+        if make_dataframes:
+            correlation_info['summary_dataframe'] = df_binned
+            correlation_info['summary_counts'] = df_count
+        if return_distance_matrix:
+            correlation_info['distance_matrix'] = distance_matrix
+        if return_correlation:
+            correlation_info['psi_ij'] = psi_ij
+        if return_covariance:
+            correlation_info['cov_ij'] = cov_ij
+        if return_complete_dataframe:
+            correlation_info['dataframe'] = df
+
+        return correlation_info
+
+    def fit_kernel_to_correlation(self, kernel='matern32'):
+        if kernel == 'exponential':
+            kernel_function = exponential_kernel
+        elif kernel == 'matern32':
+            kernel_function = matern32_kernel
+        elif kernel == 'matern52':
+            kernel_function = matern52_kernel
+        distance = self.correlation_info['summary_dataframe'].index.values
+        empirical_correlation = self.correlation_info['summary_dataframe'].empirical_correlation.values
+        popt, pcov = curve_fit(f=kernel_function, xdata=distance[1:3], ydata=empirical_correlation[1:3], p0=[1])
+        return popt, pcov
 
     def compute_contrast_weighted_average(self, contrast=None, variance=None, mask_outliers=False):
 
@@ -181,6 +333,48 @@ class Result(object):
         if self.true_contrast is not None:
             self.relative_deviation_from_true = (self.measured_contrast - self.true_contrast) / self.true_contrast
             self.wrong_in_sigma = (self.measured_contrast - self.true_contrast) / self.contrast_uncertainty
+
+    def compute_contrast_with_correlation(self, kernel='matern32', show=False):
+
+        contrasts = self.reduced_result[:, 0]
+        contrasts = contrasts[self.good_residual_mask].astype('float64')
+        uncertainties = np.sqrt(self.reduced_result[:, 1])
+        uncertainties = uncertainties[self.good_residual_mask].astype('float64')
+
+        if kernel == 'exponential':
+            kernel_function = exponential_kernel
+        elif kernel == 'matern32':
+            kernel_function = matern32_kernel
+        elif kernel == 'matern52':
+            kernel_function = matern52_kernel
+
+        psi_ij_model = kernel_function(
+            self.correlation_info['distance_matrix'],
+            *self.correlation_info['corr_length_{}'.format(kernel)])
+        cov_ij_model = uncertainties[:, None] * psi_ij_model * uncertainties[None, :]
+        # plot_scale(cov_ij_model)
+        # plt.show()
+        inverse = inv(cov_ij_model)
+        if show:
+            plotting_tools.plot_scale(np.dot(inverse, cov_ij_model))
+            plt.show()
+
+        A = np.ones(len(uncertainties))[:, None]
+        P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
+            design_matrix=A.T,
+            data=contrasts,
+            inverse_covariance_matrix=inverse)
+
+        self.measured_contrast_with_corr = P[0]
+        self.contrast_uncertainty_with_corr = np.sqrt(P_sigma_squared[0])
+        self.snr_with_corr = self.measured_contrast_with_corr / self.contrast_uncertainty_with_corr
+        self.relative_uncertainty_with_corr = 1. / self.snr_with_corr
+        if self.true_contrast is not None:
+            self.relative_deviation_from_true_with_corr = \
+                (self.measured_contrast_with_corr - self.true_contrast) / self.true_contrast
+            self.wrong_in_sigma_with_corr = \
+                (self.measured_contrast_with_corr - self.true_contrast) / self.contrast_uncertainty_with_corr
+        # return P, P_sigma_squared
 
     def plot_median_residual_image(self, savefig=False, outputdir=None):
         residual_image = np.zeros_like(self.reduction_mask, dtype='float32')
@@ -209,7 +403,7 @@ class Result(object):
     def plot_gauss_for_residuals(self, show=True, savefig=False, outputdir=None):
         """ Eiffel tower plot. Gauss fit of distribution of residuals for each pixel."""
 
-        from astropy.modeling import models, fitting
+        from astropy.modeling import fitting, models
         x = np.linspace(-5, 5, 1000)
         for i in range(self.n_reduction_pix):
             g_init = models.Gaussian1D(amplitude=1., mean=0, stddev=1.)
@@ -647,7 +841,9 @@ def run_trap_with_model_temporal(
         residuals=residuals,
         number_of_pca_regressors=number_of_pca_regressors,
         true_contrast=true_contrast,
-        yx_center=yx_center)
+        yx_center=yx_center,
+        compute_residual_correlation=reduction_parameters.compute_residual_correlation,
+        use_residual_correlation=reduction_parameters.use_residual_correlation)
 
     return result
 
@@ -897,7 +1093,9 @@ def run_trap_with_model_spatial(
         residuals=residuals,
         number_of_pca_regressors=number_of_pca_regressors,
         true_contrast=true_contrast,
-        yx_center=yx_center)
+        yx_center=yx_center,
+        compute_residual_correlation=reduction_parameters.compute_residual_correlation,
+        use_residual_correlation=reduction_parameters.use_residual_correlation)
 
     result.psf_amplitude = psf_amplitude
     result.psf_sigma_squared = psf_sigma_squared

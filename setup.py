@@ -24,6 +24,6 @@ setuptools.setup(
         "Intended Audience :: Science/Research",
     ],
     python_requires='>=3.5',
-    install_requires=['numpy', 'scipy', 'matplotlib', 'numba', 'scikit-learn',
-                      'astropy', 'photutils', 'seaborn', 'tqdm']
+    install_requires=['numpy', 'scipy', 'matplotlib', 'numba', 'pandas',
+                      'scikit-learn', 'astropy', 'photutils', 'seaborn', 'tqdm']
 )

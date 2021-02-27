@@ -104,8 +104,6 @@ class Reduction_parameters(object):
         Fraction of total available number of principal components to use
         for spatial model after temporal systematics have been subtracted.
         Must be between 0 and 1. Default is 0.1.
-    spatial_variance_explained : scalar
-        Amount of variance considered in spatial PCA.
     highpass_filter : scalar or None
         Apply high-pass filter with a given filter fraction to data before
         analysis (experimental). Not recommended: Default is None.
@@ -172,12 +170,8 @@ class Reduction_parameters(object):
     annulus_offset : scalar
         Radially displace regressor annulus  (by pixel). Default is 0.
     add_radial_regressors : boolean
-        Add additional radial regressors in the form of a reduction area
-        displaced by `radial_separation_from_source` parameter.
+        Add additional radial regressors around the reduction area.
         Default is True.
-    radial_separation_from_source : array_like
-        Displacement of additional radial regressor areas with respect
-        to reduction area in pixel. Default is [-8, 6].
     include_opposite_regressors : boolean
         Include reduction area mirrored around origin as regressors.
         Default is True.
@@ -229,6 +223,14 @@ class Reduction_parameters(object):
         Reconstruct model fit lightcurve instead of just determining
         parameters. Necessary for normal functionality of the pipeline.
         Default is True.
+    compute_residual_correlation : boolean
+        Compute correlations between residuals after model fit (experimental).
+        Default is False.
+    use_residual_correlation : boolean
+        Use correlation between residuals after model fit instead of simple,
+        uncorrelated weighted average. Produces additional output files similar
+        to the detection_image output.
+        Default is False.
     contrast_curve : boolean
         Automatically generate contrast curve after reduction.
         Default is True.
@@ -279,7 +281,6 @@ class Reduction_parameters(object):
     guess_position
     fit_planet
     number_of_pca_regressors
-    spatial_variance_explained
     yx_anamorphism
     variance_prior_scaling
     pca_scaling
@@ -312,6 +313,8 @@ class Reduction_parameters(object):
     remove_bad_residuals_for_spatial_model
     highpass_filter
     make_reconstructed_lightcurve
+    compute_residual_correlation
+    use_residual_correlation
     contrast_curve
     constrast_curve_sigma
     normalization_width
@@ -343,7 +346,6 @@ class Reduction_parameters(object):
             protection_angle=0.5,
             spatial_components_fraction=0.3,
             spatial_components_fraction_after_trap=0.1,
-            spatial_variance_explained=0.85,
             highpass_filter=None,
             remove_known_companions=False,
             yx_known_companion_position=None,
@@ -369,24 +371,25 @@ class Reduction_parameters(object):
             annulus_width=5,
             annulus_offset=0,
             add_radial_regressors=True,
-            radial_separation_from_source=[-8, 6],
             include_opposite_regressors=True,
             variance_prior_scaling=1.,
+            compute_inverse_once=True,
             autosize_masks_in_lambda_over_d=True,
             reduction_mask_size_in_lambda_over_d=2.1,
             signal_mask_size_in_lambda_over_d=2.1,
             reduction_mask_psf_size=21,
             signal_mask_psf_size=21,
             threshold_pixel_by_contribution=0.,
+            make_reconstructed_lightcurve=True,
             target_pix_mask_radius=None,
             use_relative_position=False,
-            compute_inverse_once=True,
+            compute_residual_correlation=False,
+            use_residual_correlation=False,
             contrast_curve=True,
             contrast_curve_sigma=5.,
             normalization_width=3,
             companion_mask_radius=11,
             return_input_data=False,
-            make_reconstructed_lightcurve=True,
             verbose=False):
 
         self.search_region = search_region
@@ -415,7 +418,6 @@ class Reduction_parameters(object):
         self.guess_position = guess_position
         self.fit_planet = fit_planet
         self.number_of_pca_regressors = number_of_pca_regressors
-        self.spatial_variance_explained = spatial_variance_explained
         self.yx_anamorphism = yx_anamorphism
         self.variance_prior_scaling = variance_prior_scaling
         self.pca_scaling = pca_scaling
@@ -431,7 +433,6 @@ class Reduction_parameters(object):
         self.reduction_mask_size_in_lambda_over_d = reduction_mask_size_in_lambda_over_d
         self.signal_mask_size_in_lambda_over_d = signal_mask_size_in_lambda_over_d
         self.add_radial_regressors = add_radial_regressors
-        self.radial_separation_from_source = radial_separation_from_source
         self.include_opposite_regressors = include_opposite_regressors
         self.threshold_pixel_by_contribution = threshold_pixel_by_contribution
         self.target_pix_mask_radius = target_pix_mask_radius
@@ -451,6 +452,8 @@ class Reduction_parameters(object):
         self.remove_bad_residuals_for_spatial_model = remove_bad_residuals_for_spatial_model
         self.highpass_filter = highpass_filter
         self.make_reconstructed_lightcurve = make_reconstructed_lightcurve
+        self.compute_residual_correlation = compute_residual_correlation
+        self.use_residual_correlation = use_residual_correlation
 
         self.contrast_curve = contrast_curve
         self.contrast_curve_sigma = contrast_curve_sigma

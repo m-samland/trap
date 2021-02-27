@@ -9,12 +9,13 @@ Routines used in TRAP
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.fft as fft
-import scipy as sp
-from scipy import linalg, ndimage
+
+from numba import njit
 from scipy.ndimage.interpolation import spline_filter
 from scipy.signal import medfilt
 from tqdm import tqdm
 from trap import regressor_selection
+
 from trap.embed_shell import ipsh
 
 
@@ -36,7 +37,7 @@ def determine_psf_stampsizes(fwhm, size_in_lamda_over_d=2.2):
     return round_up_to_odd(fwhm * size_in_lamda_over_d * 2.)
 
 
-def prepare_psf(psf_cube, psf_size):
+def prepare_psf(psf_cube, psf_size, filter=True):
     psf_list = []
     for idx, psf_image in enumerate(psf_cube):
         psf_image = resize_image_cube(psf_image, int(psf_size[idx]))
@@ -48,7 +49,8 @@ def prepare_psf(psf_cube, psf_size):
         mask = np.logical_or(mask_negative, ~mask_psf)
         psf_image[mask] = 0.
         psf_image = np.pad(psf_image, pad_width=[(1,), (1,)], mode='constant', constant_values=0.)
-        psf_image = spline_filter(psf_image.astype('float64'))
+        if filter:
+            psf_image = spline_filter(psf_image.astype('float64'))
         psf_list.append(psf_image)
     return psf_list
 
@@ -387,3 +389,49 @@ def combine_reduction_regions(small_image, large_image):
     large_image[mask] = small_image[mask]
 
     return large_image
+
+
+@njit
+def compute_empirical_correlation_matrix(residuals):
+    n_vectors = residuals.shape[0]
+    psi_ij = np.zeros((n_vectors, n_vectors), dtype='float64')
+    for i in range(n_vectors):
+        for j in range(i, n_vectors):
+            c_ij = np.dot(residuals[i, :], residuals[j, :].T)
+            cov1 = np.dot(residuals[i, :], residuals[i, :].T)
+            cov2 = np.dot(residuals[j, :], residuals[j, :].T)
+            psi_ij[i, j] = c_ij / np.sqrt(cov1 * cov2)
+    psi_ij = psi_ij + psi_ij.T - np.diag(np.ones(n_vectors))
+
+    return psi_ij
+
+
+def matern32_kernel(distance, length_scale):
+    r = distance/length_scale
+    psi_ij_model = \
+        (1 + np.sqrt(3 * r**2)) * np.exp(-(np.sqrt(3 * r**2)))
+    return psi_ij_model
+
+
+def matern52_kernel(distance, length_scale):
+    r = distance/length_scale
+    psi_ij_model = \
+        (1 + np.sqrt(5 * r**2) + (5 * r**2) / 3) * \
+        np.exp(-(np.sqrt(5 * r**2)))
+    return psi_ij_model
+
+
+def exponential_kernel(distance, length_scale):
+    r = distance/length_scale
+    psi_ij_model = np.exp(-1*np.sqrt(r**2))
+    return psi_ij_model
+
+
+def exponential_squared_kernel(distance, length_scale):
+    r = distance/length_scale
+    psi_ij_model = np.exp(-1/2 * r**2)
+    return psi_ij_model
+
+
+def sinc_kernel(distance):
+    return np.sinc(distance)
