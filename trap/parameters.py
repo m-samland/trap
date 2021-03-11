@@ -6,6 +6,7 @@ Routines used in TRAP
 """
 
 import numpy as np
+from astropy import units as u
 
 
 class Instrument(object):
@@ -23,6 +24,22 @@ class Instrument(object):
         The detector gain (electrons/ADU).
     read_noise : float
         The detector read noise (e rms/pix/readout).
+    instrument_type : str, optional
+        Can take values 'photometry', 'ifu' or None. Only used for spectral
+        template matching in detection.
+        Default is 'photometry'.
+    wavelengths : `~astropy.units.Quantity`
+        The (central) wavelengths of the data as sampled by this instrument.
+        Effective wavelength for photometric observations.
+    spectral_resolution : float, optional
+        The spectral resolution of the instrument. Only needed if
+        'instrument_type' == 'ifu'.
+        Default is None.
+    filters : array_like??, optional
+        The filter curves for each channel observed. species object?
+        Default is None.
+    transmission : array_like??, optional
+        The common-path instrument and atmospheric transmission profile.
 
     Attributes
     ----------
@@ -31,15 +48,36 @@ class Instrument(object):
     telescope_diameter
     detector_gain
     read_noise
+    instrument_type
+    wavelengths
+    spectral_resolution
+    filters
+    transmission
 
     """
 
-    def __init__(self, name, pixel_scale, telescope_diameter, detector_gain=1.0, read_noise=0.):
+    def __init__(
+            self, name, pixel_scale, telescope_diameter, detector_gain=1.0, read_noise=0.,
+            instrument_type='photometry', wavelengths=None, spectral_resolution=None, filters=None,
+            transmission=None):
         self.name = name
         self.pixel_scale = pixel_scale
         self.telescope_diameter = telescope_diameter
         self.detector_gain = detector_gain
         self.read_noise = read_noise
+
+        self.instrument_type = instrument_type
+        self.wavelengths = wavelengths
+        self.spectral_resolution = spectral_resolution
+        self.filters = filters
+        self.transmission = transmission
+        if self.wavelengths is not None:
+            self.compute_fwhm()
+
+    def compute_fwhm(self):
+        angle = (self.wavelengths / self.telescope_diameter).to(
+            u.mas, equivalencies=u.dimensionless_angles())
+        self.fwhm = angle.to(u.pixel, self.pixel_scale)
 
 
 class Reduction_parameters(object):

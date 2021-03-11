@@ -27,7 +27,7 @@ from trap.utils import (crop_box_from_3D_cube, crop_box_from_image,
 
 
 def trap_one_position(guess_position, data, flux_psf, pa,
-                      wavelength, reduction_parameters, known_companion_mask,
+                      reduction_parameters, known_companion_mask,
                       variance=None,
                       bad_pixel_mask=None,
                       yx_center=None, yx_center_injection=None,
@@ -46,8 +46,6 @@ def trap_one_position(guess_position, data, flux_psf, pa,
         Image of unsaturated PSF.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    wavelengths : `~astropy.units.Quantity`
-        Wavelength of the spectral slice in units of length.
     reduction_parameters : `~trap.parameters.Reduction_parameters`
         A `~trap.parameters.Reduction_parameters` object all parameters
         necessary for the TRAP pipeline.
@@ -372,8 +370,6 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         Image of unsaturated PSF.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    wavelengths : `~astropy.units.Quantity`
-        Wavelength of the spectral slice in units of length.
     reduction_parameters : `~trap.parameters.Reduction_parameters`
         A `~trap.parameters.Reduction_parameters` object all parameters
         necessary for the TRAP pipeline.
@@ -486,7 +482,6 @@ def run_trap_search(data, flux_psf, pa, wavelength,
     if reduction_parameters.use_multiprocess:
         multiprocess_trap_position = partial(
             trap_one_position, data=data, flux_psf=flux_psf, pa=pa,
-            wavelength=wavelength,
             reduction_parameters=reduction_parameters,
             known_companion_mask=known_companion_mask,
             bad_pixel_mask=bad_pixel_mask,
@@ -548,7 +543,6 @@ def run_trap_search(data, flux_psf, pa, wavelength,
 
             result = trap_one_position(
                 coords, data=data, flux_psf=flux_psf, pa=pa,
-                wavelength=wavelength,
                 reduction_parameters=reduction_parameters,
                 known_companion_mask=known_companion_mask,
                 bad_pixel_mask=bad_pixel_mask,
@@ -612,7 +606,6 @@ def run_complete_reduction(
         data_full,
         flux_psf_full,
         pa,
-        wavelengths,
         instrument,
         reduction_parameters,
         temporal_components_fraction=[0.3],
@@ -638,9 +631,6 @@ def run_complete_reduction(
         If monochromatic data is used a single image is sufficient.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    wavelengths : `~astropy.units.Quantity`
-        Quantity array containg the wavelengths for each spectral slice
-        in units of length.
     instrument : `~trap.parameters.Instrument`
         An `~trap.parameters.Instrument` object containing parameters intrinsic
         to the instrument used, such as diameter, pixel scale,
@@ -715,8 +705,7 @@ def run_complete_reduction(
         #     cutoff_frequency=reduction_parameters.highpass_filter,
         #     verbose=True)
 
-    fwhm = image_coordinates.compute_fwhm(
-        wavelengths, instrument.telescope_diameter, instrument.pixel_scale)
+    instrument.compute_fwhm()
 
     if reduction_parameters.reduce_single_position:
         guess_position_separation = np.sqrt(
@@ -729,20 +718,20 @@ def run_complete_reduction(
         assert reduction_parameters.signal_mask_size_in_lambda_over_d >= reduction_parameters.reduction_mask_size_in_lambda_over_d, \
             "Signal mask size must be >= reduction mask size"
         stamp_sizes = determine_psf_stampsizes(
-            fwhm.value,
+            instrument.fwhm.value,
             size_in_lamda_over_d=reduction_parameters.signal_mask_size_in_lambda_over_d)
         stamp_sizes_reduction = determine_psf_stampsizes(
-            fwhm.value,
+            instrument.fwhm.value,
             size_in_lamda_over_d=reduction_parameters.reduction_mask_size_in_lambda_over_d)
     else:
         assert reduction_parameters.signal_mask_size >= reduction_parameters.reduction_mask_size, \
             "Signal mask size must be >= reduction mask size"
         stamp_sizes = np.repeat(
             reduction_parameters.signal_mask_psf_size,
-            len(wavelengths))
+            len(instrument.wavelengths))
         stamp_sizes_reduction = np.repeat(
             reduction_parameters.reduction_mask_psf_size,
-            len(wavelengths))
+            len(instrument.wavelengths))
     if flux_psf_full.shape[-1] < np.max(stamp_sizes):
         raise ValueError("The provided PSF images are too small for the chosen parameters.")
     psf_stamps = prepare_psf(
@@ -871,9 +860,9 @@ def run_complete_reduction(
         if not os.path.exists(result_folder):
             os.makedirs(result_folder)
 
-    assert flux_psf_full.shape[0] == data_full.shape[0] == len(wavelengths), \
+    assert flux_psf_full.shape[0] == data_full.shape[0] == len(instrument.wavelengths), \
         "Different number of wavelengths in data: Flux {} Data {} Wave {}".format(
-            flux_psf_full.shape[0], data_full.shape[0], len(wavelengths))
+            flux_psf_full.shape[0], data_full.shape[0], len(instrument.wavelengths))
 
     if reduction_parameters.reduce_single_position is True:
         all_results = OrderedDict()
@@ -893,11 +882,11 @@ def run_complete_reduction(
 
         # Loop over reduction for different wavelengths
         for _, wavelength_index, in enumerate(wavelength_indices):
-            wavelength = wavelengths[wavelength_index]
+            wavelength = instrument.wavelengths[wavelength_index]
             print("Lambda index: {} Wavelength: {:.3f}".format(wavelength_index, wavelength))
             if prefix is None:
                 prefix = ''
-            reduction_parameters.fwhm = fwhm[wavelength_index].value
+            reduction_parameters.fwhm = instrument.fwhm[wavelength_index].value
             basename = {}
             if reduction_parameters.inject_fake:
                 basename['temporal'] = 'injectedsigma{:.2f}_{}lam{:02d}_ncomp{:03d}_frac{:.2f}'.format(
@@ -1209,7 +1198,7 @@ def run_complete_reduction(
                         detection.plot_contrast_curve(
                             [contrast_table[key]],
                             instrument=instrument,
-                            wavelengths=wavelengths[wavelength_index:wavelength_index + 1],
+                            wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
                             colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
                             plot_vertical_lod=True, mirror_axis='mas',
                             convert_to_mag=False, yscale='log',
@@ -1234,7 +1223,7 @@ def run_complete_reduction(
                             detection.plot_contrast_curve(
                                 [contrast_table_corr[key]],
                                 instrument=instrument,
-                                wavelengths=wavelengths[wavelength_index:wavelength_index + 1],
+                                wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
                                 colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
                                 plot_vertical_lod=True, mirror_axis='mas',
                                 convert_to_mag=False, yscale='log',
@@ -1247,7 +1236,7 @@ def run_complete_reduction(
                             contrast_table['temporal_plus_spatial']
                         ],
                         instrument=instrument,
-                        wavelengths=wavelengths[wavelength_index:wavelength_index + 1].repeat(2),
+                        wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1].repeat(2),
                         curvelabels=['temporal', 'temporal + spatial'],
                         linestyles=['-', '--'],
                         colors=['#1b1cd5', '#de650a'],  # , '#ba174e'],
@@ -1271,7 +1260,6 @@ def run_complete_reduction(
 
 def make_contrast_from_output(
         result_folder,
-        wavelengths,
         instrument,
         glob_pattern='detection*fits',
         yx_known_companion_position=None,

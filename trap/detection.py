@@ -28,7 +28,7 @@ from trap.embed_shell import ipsh
 # plt.style.use("paper")
 
 # rcParams['font.size'] = 12
-rc('font', **{'family': "DejaVu Sans", 'size': "12"})
+# rc('font', **{'family': "DejaVu Sans", 'size': "12"})
 rc('legend', **{'fontsize': "11"})
 
 # rc('text', usetex=True)
@@ -203,12 +203,13 @@ def make_contrast_curve(detection_image, radial_bounds=None,
             min_contrast_curve]
     for column in percentile_contrast_curve.T:
         cols.append(column)
+    cols.append(snr_norm)
 
     col_names = [
         'sep (pix)', 'sep (mas)',
         'contrast_min', 'contrast_0.15', 'contrast_2.5',
         'contrast_16', 'contrast_50', 'contrast_84',
-        'contrast_97.5', 'contrast_99.85']
+        'contrast_97.5', 'contrast_99.85', 'snr_normalization']
     contrast_table = Table(cols, names=col_names)
 
     return normalized_detection_image, contrast_table, contrast_image, median_contrast_image
@@ -228,9 +229,8 @@ def sep_pix_to_mas(sep_pix, instrument):
     return (sep_pix * u.pixel).to(u.mas, instrument.pixel_scale).value
 
 
-def sep_pix_to_lod(separation, wavelength, instrument):
-    fwhm = image_coordinates.compute_fwhm(
-        wavelength, instrument.telescope_diameter, instrument.pixel_scale)
+def sep_pix_to_lod(separation, instrument):
+    fwhm = instrument.fwhm
     lod = separation / fwhm[0]
     return lod.value
 
@@ -333,6 +333,9 @@ def plot_contrast_curve(
     grid = plt.GridSpec(1, 1)
     ax0 = fig.add_subplot(grid[0, 0])
 
+    if colors is None:
+        colors = colors = plt.cm.viridis(np.linspace(0, 1, len(contrast_table)))
+
     # Add contrast curve(s) to axis
     for idx, contrast_curve in enumerate(contrast_table):
         if curvelabels[idx] is None:
@@ -387,9 +390,7 @@ def plot_contrast_curve(
         y_text_pos = ymin
 
     if plot_vertical_lod:
-        min_wavelength = np.min(wavelengths)
-        fwhm = image_coordinates.compute_fwhm(
-            min_wavelength, instrument.telescope_diameter, instrument.pixel_scale)
+        fwhm = instrument.fwhm[0]
         xposition = (np.array([1, 2, 3, 5, 10]) * fwhm).value
         mask = np.logical_and(xposition > xmin, xposition < xmax)
         xposition = xposition[mask]
@@ -580,12 +581,7 @@ def plot_contrast_curve_ratio(
         y_text_pos = ymin + 0.1
 
     if plot_vertical_lod:
-        # try:
-        min_wavelength = np.min(wavelengths)
-        # except TypeError:
-        #     min_wavelength = wavelengths[]
-        fwhm = image_coordinates.compute_fwhm(
-            min_wavelength, instrument.telescope_diameter, instrument.pixel_scale)
+        fwhm = instrument.fwhm[0]
         xposition = (np.array([1, 2, 3, 5, 10]) * fwhm).value
         vert_labels = [
             "$1 \lambda/D$", "$2 \lambda/D$", "$3 \lambda/D$",

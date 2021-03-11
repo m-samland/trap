@@ -204,12 +204,6 @@ def separation_pa_to_relative_xy(separation, position_angle, pixel_scale):
     return separation_pix, x, y
 
 
-def compute_fwhm(lam, telescope_diameter, pixel_scale):
-    angle = (lam / telescope_diameter).to(u.mas, equivalencies=u.dimensionless_angles())
-    fwhm = angle.to(u.pixel, pixel_scale)
-    return fwhm
-
-
 def protection_angle(separation, delta, fwhm):
     delta_deg = delta / (separation / fwhm) / np.pi * 180.
     return delta_deg
