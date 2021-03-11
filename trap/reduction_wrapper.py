@@ -8,6 +8,7 @@ Routines used in TRAP
 
 import multiprocessing
 import os
+import pickle
 from collections import OrderedDict
 from copy import copy
 from functools import partial
@@ -860,6 +861,15 @@ def run_complete_reduction(
         if not os.path.exists(result_folder):
             os.makedirs(result_folder)
 
+    # Save parameters
+    fileObj1 = open(os.path.join(result_folder, "instrument.obj"), 'wb')
+    pickle.dump(instrument, fileObj1)
+    fileObj1.close()
+
+    fileObj2 = open(os.path.join(result_folder, "reduction_parameters.obj"), 'wb')
+    pickle.dump(reduction_parameters, fileObj2)
+    fileObj2.close()
+
     assert flux_psf_full.shape[0] == data_full.shape[0] == len(instrument.wavelengths), \
         "Different number of wavelengths in data: Flux {} Data {} Wave {}".format(
             flux_psf_full.shape[0], data_full.shape[0], len(instrument.wavelengths))
@@ -892,12 +902,11 @@ def run_complete_reduction(
                 basename['temporal'] = 'injectedsigma{:.2f}_{}lam{:02d}_ncomp{:03d}_frac{:.2f}'.format(
                     reduction_parameters.injection_sigma, prefix, wavelength_index, ncomp,
                     temporal_components_fraction[comp_index])
-                basename['temporal_plus_spatial'] = \
-                    'injectedsigma{:.2f}_{}lam{:02d}_ncomp{:03d}_frac{:.2f}_delta{:.2f}_spatialfrac{:.2f}'.format(
-                        reduction_parameters.injection_sigma, prefix, wavelength_index,
-                        ncomp, temporal_components_fraction[comp_index],
-                        reduction_parameters.protection_angle,
-                        reduction_parameters.spatial_components_fraction_after_trap)
+                basename['temporal_plus_spatial'] = 'injectedsigma{:.2f}_{}lam{:02d}_ncomp{:03d}_frac{:.2f}_delta{:.2f}_spatialfrac{:.2f}'.format(
+                    reduction_parameters.injection_sigma, prefix, wavelength_index,
+                    ncomp, temporal_components_fraction[comp_index],
+                    reduction_parameters.protection_angle,
+                    reduction_parameters.spatial_components_fraction_after_trap)
                 basename['spatial'] = 'injectedsigma{:.2f}_{}lam{:02d}_delta{:.2f}_spatialfrac{:.2f}'.format(
                     reduction_parameters.injection_sigma, prefix, wavelength_index,
                     reduction_parameters.protection_angle,
@@ -905,11 +914,10 @@ def run_complete_reduction(
             else:
                 basename['temporal'] = '{}lam{:02d}_ncomp{:03d}_frac{:.2f}'.format(
                     prefix, wavelength_index, ncomp, temporal_components_fraction[comp_index])
-                basename['temporal_plus_spatial'] = \
-                    '{}lam{:02d}_ncomp{:03d}_frac{:.2f}_delta{:.2f}_spatialfrac{:.2f}'.format(
-                        prefix, wavelength_index, ncomp, temporal_components_fraction[comp_index],
-                        reduction_parameters.protection_angle,
-                        reduction_parameters.spatial_components_fraction_after_trap)
+                basename['temporal_plus_spatial'] = '{}lam{:02d}_ncomp{:03d}_frac{:.2f}_delta{:.2f}_spatialfrac{:.2f}'.format(
+                    prefix, wavelength_index, ncomp, temporal_components_fraction[comp_index],
+                    reduction_parameters.protection_angle,
+                    reduction_parameters.spatial_components_fraction_after_trap)
                 basename['spatial'] = '{}lam{:02d}_delta{:.2f}_spatialfrac{:.2f}'.format(
                     prefix, wavelength_index,
                     reduction_parameters.protection_angle,
