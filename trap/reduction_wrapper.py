@@ -482,7 +482,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
 
     if reduction_parameters.use_multiprocess:
         multiprocess_trap_position = partial(
-            trap_one_position, data=data, flux_psf=flux_psf, pa=pa,
+            trap_one_position, data=data, variance=variance, flux_psf=flux_psf, pa=pa,
             reduction_parameters=reduction_parameters,
             known_companion_mask=known_companion_mask,
             bad_pixel_mask=bad_pixel_mask,
@@ -543,7 +543,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
             #         coords, image_center_yx=yx_center)
 
             result = trap_one_position(
-                coords, data=data, flux_psf=flux_psf, pa=pa,
+                coords, data=data, variance=variance, flux_psf=flux_psf, pa=pa,
                 reduction_parameters=reduction_parameters,
                 known_companion_mask=known_companion_mask,
                 bad_pixel_mask=bad_pixel_mask,
@@ -689,11 +689,12 @@ def run_complete_reduction(
         flux_psf_full *= instrument.detector_gain
         data_full *= instrument.detector_gain
 
-    # Prepare PSF
     if flux_psf_full.ndim < 3:
         flux_psf_full = np.expand_dims(flux_psf_full, axis=0)
     if data_full.ndim < 4:
         data_full = np.expand_dims(data_full, axis=0)
+    if variance_full is not None and variance_full.ndim < 4:
+        variance_full = np.expand_dims(variance_full, axis=0)
 
     if reduction_parameters.highpass_filter is not None:
         raise NotImplementedError()
