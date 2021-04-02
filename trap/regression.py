@@ -99,7 +99,7 @@ class Result(object):
             self.good_residual_mask = self.compute_good_residual_mask()
         if reduced_result is not None:
             self.compute_contrast_weighted_average()
-        if yx_center is None:
+        if yx_center is None and self.model_cube is not None:
             self.yx_center = (self.model_cube.shape[-2],
                               self.model_cube.shape[-1])
         else:
@@ -635,11 +635,11 @@ def run_trap_with_model_temporal(
 
     reduction_pix_indeces = np.argwhere(reduction_mask)
     test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
+    data_range_to_fit = np.ones(ntime).astype('bool')
 
     for idx, yx_pixel in enumerate(reduction_pix_indeces):
         # Pixel data to fit
         y = data[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
-        data_range_to_fit = np.ones_like(y).astype('bool')
 
         # Lightcurve model fitting planet at pixel
         if model is not None:
@@ -1101,4 +1101,510 @@ def run_trap_with_model_spatial(
     result.psf_sigma_squared = psf_sigma_squared
     result.sigma_squared_systematics = sigma_squared_systematics
 
+    return result
+
+
+def run_trap_with_model_wavelength(
+        data, model, pa, reduction_parameters,
+        planet_relative_yx_pos, reduction_mask,
+        yx_center=None,
+        yx_center_injection=None,
+        variance_reduction_area=None,
+        regressor_matrix=None,
+        signal_mask=None,
+        known_companion_mask=None,
+        opposite_mask=None,
+        bad_pixel_mask=None,
+        regressor_pool_mask=None,
+        true_contrast=None,
+        return_input_data=False,
+        plot_all_diagnostics=False,
+        verbose=False):
+    """Core function of the TRAP analysis. Builds the temporal regression
+    model and perform model fitting for all time series vectors in the
+    `reduction_mask` as described in Samland et al. 2020.
+
+    Parameters
+    ----------
+    data : array_like
+        Temporal image cube. First axis is time.
+    model : array_like, optional
+        Temporal image cube containing the companion model.
+    pa : array_like
+        Vector containing the parallactic angles for each frame.
+    reduction_parameters : `~trap.parameters.Reduction_parameters`
+        A `~trap.parameters.Reduction_parameters` object all parameters
+        necessary for the TRAP pipeline.
+    planet_relative_yx_pos : tuple
+        Relative (yx)-position of pixel to be fit, with respect to `yx_center`
+        or `yx_center_injection` if provided.
+    reduction_mask : array_like
+        Boolean mask of data included in the reduction
+        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+    yx_center : array_like, optional
+        The center position of the image as used in reduction.
+    yx_center_injection : array_like
+        Array containing yx_center to be used for forward model position.
+    variance_reduction_area : array_like, optional
+        Variance for pixels in `reduction_mask`. Use if `include_noise`
+        in `reduction_parameters` is True.
+    regressor_matrix : array_like, optional
+        Pre-computed regressor matrix. If not given regressor_matrix
+        will be made using the provided masks.
+    signal_mask : array_like
+        Boolean mask of pixels affects by companion signal at
+        `planet_relative_yx_pos`. Will be excluded from
+        `regressor_pool_mask`.
+    known_companion_mask : array_like, optional
+        Boolean mask of pixels affects by known companion signal. Will be
+        excluded from `regressor_pool_mask`.
+    opposite_mask : array_like, optional
+        Boolean mask of pixels opposite of the star from reduction area.
+        Will be included in `regressor_pool_mask`.
+    bad_pixel_mask : array_like, optional
+        Boolean mask of bad pixels. Will be excluded from
+        `regressor_pool_mask` and `reduction_mask`.
+    regressor_pool_mask : array_like, optional
+        Boolean mask of pixels to include as regressors.
+        If None, `regressor_pool_mask` will be constructed from provided
+        masks.
+    true_contrast : scalar, optional
+        The true contrast of an injected signal.
+    return_input_data : boolean, optional
+        Included input data in returned `Result`-object.
+        Default is False.
+    plot_all_diagnostics : boolean, optional
+        If True, will produce diagnostic plots for central pixel of
+        `reduction_mask`. Should only be used if `reduce_single_position`
+        is True. Default is False.
+    verbose : boolean, optional
+        If True, some diagnostic output is printed in the terminal.
+        Should only be used if `reduce_single_position` is True.
+        Default is False.
+
+    Returns
+    -------
+    ~trap.analyze_data.Result
+        Regression results for all pixels contained in the `reduction_mask`
+        for a single tested planet position.
+
+    """
+
+    local_model = reduction_parameters.local_temporal_model
+    number_of_pca_regressors = reduction_parameters.number_of_pca_regressors
+    pca_scaling = reduction_parameters.pca_scaling
+    make_reconstructed_lightcurve = reduction_parameters.make_reconstructed_lightcurve
+    compute_inverse_once = reduction_parameters.compute_inverse_once
+
+    yx_dim = (data.shape[-2], data.shape[-1])
+
+    if yx_center is None:
+        yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
+
+    planet_absolute_yx_pos = image_coordinates.relative_yx_to_absolute_yx(planet_relative_yx_pos, yx_center)
+    ntime = data.shape[0]
+
+    if reduction_parameters.reduce_single_position and reduction_parameters.plot_all_diagnostics:
+        if not os.path.exists('diagnostic_plots'):
+            os.makedirs('diagnostic_plots')
+        plt.close()
+        plt.imshow(reduction_mask.astype('int'), origin='bottom')
+        plt.savefig('diagnostic_plots/single_position_reduction_mask_test.jpg', dpi=300)
+        plt.close()
+
+    # Make array to contain stellar PSF model result
+    model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
+    model_cube[:] = np.nan
+
+    noise_model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
+    noise_model_cube[:] = np.nan
+
+    if model is None:
+        diagnostic_image = None
+        reduced_result = None
+    else:
+        # maximum_counts = np.max(model)
+        # number_of_frames_affected = np.sum(model > 0, axis=0)
+        n_reduction_pix = np.sum(reduction_mask)
+
+        if model is not None:
+            diagnostic_image = np.empty((4, yx_dim[0], yx_dim[1],))
+            diagnostic_image[:] = np.nan
+
+            reduced_result = np.empty((n_reduction_pix, 3))
+            reduced_result[:] = np.nan
+
+        else:
+            diagnostic_image = None
+            reduced_result = None
+
+        # coefficients = np.empty((n_reduction_pix, number_of_pca_regressors))
+        # coefficients[:] = np.nan
+
+    if regressor_matrix is None:
+        if compute_inverse_once:
+            if regressor_pool_mask is None:
+                # One regressor pool for all iterations
+                regressor_pool_mask_global = regressor_selection.make_regressor_pool_for_pixel(
+                    reduction_parameters=reduction_parameters,
+                    yx_pixel=planet_absolute_yx_pos,
+                    yx_dim=yx_dim,
+                    yx_center=yx_center,
+                    yx_center_injection=yx_center_injection,
+                    signal_mask=signal_mask,
+                    known_companion_mask=known_companion_mask,
+                    bad_pixel_mask=bad_pixel_mask,
+                    additional_regressors=opposite_mask,
+                    right_handed=reduction_parameters.right_handed,
+                    pa=pa)
+            else:
+                regressor_pool_mask_global = regressor_pool_mask.copy()
+            if verbose:
+                print("Number of reference pixel: {}".format(np.sum(regressor_pool_mask)))
+
+            if not local_model:
+                if number_of_pca_regressors != 0:
+                    training_matrix = data[:, regressor_pool_mask_global]
+                    B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
+                        training_matrix, n_components=None, scaling=pca_scaling)
+                    B = B_full[:, :number_of_pca_regressors]
+                    # S = S_full[:number_of_pca_regressors]
+
+    if plot_all_diagnostics:
+        plotting_tools.plot_scale(
+            np.median(data, axis=0),
+            output_path='diagnostic_plots/pixel_to_fit.png',
+            yx_coords=np.argwhere(reduction_mask),
+            point_size1=0.5,
+            plot_star_not_circle=False, scale='zscale', show=True)
+        plt.imshow(regressor_pool_mask, origin='lower')
+        plt.show()
+
+    reduction_pix_indeces = np.argwhere(reduction_mask)
+    test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
+
+    for idx, yx_pixel in enumerate(reduction_pix_indeces):
+        # Pixel data to fit
+        y = data[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
+        data_range_to_fit = np.ones_like(y).astype('bool')
+
+        # Lightcurve model fitting planet at pixel
+        if model is not None:
+            model_for_pixel = model[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
+            if local_model:
+                # Local models are experimental and should not be used without understanding
+                # the code
+                threshold_affected_data = 0.  # This threshold is for selecting which data to fit
+                data_range_to_fit = model_for_pixel > maximum_counts * threshold_affected_data
+                model_for_pixel = model_for_pixel[data_range_to_fit]
+
+                maximum_number_of_components = np.sum(data_range_to_fit)
+                number_of_pca_regressors = int(
+                    np.round(reduction_parameters.number_of_components_fraction * maximum_number_of_components))
+                if number_of_pca_regressors < 1:
+                    number_of_pca_regressors = 1
+                print("Number of components used: {}".format(number_of_pca_regressors))
+
+        y = y[data_range_to_fit]
+
+        if not compute_inverse_once:
+            if local_model:
+                regressor_pool_mask = regressor_pool_mask_global.copy()
+                locally_unaffected = np.all(model[data_range_to_fit] == 0., axis=0)
+                local_regressors = np.logical_and(reduction_mask, locally_unaffected)
+                regressor_pool_mask[local_regressors] = True
+
+            training_matrix = data[data_range_to_fit][:, regressor_pool_mask]  # .copy()
+
+            if number_of_pca_regressors != 0:
+                B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
+                    training_matrix, n_components=None, scaling=pca_scaling)
+                B = B_full[:, :number_of_pca_regressors]
+        constant_offset = np.ones_like(y)
+        if number_of_pca_regressors != 0:
+            if model is None:
+                A = np.hstack((B, constant_offset[:, None]))
+            else:
+                model_matrix = np.vstack((constant_offset, model_for_pixel))
+                A = np.hstack((B, model_matrix.T))
+        else:
+            if model is None:
+                A = constant_offset[:, None]
+            else:
+                model_matrix = np.vstack((constant_offset, model_for_pixel))
+                A = model_matrix.T
+
+        if reduction_parameters.include_noise:
+            if variance_reduction_area is not None:
+                variance_vector = variance_reduction_area[:, idx]
+                inverse_covariance_matrix = np.identity(len(y)) * (1. / variance_vector)
+            else:
+                inverse_covariance_matrix = np.identity(len(y)) * (1. / y)
+        else:
+            inverse_covariance_matrix = None
+        # ipsh()
+        P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
+            design_matrix=A.T,
+            data=y,
+            inverse_covariance_matrix=inverse_covariance_matrix)
+
+        reconstructed_lightcurve = np.dot(A, P_wo_marginalization)
+
+        if model is None:
+            reconstructed_systematics = reconstructed_lightcurve
+        else:
+            reconstructed_systematics = np.dot(A[:, :-1], P_wo_marginalization[:-1])
+
+        P = P_wo_marginalization
+        P_sigma_squared = P_wo_sigma_squared
+
+        if make_reconstructed_lightcurve:
+            model_cube[data_range_to_fit, reduction_pix_indeces[idx, 0],
+                       reduction_pix_indeces[idx, 1]] = reconstructed_lightcurve
+            noise_model_cube[data_range_to_fit, reduction_pix_indeces[idx, 0],
+                             reduction_pix_indeces[idx, 1]] = reconstructed_systematics
+        else:
+            model_cube = None
+            noise_model_cube = None
+
+        if plot_all_diagnostics and model is not None:
+            if np.array_equal(yx_pixel, test_pixel):
+                print("Selected pixel: {}".format(yx_pixel))
+                mask_coordinates = np.argwhere(regressor_pool_mask)
+
+                plotting_tools.plot_scale(np.median(data, axis=0), yx_coords=mask_coordinates,
+                                          yx_coords2=[yx_pixel],  # , yx_center],
+                                          output_path='diagnostic_plots/regressor_selection_test2.pdf',
+                                          point_size1=0.5,
+                                          point_size2=3,
+                                          show_cb=False,
+                                          show=True)
+
+                plt.close()
+                plt.plot(y, label='data for pixel')
+                plt.xlabel('Frame')
+                plt.legend(loc='upper left')
+                plt.tight_layout()
+                plt.savefig('diagnostic_plots/pixel_data_test.jpg', dpi=300)
+
+                plt.close()
+                plt.plot(y, label='data for pixel')
+                plt.plot(model_for_pixel * reduction_parameters.true_contrast,
+                         color='green', label='planet contribution')
+                plt.xlabel('Frame')
+                plt.legend(loc='upper left')
+                plt.tight_layout()
+                plt.savefig('diagnostic_plots/pixel_with_planet_test.jpg', dpi=300)
+
+                plt.close()
+                fig, ax = plt.subplots(figsize=(9, 2))
+                ax.plot(model_for_pixel * reduction_parameters.true_contrast,
+                        label='planet contribution')
+                plt.xlabel('Frame')
+                plt.legend(loc='upper left')
+                plt.tight_layout()
+                plt.savefig('diagnostic_plots/planet_model_test.jpg', dpi=300)
+
+                plt.close()
+                fig, ax = plt.subplots(figsize=(9, 2))
+                ax.plot(y, label='data for pixel')
+                plt.xlabel('Frame')
+                plt.legend(loc='upper left')
+                plt.tight_layout()
+                plt.savefig('diagnostic_plots/data_for_pixel_long_test.jpg', dpi=300)
+
+                plt.close()
+                plt.style.use("paper")
+                fig = plt.figure()
+                ax = plt.subplot(111)
+                alpha = 0.7
+                ax.plot(y, label='data', color='blue', alpha=alpha)
+                ax.plot(reconstructed_lightcurve, label='complete model', color='orange', alpha=alpha)
+                ax.plot(reconstructed_systematics, label='reconstructed systematics',
+                        color='mediumseagreen', alpha=alpha)
+                ax.plot(model_for_pixel * P_wo_marginalization[-1],
+                        label='planet model fit', color='black', alpha=alpha)
+                ax.set_xlabel('Frame')
+                ax.set_ylabel('Counts (ADU)')
+                ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.25),
+                          ncol=2, fancybox=False, shadow=False)
+                plt.savefig('diagnostic_plots/fitted_data_test.pdf', bbox_inches='tight')  # dpi=300)
+
+                plt.close()
+                plt.plot(y - model_for_pixel * reduction_parameters.true_contrast,
+                         label='data minus planet model')
+                plt.plot(reconstructed_systematics, label='fit of systematics')
+                plt.xlabel('Frame')
+                plt.legend(loc='upper left')
+                plt.tight_layout()
+                plt.savefig('diagnostic_plots/data_minus_model_fit_test.jpg', dpi=300)
+
+                plt.close()
+                plt.plot(y - reconstructed_lightcurve, label='residuals')
+                plt.xlabel('Frame')
+                plt.legend(loc='upper left')
+                plt.tight_layout()
+                plt.savefig('diagnostic_plots/residuals_test.jpg', dpi=300)
+
+                fig = plt.figure()
+                ax = plt.subplot(111)
+                for i in range(5):
+                    ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)
+                            [-1] + 0.1 * i, label=i)  # + 1 * i, label=i)
+                handles, labels = ax.get_legend_handles_labels()
+                ax.legend(handles[::-1], labels[::-1], loc='upper right')
+                plt.title('Principal component lightcurves')
+                # plt.ylim(-1, 5)
+                plt.xlim(0, 300)
+                plt.savefig('diagnostic_plots/principal_component_lightcurves_test.png', dpi=300)
+
+        if model is not None:
+            diagnostic_image[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]] = (
+                P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1], P[0])
+            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
+
+    # This is not correct for local model, the range to fit is different for each pixel and should be added to
+    # a uniform cube, and later take into account ignoring Nans!
+    if make_reconstructed_lightcurve:
+        residuals = (data[data_range_to_fit][:, reduction_mask] - model_cube[data_range_to_fit][:, reduction_mask]).T
+    else:
+        residuals = None
+
+    if not reduction_parameters.reduce_single_position:
+        model_cube = None
+
+    if return_input_data:
+        data_save = data
+    else:
+        data_save = None
+
+    result = Result(
+        data=data_save,
+        model_cube=model_cube,
+        noise_model_cube=noise_model_cube,
+        diagnostic_image=diagnostic_image,
+        reduced_result=reduced_result,
+        reduction_mask=reduction_mask,
+        residuals=residuals,
+        number_of_pca_regressors=number_of_pca_regressors,
+        true_contrast=true_contrast,
+        yx_center=yx_center,
+        compute_residual_correlation=reduction_parameters.compute_residual_correlation,
+        use_residual_correlation=reduction_parameters.use_residual_correlation)
+
+    return result
+
+
+def run_trap_with_model_temporal_optimized(
+        data, model, pa, reduction_parameters,
+        reduction_mask,
+        variance_reduction_area=None,
+        regressor_matrix=None,
+        regressor_pool_mask=None):
+    """Core function of the TRAP analysis. Builds the temporal regression
+    model and perform model fitting for all time series vectors in the
+    `reduction_mask` as described in Samland et al. 2020.
+
+    Parameters
+    ----------
+    data : array_like
+        Temporal image cube. First axis is time.
+    model : array_like, optional
+        Temporal image cube containing the companion model.
+    pa : array_like
+        Vector containing the parallactic angles for each frame.
+    reduction_parameters : `~trap.parameters.Reduction_parameters`
+        A `~trap.parameters.Reduction_parameters` object all parameters
+        necessary for the TRAP pipeline.
+    reduction_mask : array_like
+        Boolean mask of data included in the reduction
+        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+    variance_reduction_area : array_like, optional
+        Variance for pixels in `reduction_mask`. Use if `include_noise`
+        in `reduction_parameters` is True.
+    regressor_matrix : array_like, optional
+        Pre-computed regressor matrix. If not given regressor_matrix
+        will be made using the provided masks.
+    regressor_pool_mask : array_like, optional
+        Boolean mask of pixels to include as regressors.
+        If None, `regressor_pool_mask` will be constructed from provided
+        masks.
+
+    Returns
+    -------
+    ~trap.analyze_data.Result
+        Regression results for all pixels contained in the `reduction_mask`
+        for a single tested planet position.
+
+    """
+
+    ntime = data.shape[0]
+
+    n_reduction_pix = np.sum(reduction_mask)
+    reduced_result = np.empty((n_reduction_pix, 2))
+    fitted_model = np.empty((n_reduction_pix, ntime))
+    # reduced_result[:] = np.nan
+
+    reduction_pix_indeces = np.argwhere(reduction_mask)
+    # EDIT: !!!!!!!
+    # Provide pre-stacked training matrix, only add model on top!
+    training_matrix = data[:, regressor_pool_mask]
+    B_full, _, _, _ = pca_regression.compute_SVD(
+        training_matrix, n_components=None,
+        scaling=reduction_parameters.pca_scaling)
+    B = B_full[:, :reduction_parameters.number_of_pca_regressors]
+    constant_offset = np.ones(ntime)
+
+    for idx, yx_pixel in enumerate(reduction_pix_indeces):
+        # Pixel data to fit
+        y = data[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
+        # Lightcurve model fitting planet at pixel
+        model_for_pixel = model[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
+
+        if reduction_parameters.number_of_pca_regressors != 0:
+            model_matrix = np.vstack((constant_offset, model_for_pixel))
+            A = np.hstack((B, model_matrix.T))
+        else:
+            model_matrix = np.vstack((constant_offset, model_for_pixel))
+            A = model_matrix.T
+
+        if reduction_parameters.include_noise:
+            if variance_reduction_area is not None:
+                variance_vector = variance_reduction_area[:, idx]
+                inverse_covariance_matrix = np.identity(len(y)) * (1. / variance_vector)
+            else:
+                inverse_covariance_matrix = np.identity(len(y)) * (1. / y)
+        else:
+            inverse_covariance_matrix = None
+
+        P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
+            design_matrix=A.T,
+            data=y,
+            inverse_covariance_matrix=inverse_covariance_matrix)
+
+        reconstructed_lightcurve = np.dot(A, P)
+        fitted_model[idx] = reconstructed_lightcurve
+
+        reduced_result[idx] = (P[-1], P_sigma_squared[-1])
+
+    residuals = (data[:, reduction_mask].T - fitted_model)
+
+    result = Result(
+        data=None,
+        model_cube=None,
+        noise_model_cube=None,
+        diagnostic_image=None,
+        reduced_result=reduced_result,
+        reduction_mask=None,
+        residuals=residuals,
+        number_of_pca_regressors=reduction_parameters.number_of_pca_regressors,
+        true_contrast=None,
+        yx_center=None,
+        compute_residual_correlation=reduction_parameters.compute_residual_correlation,
+        use_residual_correlation=reduction_parameters.use_residual_correlation)
+
+    result.compute_contrast_weighted_average(mask_outliers=True)
+    # Get rid of arrays for to save memory when accomulating results for many models
+    result.residuals = None
+    result.reduced_result = None
     return result

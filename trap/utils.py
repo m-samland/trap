@@ -5,18 +5,146 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+from asyncio import Event
+from typing import Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.fft as fft
-
+import ray
 from numba import njit
+from numpy.random import default_rng
+from ray.actor import ActorHandle
 from scipy.ndimage.interpolation import spline_filter
 from scipy.signal import medfilt
 from tqdm import tqdm
 from trap import regressor_selection
-
 from trap.embed_shell import ipsh
+
+
+@ray.remote
+class ProgressBarActor:
+    counter: int
+    delta: int
+    event: Event
+
+    def __init__(self) -> None:
+        self.counter = 0
+        self.delta = 0
+        self.event = Event()
+
+    def update(self, num_items_completed: int) -> None:
+        """Updates the ProgressBar with the incremental
+        number of items that were just completed.
+        """
+        self.counter += num_items_completed
+        self.delta += num_items_completed
+        self.event.set()
+
+    async def wait_for_update(self) -> Tuple[int, int]:
+        """Blocking call.
+
+        Waits until somebody calls `update`, then returns a tuple of
+        the number of updates since the last call to
+        `wait_for_update`, and the total number of completed items.
+        """
+        await self.event.wait()
+        self.event.clear()
+        saved_delta = self.delta
+        self.delta = 0
+        return saved_delta, self.counter
+
+    def get_counter(self) -> int:
+        """
+        Returns the total number of complete items.
+        """
+        return self.counter
+
+# Back on the local node, once you launch your remote Ray tasks, call
+# `print_until_done`, which will feed everything back into a `tqdm` counter.
+
+
+class ProgressBar:
+    progress_actor: ActorHandle
+    total: int
+    description: str
+    pbar: tqdm
+
+    def __init__(self, total: int, description: str = ""):
+        # Ray actors don't seem to play nice with mypy, generating
+        # a spurious warning for the following line,
+        # which we need to suppress. The code is fine.
+        self.progress_actor = ProgressBarActor.remote()  # type: ignore
+        self.total = total
+        self.description = description
+
+    @property
+    def actor(self) -> ActorHandle:
+        """Returns a reference to the remote `ProgressBarActor`.
+
+        When you complete tasks, call `update` on the actor.
+        """
+        return self.progress_actor
+
+    def print_until_done(self) -> None:
+        """Blocking call.
+
+        Do this after starting a series of remote Ray tasks, to which you've
+        passed the actor handle. Each of them calls `update` on the actor.
+        When the progress meter reaches 100%, this method returns.
+        """
+        pbar = tqdm(desc=self.description, total=self.total)
+        while True:
+            delta, counter = ray.get(self.actor.wait_for_update.remote())
+            pbar.update(delta)
+            if counter >= self.total:
+                pbar.close()
+                return
+
+
+def shuffle_and_equalize_relative_positions(
+        relative_coords, number_of_chunks, max_separation_deviation=2, max_iterations=50,
+        rng=None):
+    """ Shuffle position array to try and equalize computation time for each chunk.
+        Reshuffle until average separation in each chunk is within 'max_separation_deviation'.
+        This is not perfect, but it will prevent cases of very bad luck
+        In case the criterion is not reached after 'max_iterations' (it may be impossible)
+        stop shuffling and return current array.
+
+    Parameters
+    ----------
+    relative_coords : type
+        Description of parameter `relative_coords`.
+    number_of_chunks : type
+        Description of parameter `number_of_chunks`.
+    max_separation_deviation : type
+        Description of parameter `max_separation_deviation`.
+    max_iterations : type
+        Description of parameter `max_iterations`.
+    rng : type
+        Description of parameter `rng`.
+
+    Returns
+    -------
+    type
+        Description of returned object.
+
+    """
+
+    if rng is None:
+        rng = default_rng(12345)
+    separation_equalized = False
+    avg_separations = np.empty(number_of_chunks)
+    iteration = 0
+    while not separation_equalized and iteration < max_iterations:
+        rng.shuffle(relative_coords, axis=0)
+        relative_coords_regions = np.array_split(relative_coords, number_of_chunks)
+        for idx, region in enumerate(relative_coords_regions):
+            avg_separations[idx] = np.mean(np.linalg.norm(region, axis=1))
+        iteration += 1
+        if np.all(np.abs(np.mean(avg_separations) - avg_separations)) < max_separation_deviation:
+            separation_equalized = True
+    return relative_coords, relative_coords_regions, iteration, separation_equalized
 
 
 def gen_bad_pix_mask(image, filsize=5, threshold=5.0, return_smoothed_image=False):
@@ -435,3 +563,22 @@ def exponential_squared_kernel(distance, length_scale):
 
 def sinc_kernel(distance):
     return np.sinc(distance)
+
+
+def aid(x):
+    # This function returns the memory
+    # block address of an array.
+    return x.__array_interface__['data'][0]
+
+
+def get_data_base(arr):
+    """For a given NumPy array, find the base array
+    that owns the actual data."""
+    base = arr
+    while isinstance(base.base, np.ndarray):
+        base = base.base
+    return base
+
+
+def arrays_share_data(x, y):
+    return get_data_base(x) is get_data_base(y)

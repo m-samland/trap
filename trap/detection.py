@@ -8,6 +8,7 @@ from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
 import os
+import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +17,7 @@ from astropy.modeling import fitting, models
 from astropy.nddata import Cutout2D
 from astropy.stats import mad_std
 from astropy.table import Table
+from astropy.io import fits
 # import seaborn as sns
 from matplotlib import rc, rcParams
 from matplotlib.backends.backend_pdf import PdfPages
@@ -24,6 +26,9 @@ from scipy import stats
 
 from trap import image_coordinates, regressor_selection
 from trap.embed_shell import ipsh
+
+import bottleneck as bn
+
 
 # plt.style.use("paper")
 
@@ -94,42 +99,52 @@ def make_radial_profile(data, radial_bounds=None, bin_width=3.,
 
             # Data on which statistic is applied
             annulus_data_1d = data[mask_wo_companion]
-
-            # Profile made for each pixel in separation
-            # For profile we need another mask that is only 1 pixel wide
-            if bin_width > 1:
-                r_in = separation - 0.5
-                r_out = separation + 0.5
-                if r_in < 0.5:
-                    r_in = 0.5
-                annulus_aperture = CircularAnnulus(
-                    xy_center, r_in=r_in, r_out=r_out)
-                annulus_mask = annulus_aperture.to_mask(method='center')
-                # Make sure only pixels are used for which data exists
-                mask = annulus_mask.to_image(data.shape) > 0
-                mask[int(xy_center[1]), int(xy_center[0])] = False
-
-            if operation == 'mad_std':
-                azimuthal_quantity = mad_std(annulus_data_1d, ignore_nan=True)
-            elif operation == 'median':
-                azimuthal_quantity = np.nanmedian(annulus_data_1d)
-            elif operation == 'mean':
-                azimuthal_quantity = np.nanmean(annulus_data_1d)
-            elif operation == 'min':
-                azimuthal_quantity = np.nanmin(annulus_data_1d)
-            elif operation == 'std':
-                azimuthal_quantity = np.nanstd(annulus_data_1d)
-            elif operation == 'percentiles':
-                azimuthal_quantity = np.nanpercentile(
-                    annulus_data_1d, [0.15, 2.5, 16, 50, 84, 97.5, 99.85])
+            all_nan = False
+            if bn.allnan(annulus_data_1d):
+                if operation == 'percentiles':
+                    azimuthal_quantity = np.ones(7) * np.nan
+                else:
+                    azimuthal_quantity = np.nan
+                all_nan = True
             else:
-                raise ValueError('Unknown operation: use mad_std, median, or mean')
-            values.append(azimuthal_quantity)
+                # Profile made for each pixel in separation
+                # For profile we need another mask that is only 1 pixel wide
+                if bin_width > 1:
+                    r_in = separation - 0.5
+                    r_out = separation + 0.5
+                    if r_in < 0.5:
+                        r_in = 0.5
+                    annulus_aperture = CircularAnnulus(
+                        xy_center, r_in=r_in, r_out=r_out)
+                    annulus_mask = annulus_aperture.to_mask(method='center')
+                    # Make sure only pixels are used for which data exists
+                    mask = annulus_mask.to_image(data.shape) > 0
+                    mask[int(xy_center[1]), int(xy_center[0])] = False
 
+                if operation == 'mad_std':
+                    azimuthal_quantity = mad_std(annulus_data_1d, ignore_nan=True)
+                elif operation == 'median':
+                    azimuthal_quantity = bn.nanmedian(annulus_data_1d)
+                elif operation == 'mean':
+                    azimuthal_quantity = bn.nanmean(annulus_data_1d)
+                elif operation == 'min':
+                    azimuthal_quantity = bn.nanmin(annulus_data_1d)
+                elif operation == 'std':
+                    azimuthal_quantity = bn.nanstd(annulus_data_1d)
+                elif operation == 'percentiles':
+                    azimuthal_quantity = np.nanpercentile(
+                        annulus_data_1d, [0.15, 2.5, 16, 50, 84, 97.5, 99.85])
+                else:
+                    raise ValueError('Unknown operation: use mad_std, median, or mean')
             if operation != 'percentiles':
                 profile[mask] = azimuthal_quantity
             else:
-                profile[mask] = azimuthal_quantity[3]  # Median
+                if all_nan:
+                    profile[mask] = np.nan
+                else:
+                    profile[mask] = azimuthal_quantity[3]
+
+            values.append(azimuthal_quantity)
 
     return profile, np.array(values)
 
@@ -184,16 +199,16 @@ def make_contrast_curve(detection_image, radial_bounds=None,
         detection_image[1], (radial_bounds[0], radial_bounds[1]),
         bin_width=bin_width,
         operation='min', known_companion_mask=detected_signal_mask)
-    contrast_norm_profile, contrast_norm_values = make_radial_profile(
-        detection_image[1], (radial_bounds[0], radial_bounds[1]),
-        bin_width=bin_width,
-        operation='std', known_companion_mask=detected_signal_mask)
+    # contrast_norm_profile, contrast_norm_values = make_radial_profile(
+    #     detection_image[1], (radial_bounds[0], radial_bounds[1]),
+    #     bin_width=bin_width,
+    #     operation='std', known_companion_mask=detected_signal_mask)
 
     # contrast_curve_table = np.vstack([np.arange(radial_bounds[0], radial_bounds[1])])
-    contrast_image = detection_image[1] * sigma * snr_norm_profile
-    median_contrast_image = median_uncertainty_profile * sigma * snr_norm_profile
-    percentile_contrast_curve = percentile_uncertainty_values * sigma * snr_norm[:, None]
-    min_contrast_curve = min_uncertainty_values * sigma * snr_norm
+    contrast_image = detection_image[1] * snr_norm_profile
+    median_contrast_image = median_uncertainty_profile * snr_norm_profile
+    percentile_contrast_curve = percentile_uncertainty_values * snr_norm[:, None]
+    min_contrast_curve = min_uncertainty_values * snr_norm
     normalized_detection_image = detection_image[2] / snr_norm_profile
     separation_pix = np.arange(radial_bounds[0], radial_bounds[1])
     separation_mas = np.arange(radial_bounds[0], radial_bounds[1]) * pixel_scale
@@ -247,7 +262,7 @@ def convert_flux(contrast, convert=False):
 
 
 def add_contrast_curve_to_ax(
-        ax0, contrast_table, color='#1b1cd5',
+        ax0, contrast_table, sigma=5, color='#1b1cd5',
         linestyle='-', curvelabel=None,
         convert_to_mag=False, plot_percentiles=True,
         plot_dashed_outline=True,
@@ -264,33 +279,33 @@ def add_contrast_curve_to_ax(
         linestyle = '-'
 
     ax0.plot(contrast_table['sep (pix)'],
-             convert_flux(contrast_table['contrast_50'], convert=convert_to_mag).data,
+             convert_flux(contrast_table['contrast_50']*sigma, convert=convert_to_mag).data,
              color=color, linestyle=linestyle, label=label.format(curvelabel))  # plotting y versus x
     if plot_percentiles:
         ax0.fill_between(
             contrast_table['sep (pix)'],
-            convert_flux(contrast_table['contrast_16'], convert=convert_to_mag),
-            convert_flux(contrast_table['contrast_84'], convert=convert_to_mag),
+            convert_flux(contrast_table['contrast_16']*sigma, convert=convert_to_mag),
+            convert_flux(contrast_table['contrast_84']*sigma, convert=convert_to_mag),
             alpha=percentile_1sigma_alpha, color=color)  # shade the area between +- 1 sigma
         if plot_dashed_outline:
             ax0.plot(contrast_table['sep (pix)'],
-                     convert_flux(contrast_table['contrast_16'].data, convert=convert_to_mag).data,
+                     convert_flux(contrast_table['contrast_16']*sigma, convert=convert_to_mag).data,
                      color=color, alpha=percentile_1sigma_alpha, linestyle='--', label=None)  # plotting y versus x
             ax0.plot(contrast_table['sep (pix)'],
-                     convert_flux(contrast_table['contrast_84'], convert=convert_to_mag).data,
+                     convert_flux(contrast_table['contrast_84']*sigma, convert=convert_to_mag).data,
                      color=color, alpha=percentile_1sigma_alpha, linestyle='--', label=None)  # plotting y versus x
 
         if percentile_2sigma_alpha > 0:
             ax0.fill_between(
                 contrast_table['sep (pix)'],
-                convert_flux(contrast_table['contrast_84'], convert=convert_to_mag),
-                convert_flux(contrast_table['contrast_97.5'], convert=convert_to_mag),
+                convert_flux(contrast_table['contrast_84']*sigma, convert=convert_to_mag),
+                convert_flux(contrast_table['contrast_97.5']*sigma, convert=convert_to_mag),
                 alpha=percentile_2sigma_alpha, color=color)
         if percentile_3sigma_alpha > 0:
             ax0.fill_between(
                 contrast_table['sep (pix)'],
-                convert_flux(contrast_table['contrast_2.5'], convert=convert_to_mag),
-                convert_flux(contrast_table['contrast_16'], convert=convert_to_mag),
+                convert_flux(contrast_table['contrast_2.5']*sigma, convert=convert_to_mag),
+                convert_flux(contrast_table['contrast_16']*sigma, convert=convert_to_mag),
                 alpha=percentile_3sigma_alpha, color=color)
     return ax0
 
@@ -304,7 +319,7 @@ def plot_contrast_curve(
         plot_vertical_lod=False,
         mirror_axis='mas', convert_to_mag=False,
         yscale='linear', savefig=None,
-        sigma_label=5,
+        sigma=5,
         radial_bound=None,
         plot_percentiles=True,
         plot_dashed_outline=True,
@@ -339,16 +354,18 @@ def plot_contrast_curve(
     # Add contrast curve(s) to axis
     for idx, contrast_curve in enumerate(contrast_table):
         if curvelabels[idx] is None:
-            curvelabel = 'median'
+            curvelabel = ''
         else:
             curvelabel = curvelabels[idx]
 
         if wavelengths[idx] is not None and add_wavelength_label:
-            curvelabel = curvelabel + " ({:.2f} ".format(wavelengths[idx].value) \
-                + wavelengths.unit.to_string() + ")"
+            curvelabel = curvelabel + "{:.2f} ".format(wavelengths[idx].value) \
+                + wavelengths.unit.to_string() + ""
 
         ax0 = add_contrast_curve_to_ax(
-            ax0, contrast_curve, color=colors[idx],
+            ax0, contrast_curve,
+            sigma=sigma,
+            color=colors[idx],
             linestyle=linestyles[idx], curvelabel=curvelabel,
             convert_to_mag=convert_to_mag,
             plot_percentiles=plot_percentiles,
@@ -413,9 +430,9 @@ def plot_contrast_curve(
 
     ax0.set_xlabel("Separation (pixel)")
     if convert_to_mag:
-        ax0.set_ylabel("{}$\sigma$ contrast (mag)".format(sigma_label))
+        ax0.set_ylabel("{}$\sigma$ contrast (mag)".format(sigma))
     else:
-        ax0.set_ylabel("{}$\sigma$ contrast".format(sigma_label))
+        ax0.set_ylabel("{}$\sigma$ contrast".format(sigma))
 
     ax0.set_xlim(xmin, xmax + x_text_shift)  # set ticks visible, if using sharex = True. Not needed otherwise
 
@@ -510,7 +527,6 @@ def plot_contrast_curve_ratio(
         plot_vertical_lod=False,
         mirror_axis='mas', convert_to_mag=False,
         yscale='linear', savefig=None,
-        sigma_label=5,
         radial_bound=None,
         plot_percentiles=True,
         percentile_1sigma_alpha=0.6,
@@ -540,13 +556,13 @@ def plot_contrast_curve_ratio(
     # Add contrast curve(s) to axis
     for idx, contrast_curve in enumerate(contrast_table):
         if curvelabels[idx] is None:
-            curvelabel = 'median'
+            curvelabel = ''
         else:
             curvelabel = curvelabels[idx]
 
         if wavelengths[idx] is not None and add_wavelength_label:
-            curvelabel = curvelabel + " ({:.2f} ".format(wavelengths[idx].value) \
-                + wavelengths.unit.to_string() + ")"
+            curvelabel = "{:.2f}".format(wavelengths[idx].value) \
+                + wavelengths.unit.to_string() + ""
         ax0 = add_contrast_curve_to_ax(
             ax0, contrast_curve, color=colors[idx],
             linestyle=linestyles[idx], curvelabel=curvelabel,
@@ -737,9 +753,10 @@ def plot_distribution(detection_image, radial_bounds=None,
     plt.show()
 
 
-def fit_planet_detection(
+def fit_2d_gaussian(
         image, yx_position=None, yx_center=None, x_stddev=2., y_stddev=2.,
         box_size=7, mask_deviating=False, deviation_threshold=0.2):
+
     # spot fitting
     if yx_position is None:
         cy, cx = np.unravel_index(np.argmax(image), image.shape)
@@ -754,8 +771,7 @@ def fit_planet_detection(
         x_mean=yx_position_cutout[1],
         y_mean=yx_position_cutout[0],
         x_stddev=x_stddev,
-        y_stddev=y_stddev,
-        theta=0.785)  # + models.Const2D(amplitude=stamp.min())
+        y_stddev=y_stddev)  # + models.Const2D(amplitude=stamp.min())
     fitter = fitting.LevMarLSQFitter()
     par = fitter(g_init, xx, yy, cutout.data)
     model = par(xx, yy)
@@ -778,10 +794,17 @@ def fit_planet_detection(
     xy_fit_position_orig = cutout.to_original_position((par.x_mean.value, par.y_mean.value))
     yx_fit_position_orig = xy_fit_position_orig[::-1]
     yx_fit_relative = (xy_fit_position_orig[1] - yx_center[0], xy_fit_position_orig[0] - yx_center[1])
-    return par, model, cutout.data, yx_fit_position_orig, yx_fit_relative
+
+    parameters = {
+        'parameters': par, 'model': model, 'cutout': cutout.data,
+        'yx_fit_position_orig': yx_fit_position_orig,
+        'yx_fit_relative': yx_fit_relative
+    }
+
+    return parameters
 
 
-def plot_planet_detection(model, stamp):
+def plot_model_and_data(model, stamp):
     plt.close()
     plt.figure(200)
     plt.imshow(model, origin='lower', interpolation='nearest')

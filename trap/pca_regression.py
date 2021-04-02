@@ -34,8 +34,6 @@ def matrix_scaling(matrix, scaling):
     trigger the robust implementations of those algorithms.
     """
 
-    if scaling is None:
-        pass
     if scaling == 'temp-mean':
         matrix = preprocessing.scale(matrix, with_mean=True, with_std=False)
     elif scaling == 'spat-mean':
@@ -66,8 +64,8 @@ def compute_SVD(training_matrix, n_components, scaling='temp-median', compute_ro
         Assumes the training matrix to be (n_time, n_pixel) in the context of this package.
 
     """
-
-    training_matrix = matrix_scaling(training_matrix, scaling=scaling)  # 'temp-standard
+    if scaling is not None:
+        training_matrix = matrix_scaling(training_matrix, scaling=scaling)  # 'temp-standard
     U, S, V = np.linalg.svd(training_matrix, full_matrices=False)
     # Uf, Sf, Vf = np.linalg.svd(training_matrix, full_matrices=True)
     # Ut, St, Vt = np.linalg.svd(training_matrix.T, full_matrices=True)

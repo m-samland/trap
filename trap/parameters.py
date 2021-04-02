@@ -75,9 +75,10 @@ class Instrument(object):
             self.compute_fwhm()
 
     def compute_fwhm(self):
-        angle = (self.wavelengths / self.telescope_diameter).to(
-            u.mas, equivalencies=u.dimensionless_angles())
-        self.fwhm = angle.to(u.pixel, self.pixel_scale)
+        if self.wavelengths is not None:
+            angle = (self.wavelengths / self.telescope_diameter).to(
+                u.mas, equivalencies=u.dimensionless_angles())
+            self.fwhm = angle.to(u.pixel, self.pixel_scale)
 
 
 class Reduction_parameters(object):
