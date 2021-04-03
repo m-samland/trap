@@ -103,7 +103,7 @@ class ProgressBar:
 
 
 def shuffle_and_equalize_relative_positions(
-        relative_coords, number_of_chunks, max_separation_deviation=2, max_iterations=50,
+        absolute_coordinates, relative_coordinates, number_of_chunks, max_separation_deviation=2, max_iterations=50,
         rng=None):
     """ Shuffle position array to try and equalize computation time for each chunk.
         Reshuffle until average separation in each chunk is within 'max_separation_deviation'.
@@ -131,20 +131,25 @@ def shuffle_and_equalize_relative_positions(
 
     """
 
+    assert len(absolute_coordinates) == len(relative_coordinates)
+
     if rng is None:
         rng = default_rng(12345)
     separation_equalized = False
     avg_separations = np.empty(number_of_chunks)
     iteration = 0
     while not separation_equalized and iteration < max_iterations:
-        rng.shuffle(relative_coords, axis=0)
-        relative_coords_regions = np.array_split(relative_coords, number_of_chunks)
+        p = rng.permutation(len(absolute_coordinates))
+        # rng.shuffle(relative_coordinates, axis=0)
+        absolute_coordinates = absolute_coordinates[p]
+        relative_coordinates = relative_coordinates[p]
+        relative_coords_regions = np.array_split(relative_coordinates, number_of_chunks)
         for idx, region in enumerate(relative_coords_regions):
             avg_separations[idx] = np.mean(np.linalg.norm(region, axis=1))
         iteration += 1
         if np.all(np.abs(np.mean(avg_separations) - avg_separations)) < max_separation_deviation:
             separation_equalized = True
-    return relative_coords, relative_coords_regions, iteration, separation_equalized
+    return absolute_coordinates, relative_coordinates, relative_coords_regions, iteration, separation_equalized
 
 
 def gen_bad_pix_mask(image, filsize=5, threshold=5.0, return_smoothed_image=False):

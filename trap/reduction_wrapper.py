@@ -493,8 +493,9 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         # Use more chunks than CPUs to prevent long idle time in case one job finishes quicker
         number_of_chunks = round(reduction_parameters.ncpus * 2)
 
-        relative_coords, relative_coords_regions, iteration, separation_equalized = shuffle_and_equalize_relative_positions(
-            relative_coords, number_of_chunks, max_separation_deviation=2, max_iterations=50, rng=None)
+        search_coordinates, relative_coords, relative_coords_regions, iteration, separation_equalized = shuffle_and_equalize_relative_positions(
+            search_coordinates, relative_coords, number_of_chunks,
+            max_separation_deviation=2, max_iterations=50, rng=None)
         print('Number of positions per chunk: {}'.format(len(relative_coords_regions[0])))
 
         a = datetime.datetime.now()
