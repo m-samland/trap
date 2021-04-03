@@ -9,26 +9,27 @@ from __future__ import (absolute_import, division, print_function,
 
 import os
 import pickle
+from glob import glob
 
+import bottleneck as bn
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from astropy import units as u
+from astropy.io import fits
 from astropy.modeling import fitting, models
 from astropy.nddata import Cutout2D
 from astropy.stats import mad_std
 from astropy.table import Table
-from astropy.io import fits
 # import seaborn as sns
 from matplotlib import rc, rcParams
 from matplotlib.backends.backend_pdf import PdfPages
+from natsort import natsorted
 from photutils import CircularAnnulus
 from scipy import stats
-
 from trap import image_coordinates, regressor_selection
 from trap.embed_shell import ipsh
-
-import bottleneck as bn
-
+from trap.utils import compute_empirical_correlation_matrix
 
 # plt.style.use("paper")
 
@@ -811,3 +812,291 @@ def plot_model_and_data(model, stamp):
     plt.figure(300)
     plt.imshow(stamp, origin='lower', interpolation='nearest')
     plt.show()
+
+
+class DetectionAnalysis(object):
+    """ """
+
+    def __init__(
+            self,
+            result_folder=None,
+            detection_images=None,
+            wavelength_indices=None,
+            instrument=None,
+            reduction_parameters=None):
+        """
+
+        """
+
+        self.detection_images = detection_images
+        self.wavelength_indices = wavelength_indices
+        self.instrument = instrument
+        self.reduction_parameters = reduction_parameters
+        self.detected_signal_mask = None
+
+        if instrument is not None:
+            self.instrument.compute_fwhm()
+
+    def read_output(
+            self, component_fraction, result_folder=None,
+            reduction_type='temporal', correlation=False,
+            read_parameters=True):
+        if result_folder is None:
+            self.result_folder = self.reduction_parameters.result_folder
+        else:
+            self.result_folder = result_folder
+
+        if read_parameters:
+            with open(os.path.join(result_folder, "reduction_parameters.obj"), 'rb') as handle:
+                self.reduction_parameters = pickle.load(handle)
+
+            with open(os.path.join(result_folder, "instrument.obj"), 'rb') as handle:
+                self.instrument = pickle.load(handle)
+            self.instrument.compute_fwhm()
+
+        if correlation:
+            detection_image_name = "detection_corr_lam"
+        else:
+            detection_image_name = "detection_lam"
+
+        glob_pattern = os.path.join(
+            self.result_folder,
+            detection_image_name + "*frac{:.2f}_{}.fits".format(component_fraction, reduction_type))
+        detection_file_paths = natsorted(glob(glob_pattern))
+
+        assert len(detection_file_paths) > 0, "No output files found for:\n{}.".format(glob_pattern)
+
+        # Read in data
+        detection_cube = []
+        for file in detection_file_paths:
+            detection_cube.append(fits.getdata(file))
+        self.detection_cube = np.array(detection_cube)
+
+        # Determine indices reduced
+        filenames = [os.path.basename(file_path) for file_path in detection_file_paths]
+        character_index = filenames[0].find('lam')
+        self.wavelength_indices = np.array(
+            [int(file[character_index+3:character_index+5]) for file in filenames])
+
+        # Remove wavelength from name
+        # Add ouput paths to class
+        self.file_paths = {}
+        self.basename = filenames[0].replace('_lam{:02d}'.format(self.wavelength_indices[0]), '')
+        self.file_paths['detection_image_path'] = os.path.join(
+            self.result_folder, self.basename)
+        self.file_paths['norm_detection_image_path'] = os.path.join(
+            self.result_folder, self.basename.replace('detection', 'norm_detection'))
+        self.file_paths['contrast_table_path'] = os.path.join(
+            self.result_folder, self.basename.replace('detection', 'contrast_table'))
+        self.file_paths['contrast_image_path'] = os.path.join(
+            self.result_folder, self.basename.replace('detection', 'contrast_image'))
+        self.file_paths['median_contrast_image_path'] = os.path.join(
+            self.result_folder, self.basename.replace('detection', 'median_contrast_image'))
+        self.file_paths['contrast_plot_path'] = os.path.join(
+            self.result_folder, os.path.splitext(self.basename)[0].replace('detection', 'contrast_plot') + '.jpg')
+
+        if not os.path.exists(self.file_paths['detection_image_path']):
+            fits.writeto(
+                self.file_paths['detection_image_path'], self.detection_cube, overwrite=True)
+
+    def contrast_table_and_normalization(self, detection_cube=None, save=True, overwrite=True):
+
+        if detection_cube is None:
+            detection_cube_used = self.detection_cube
+
+        detection_products = {}
+        normalized_detection_cube = []
+        contrast_tables = []
+        contrast_cube = []
+        median_contrast_cube = []
+
+        self.pixel_scale_mas = (1 * u.pixel).to(u.mas, self.instrument.pixel_scale).value
+
+        for detection_image in detection_cube_used:
+            normalized_detection_image, contrast_table, contrast_image, median_contrast_image = make_contrast_curve(
+                detection_image,
+                radial_bounds=None,
+                bin_width=self.reduction_parameters.normalization_width,
+                sigma=self.reduction_parameters.contrast_curve_sigma,
+                companion_mask_radius=self.reduction_parameters.companion_mask_radius,
+                pixel_scale=self.pixel_scale_mas,
+                yx_known_companion_position=self.reduction_parameters.yx_known_companion_position)
+            normalized_detection_cube.append(normalized_detection_image)
+            contrast_tables.append(contrast_table)
+            contrast_cube.append(contrast_image)
+            median_contrast_cube.append(median_contrast_image)
+
+        detection_products['normalized_detection_cube'] = np.array(normalized_detection_cube)
+        detection_products['contrast_cube'] = np.array(contrast_cube)
+        detection_products['contrast_tables'] = contrast_tables
+        detection_products['median_contrast_cube'] = np.array(median_contrast_cube)
+
+        if save:
+            fits.writeto(
+                self.file_paths['norm_detection_image_path'],
+                detection_products['normalized_detection_cube'],
+                overwrite=overwrite)
+            fits.writeto(
+                self.file_paths['contrast_image_path'],
+                detection_products['contrast_cube'],
+                overwrite=overwrite)
+            fits.writeto(
+                self.file_paths['median_contrast_image_path'],
+                detection_products['median_contrast_cube'],
+                overwrite=overwrite)
+
+            with open(self.file_paths['contrast_table_path'], 'wb') as handle:
+                pickle.dump(
+                    detection_products['contrast_tables'], handle,
+                    protocol=4)
+
+        if detection_cube is None:
+            self.detection_products = detection_products
+        else:
+            return detection_products
+
+    def contrast_plot(self, savefig=True, show=False):
+
+        colors = plt.cm.viridis(np.linspace(0, 1, len(self.wavelength_indices)))
+        if savefig:
+            figure_path = self.file_paths['contrast_plot_path']
+        else:
+            figure_path = None
+
+        plot_contrast_curve(
+            self.detection_products['contrast_tables'],
+            instrument=self.instrument,
+            # [wavelength_index:wavelength_index + 1],
+            wavelengths=self.instrument.wavelengths[self.wavelength_indices],
+            add_wavelength_label=True,
+            curvelabels=np.array([None]).repeat(len(self.wavelength_indices)),
+            linestyles=np.array(['-']).repeat(len(self.wavelength_indices)),
+            colors=colors,  # ['#1b1cd5'],  # '#de650a', '#ba174e'],
+            plot_vertical_lod=True, mirror_axis='mas',
+            convert_to_mag=False, yscale='log',
+            savefig=figure_path,  # contrast_plot_path[key],
+            show=show)
+
+    def mask_companions_in_detection(self, mask_size=None):
+
+        yx_known_companion_position = self.reduction_parameters.yx_known_companion_position
+        yx_dim = (self.detection_image.shape[-2], self.detection_image.shape[-1])
+
+        if yx_known_companion_position is not None:
+            yx_known_companion_position = np.array(yx_known_companion_position)
+            if yx_known_companion_position.ndim == 1:
+                self.detected_signal_mask = regressor_selection.make_signal_mask(
+                    yx_dim, yx_known_companion_position, self.reduction_parameters.companion_mask_radius,
+                    relative_pos=True, yx_center=None)
+            elif yx_known_companion_position.ndim == 2:
+                detected_signal_masks = []
+                for yx_pos in yx_known_companion_position:
+                    detected_signal_masks.append(
+                        regressor_selection.make_signal_mask(
+                            yx_dim, yx_pos, self.reduction_parameters.companion_mask_radius,
+                            relative_pos=True, yx_center=None))
+                self.detected_signal_mask = np.logical_or.reduce(detected_signal_masks)
+            else:
+                raise ValueError("Dimensionality of known companion positions for contrast curve too large.")
+        else:
+            self.detection_signal_mask = np.zeros([yx_dim[0], yx_dim[1]]).astype('bool')
+
+    def measure_spectral_correlation(self, radial_bounds=None, bin_width=3,
+                                     yx_center=None, known_companion_mask=None):
+
+        yx_dim = [self.detection_cube.shape[-2], self.detection_cube.shape[-1]]
+        separations_used = []
+        empirical_correlation_matrices = []
+        empirical_correlation = {}
+
+        self.detection_cube[self.detection_cube == 0.] = np.nan
+
+        if radial_bounds is None:
+            separation_max = self.detection_cube.shape[-1] // 2 * np.sqrt(2)
+            radial_bounds = [1, int(separation_max)]
+
+        if yx_center is None:
+            yx_center = (self.detection_cube.shape[-2] // 2., self.detection_cube.shape[-1] // 2.)
+        xy_center = yx_center[::-1]
+
+        # Determine first non-zero separation, to prevent results below IWA
+        inner_bound_index = int(yx_center[0] + radial_bounds[0])
+        try:
+            non_zero_separation = radial_bounds[0] + np.max(
+                np.argwhere(np.isnan(self.detection_cube[0, 0][inner_bound_index:inner_bound_index + 15,
+                                                               int(yx_center[1])]))) + 1
+        except ValueError:
+            non_zero_separation = 0
+        if non_zero_separation > radial_bounds[0] + 13:
+            non_zero_separation = 0
+
+        separations = np.arange(radial_bounds[0], radial_bounds[1])
+
+        for idx, separation in enumerate(separations):
+            # annulus_data = annulus_mask[0].multiply(data)
+            # mask = annulus_mask[0].to_image(data.shape) > 0
+            r_in = separation - bin_width / 2.
+            r_out = separation + bin_width / 2.
+            if r_in < 0.5:
+                r_in = 0.5
+            annulus_aperture = CircularAnnulus(
+                xy_center, r_in=r_in, r_out=r_out)
+            annulus_mask = annulus_aperture.to_mask(method='center')
+            # Make sure only pixels are used for which data exists
+            mask = annulus_mask.to_image(yx_dim) > 0
+            mask[int(xy_center[1]), int(xy_center[0])] = False
+
+            if known_companion_mask is None:
+                mask_computation_annulus = mask
+            else:
+                mask_computation_annulus = np.logical_and(mask, ~known_companion_mask)
+
+            annulus_data_1d = self.detection_cube[:, 0, mask_computation_annulus]
+
+            if np.all(np.isfinite(annulus_data_1d)):
+                psi_ij = compute_empirical_correlation_matrix(annulus_data_1d)
+                empirical_correlation_matrices.append(psi_ij)
+                separations_used.append(separation)
+
+        empirical_correlation['separation'] = np.array(separations_used)
+        empirical_correlation['matrices'] = np.array(empirical_correlation_matrices)
+
+        self.empirical_correlation = empirical_correlation
+
+    def find_approximate_candidate_positions(self, snr_image, detection_threshold=4.75, mask_radius=6.):
+        snr_image = np.ma.masked_array(snr_image)
+
+        yx_dim = snr_image.shape
+        yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
+
+        significant_pixel_mask = snr_image > detection_threshold
+        snr_image.mask = ~significant_pixel_mask
+
+        candidates = {'x': [], 'y': [], 'x_relative': [], 'y_relative': [],
+                      'separation': [], 'position_angle': [], 'snr': []}
+
+        while not np.all(snr_image.mask):
+            candidates['snr'].append(np.max(snr_image))
+
+            highest_value_position = np.unravel_index(
+                snr_image.argmax(), snr_image.shape)
+            candidates['x'].append(highest_value_position[1])
+            candidates['y'].append(highest_value_position[0])
+            relative_yx = image_coordinates.absolute_yx_to_relative_yx(
+                highest_value_position,
+                image_center_yx=yx_center)
+            candidates['x_relative'].append(relative_yx[1])
+            candidates['y_relative'].append(relative_yx[0])
+            rhophi = image_coordinates.relative_yx_to_rhophi(
+                relative_yx)
+            candidates['separation'].append(rhophi[0])
+            candidates['position_angle'].append(rhophi[1])
+
+            candidate_mask = regressor_selection.make_signal_mask(
+                snr_image.shape, highest_value_position, mask_radius,
+                relative_pos=False, yx_center=None)
+            snr_image.mask[candidate_mask] = True
+
+        candidates = pd.DataFrame(candidates)
+        self.candidates = candidates
+        return candidates
