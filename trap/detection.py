@@ -31,6 +31,8 @@ from scipy import linalg, stats
 from scipy.interpolate import interp1d
 from trap import image_coordinates, regressor_selection
 from trap.embed_shell import ipsh
+from trap.image_coordinates import (absolute_yx_to_relative_yx,
+                                    relative_yx_to_rhophi)
 from trap.reduction_wrapper import run_complete_reduction
 from trap.utils import compute_empirical_correlation_matrix
 
@@ -766,22 +768,20 @@ def fit_2d_gaussian(
         yx_center = (image.shape[0] // 2., image.shape[1] // 2)
     # spot fitting
     if yx_position is None:
-        cy, cx = np.unravel_index(np.argmax(image), image.shape)
+        cy, cx = np.unravel_index(np.nanargmax(image), image.shape)
     else:
         cy, cx = yx_position
     cutout = Cutout2D(image, (cx, cy), box_size)
     # stamp = image[cy - box_size:cy + box_size, cx - box_size:cx + box_size].copy()
     xx, yy = np.meshgrid(np.arange(box_size), np.arange(box_size))
-    yx_position_cutout = np.unravel_index(np.argmax(cutout.data), cutout.shape)
+    yx_position_cutout = np.unravel_index(np.nanargmax(cutout.data), cutout.shape)
     gbounds = {
-        'amplitude': (0.0, None),
+        'amplitude': (1e-9, None),
         'x_mean': (-2.0, box_size+2),
         'y_mean': (-2.0, box_size+2),
-        'x_stddev': (1.0, 20.0),
-        'y_stddev': (1.0, 20.0)
+        'x_stddev': (0.5, box_size),
+        'y_stddev': (0.5, box_size)
     }
-    from trap.image_coordinates import (absolute_yx_to_relative_yx,
-                                        relative_yx_to_rhophi)
     relative_yx = absolute_yx_to_relative_yx(yx_position, yx_center)
     rhophi = relative_yx_to_rhophi(relative_yx)
     phi = rhophi[1] * np.pi / 180.
@@ -789,7 +789,7 @@ def fit_2d_gaussian(
     # ipsh()
 
     g_init = models.Gaussian2D(
-        amplitude=cutout.data.max(),
+        amplitude=np.nanmax(cutout.data),
         x_mean=yx_position_cutout[1],
         y_mean=yx_position_cutout[0],
         x_stddev=x_stddev,
