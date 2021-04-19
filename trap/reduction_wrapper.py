@@ -427,6 +427,13 @@ def run_trap_search(data, flux_psf, pa, wavelength,
             6) Deviation from `true_contrast` in sigma
     """
 
+    data = data.astype('float64')
+    flux_psf = flux_psf.astype('float64')
+    pa = pa.astype('float64')
+
+    if variance is not None:
+        variance = variance.astype('float64')
+
     oversampling = reduction_parameters.oversampling
     yx_dim = (data.shape[-2], data.shape[-1])
     yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
@@ -1076,7 +1083,7 @@ def run_complete_reduction(
             reduction_parameters.guess_position[0]**2 +
             reduction_parameters.guess_position[1]**2)
         print('Adjusting outer bound to fit guess position')
-        reduction_parameters.search_region_outer_bound = guess_position_separation + 1
+        reduction_parameters.search_region_outer_bound = np.ceil(guess_position_separation) + 5
 
     if reduction_parameters.autosize_masks_in_lambda_over_d:
         assert reduction_parameters.signal_mask_size_in_lambda_over_d >= reduction_parameters.reduction_mask_size_in_lambda_over_d, \
@@ -1150,7 +1157,7 @@ def run_complete_reduction(
             reduction_parameters.search_region_outer_bound * 2 + np.max(stamp_sizes) * np.sqrt(2) + max_shift)
         if reduction_parameters.add_radial_regressors:
             # NOTE: Hardcoded binary dilation used right now.
-            reduction_parameters.data_crop_size += 7
+            reduction_parameters.data_crop_size += 14
         reduction_parameters.data_crop_size = int(round_up_to_odd(
             reduction_parameters.data_crop_size))
         yx_dim = (reduction_parameters.data_crop_size,
@@ -1193,7 +1200,7 @@ def run_complete_reduction(
         elif reduction_parameters.yx_known_companion_position.ndim > 2:
             raise ValueError("Dimensionality of known companion position array too large.")
 
-    if reduction_parameters.known_companion_contrast is not None:
+    if reduction_parameters.known_companion_contrast is not None and reduction_parameters.remove_known_companions:
         assert reduction_parameters.yx_known_companion_position is not None, "No position for known companion given."
 
         reduction_parameters.known_companion_contrast = np.array(reduction_parameters.known_companion_contrast)
@@ -1221,14 +1228,16 @@ def run_complete_reduction(
     if result_folder is None:
         result_folder = './'
     else:
-        if not os.path.exists(result_folder):
-            os.makedirs(result_folder)
+        if not reduction_parameters.reduce_single_position:
+            if not os.path.exists(result_folder):
+                os.makedirs(result_folder)
 
     # Save parameters
-    with open(os.path.join(result_folder, "instrument.obj"), 'wb') as handle:
-        pickle.dump(instrument, handle, protocol=4)
-    with open(os.path.join(result_folder, "reduction_parameters.obj"), 'wb') as handle:
-        pickle.dump(reduction_parameters, handle, protocol=4)
+    if not reduction_parameters.reduce_single_position:
+        with open(os.path.join(result_folder, "instrument.obj"), 'wb') as handle:
+            pickle.dump(instrument, handle, protocol=4)
+        with open(os.path.join(result_folder, "reduction_parameters.obj"), 'wb') as handle:
+            pickle.dump(reduction_parameters, handle, protocol=4)
 
     assert flux_psf_full.shape[0] == data_full.shape[0] == len(instrument.wavelengths), \
         "Different number of wavelengths in data: Flux {} Data {} Wave {}".format(
@@ -1237,7 +1246,7 @@ def run_complete_reduction(
     if reduction_parameters.reduce_single_position is True:
         all_results = OrderedDict()
 
-    if reduction_parameters.use_multiprocess:
+    if reduction_parameters.use_multiprocess and not reduction_parameters.reduce_single_position:
         ray.init(num_cpus=reduction_parameters.ncpus)
 
     # Loop over reductions for different numbers of components
@@ -1246,7 +1255,7 @@ def run_complete_reduction(
         reduction_parameters.temporal_components_fraction = temporal_components_fraction[comp_index]
         print("Number of principal comp. used: {} of {}".format(ncomp, data_full.shape[1]))
 
-        if reduction_parameters.reduce_single_position is True:
+        if reduction_parameters.reduce_single_position:
             wavelength_results = OrderedDict()
         number_of_wavelengths = data_full.shape[0]
 
@@ -1522,7 +1531,6 @@ def run_complete_reduction(
                     variance=variance,
                     flux_psf=flux_psf,
                     pa=pa,
-                    wavelength=wavelength,
                     reduction_parameters=reduction_parameters,
                     known_companion_mask=known_companion_mask,
                     bad_pixel_mask=bad_pixel_mask,
@@ -1566,7 +1574,6 @@ def run_complete_reduction(
                 for key in detection_image:
                     normalized_detection_image, contrast_table[key], contrast_image, median_contrast_image = detection.make_contrast_curve(
                         detection_image[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
-                        sigma=reduction_parameters.contrast_curve_sigma,
                         companion_mask_radius=reduction_parameters.companion_mask_radius,
                         pixel_scale=pixel_scale_mas,
                         yx_known_companion_position=reduction_parameters.yx_known_companion_position)
@@ -1590,7 +1597,6 @@ def run_complete_reduction(
                     if reduction_parameters.compute_residual_correlation and reduction_parameters.use_residual_correlation:
                         normalized_detection_image_corr, contrast_table_corr[key], contrast_image_corr, median_contrast_image_corr = detection.make_contrast_curve(
                             detection_image_corr[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
-                            sigma=reduction_parameters.contrast_curve_sigma,
                             companion_mask_radius=reduction_parameters.companion_mask_radius,
                             pixel_scale=pixel_scale_mas,
                             yx_known_companion_position=reduction_parameters.yx_known_companion_position)
@@ -1633,7 +1639,7 @@ def run_complete_reduction(
         if reduction_parameters.reduce_single_position:
             all_results['{}'.format(temporal_components_fraction[comp_index])] = wavelength_results
 
-    if reduction_parameters.use_multiprocess:
+    if reduction_parameters.use_multiprocess and not reduction_parameters.reduce_single_position:
         ray.shutdown()
 
     if reduction_parameters.reduce_single_position:
@@ -1678,7 +1684,7 @@ def make_contrast_from_output(
         pixel_scale_mas = (1 * u.pixel).to(u.mas, instrument.pixel_scale).value
         normalized_detection_image, contrast_table, contrast_image, median_contrast_image = detection.make_contrast_curve(
             detection_image, radial_bounds=radial_bounds,
-            bin_width=bin_width, sigma=sigma,
+            bin_width=bin_width,
             companion_mask_radius=companion_mask_radius,
             pixel_scale=pixel_scale_mas,
             yx_known_companion_position=yx_known_companion_position)
