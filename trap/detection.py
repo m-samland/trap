@@ -318,6 +318,7 @@ def add_contrast_curve_to_ax(
 
 def plot_contrast_curve(
         contrast_table, instrument=None, wavelengths=[None],
+        companion_table=None,
         colors=['#1b1cd5'],
         linestyles=['-'],
         curvelabels=[None],
@@ -336,6 +337,7 @@ def plot_contrast_curve(
         set_ylim=None,
         plot_iwa=False,
         title=None,
+        cmap=plt.cm.viridis,
         show=False):
 
     try:
@@ -355,7 +357,14 @@ def plot_contrast_curve(
     ax0 = fig.add_subplot(grid[0, 0])
 
     if colors is None:
-        colors = colors = plt.cm.viridis(np.linspace(0, 1, len(contrast_table)))
+        colors = colors = cmap(np.linspace(0, 1, len(contrast_table)))
+
+    if wavelengths[0] is not None:
+        wavelength_range = np.max(wavelengths - np.min(wavelengths))
+        scaled_values = (wavelengths - np.min(wavelengths)) / wavelength_range
+        colors = cmap(scaled_values)
+    else:
+        colors = cmap(np.linspace(0, 1, len(contrast_table)))
 
     # Add contrast curve(s) to axis
     for idx, contrast_curve in enumerate(contrast_table):
@@ -379,6 +388,22 @@ def plot_contrast_curve(
             percentile_1sigma_alpha=percentile_1sigma_alpha,
             percentile_2sigma_alpha=percentile_2sigma_alpha
         )
+
+        if companion_table is not None:
+            wavelength_indices = np.unique(companion_table['wavelength_index'])
+            for wavelength_index in wavelength_indices:
+                temp_table = companion_table[companion_table['wavelength_index']
+                                             == wavelength_index]
+
+                ax0.errorbar(
+                    x=temp_table['separation'].values,
+                    y=temp_table['contrast'].values,
+                    yerr=temp_table['uncertainty'].values,
+                    fmt='o',
+                    color=colors[wavelength_index])
+
+    for separation in np.unique(companion_table['separation']):
+        ax0.axvline(x=separation, color='k', linestyle=':', alpha=0.5)
 
     ax0.set_yscale(yscale)
 
@@ -575,8 +600,7 @@ def plot_contrast_curve_ratio(
             convert_to_mag=convert_to_mag,
             plot_percentiles=plot_percentiles,
             percentile_1sigma_alpha=percentile_1sigma_alpha,
-            percentile_2sigma_alpha=percentile_2sigma_alpha
-        )
+            percentile_2sigma_alpha=percentile_2sigma_alpha)
 
     ax0.set_yscale(yscale)
 
@@ -1102,7 +1126,13 @@ class DetectionAnalysis(object):
         else:
             return detection_products
 
-    def contrast_plot(self, savefig=True, show=False):
+    def contrast_plot(self, companion_table=None, plot_companions=True, savefig=True, show=False):
+
+        if companion_table is None and plot_companions:
+            companion_table = self.validated_companion_table
+
+        if not plot_companions:
+            companion_table = None
 
         colors = plt.cm.viridis(np.linspace(0, 1, len(self.wavelength_indices)))
         if savefig:
@@ -1113,6 +1143,7 @@ class DetectionAnalysis(object):
         plot_contrast_curve(
             self.detection_products['contrast_tables'],
             instrument=self.instrument,
+            companion_table=companion_table,
             # [wavelength_index:wavelength_index + 1],
             wavelengths=self.instrument.wavelengths[self.wavelength_indices],
             add_wavelength_label=True,
@@ -1124,32 +1155,39 @@ class DetectionAnalysis(object):
             savefig=figure_path,  # contrast_plot_path[key],
             show=show)
 
-    def mask_companions_in_detection(self, mask_size=None):
+    def mask_companions_in_detection(self, yx_known_companion_position=None,
+                                     mask_radius=None):
 
-        yx_known_companion_position = self.reduction_parameters.yx_known_companion_position
         yx_dim = (self.detection_cube.shape[-2], self.detection_cube.shape[-1])
+
+        if yx_known_companion_position is None:
+            yx_known_companion_position = self.reduction_parameters.yx_known_companion_position
+
+        if mask_radius is None:
+            mask_radius = self.reduction_parameters.companion_mask_radius
 
         if yx_known_companion_position is not None:
             yx_known_companion_position = np.array(yx_known_companion_position)
             if yx_known_companion_position.ndim == 1:
                 self.detected_signal_mask = regressor_selection.make_signal_mask(
-                    yx_dim, yx_known_companion_position, self.reduction_parameters.companion_mask_radius,
+                    yx_dim, yx_known_companion_position,
+                    mask_radius,
                     relative_pos=True, yx_center=None)
             elif yx_known_companion_position.ndim == 2:
                 detected_signal_masks = []
                 for yx_pos in yx_known_companion_position:
                     detected_signal_masks.append(
                         regressor_selection.make_signal_mask(
-                            yx_dim, yx_pos, self.reduction_parameters.companion_mask_radius,
+                            yx_dim, yx_pos, mask_radius,
                             relative_pos=True, yx_center=None))
                 self.detected_signal_mask = np.logical_or.reduce(detected_signal_masks)
             else:
                 raise ValueError("Dimensionality of known companion positions for contrast curve too large.")
         else:
-            self.detection_signal_mask = np.zeros([yx_dim[0], yx_dim[1]]).astype('bool')
+            self.detected_signal_mask = np.zeros([yx_dim[0], yx_dim[1]]).astype('bool')
 
-    def measure_spectral_correlation(self, radial_bounds=None, bin_width=3,
-                                     yx_center=None, known_companion_mask=None):
+    def make_spectral_correlation_matrices(self, radial_bounds=None, bin_width=3,
+                                           yx_center=None, detected_signal_mask=None):
 
         yx_dim = [self.detection_cube.shape[-2], self.detection_cube.shape[-1]]
         separations_used = []
@@ -1157,6 +1195,10 @@ class DetectionAnalysis(object):
         empirical_correlation = {}
 
         self.detection_cube[self.detection_cube == 0.] = np.nan
+
+        if detected_signal_mask is None:
+            self.mask_companions_in_detection()
+            detected_signal_mask = self.detected_signal_mask
 
         if radial_bounds is None:
             separation_max = self.detection_cube.shape[-1] // 2 * np.sqrt(2)
@@ -1193,10 +1235,10 @@ class DetectionAnalysis(object):
             mask = annulus_mask.to_image(yx_dim) > 0
             mask[int(xy_center[1]), int(xy_center[0])] = False
 
-            if known_companion_mask is None:
+            if detected_signal_mask is None:
                 mask_computation_annulus = mask
             else:
-                mask_computation_annulus = np.logical_and(mask, ~known_companion_mask)
+                mask_computation_annulus = np.logical_and(mask, ~detected_signal_mask)
 
             annulus_data_1d = self.detection_cube[:, 0, mask_computation_annulus]
 
@@ -1548,7 +1590,8 @@ class DetectionAnalysis(object):
 
         candidate_spectrum = {
             'candidate_id': id.astype('int'),
-            'wavelengths': self.instrument.wavelengths.value,
+            'wavelength_index': wavelength_indices,
+            'wavelengths': self.instrument.wavelengths.value[wavelength_indices],
             'contrast': contrast_for_table,
             'uncertainty': normalized_uncertainty_for_table,
             'snr': snr_for_table,
@@ -1607,26 +1650,32 @@ class DetectionAnalysis(object):
         if candidate_spectra is None:
             candidate_spectra = self.candidate_spectra
 
-        summary_table = candidates_fit['snr_image'][
+        companion_table = candidates_fit['snr_image'][
             ['x', 'y', 'x_relative', 'y_relative', 'separation', 'position_angle',
              'theta_free', 'x_fwhm', 'y_fwhm', 'fwhm_area', 'x_fwhm_free', 'y_fwhm_free',
              'good_fraction']]
 
-        summary_table.insert(loc=13, column='theta_deviation',
-                             value=summary_table['position_angle'] - summary_table['theta_free'])
-        summary_table.insert(loc=14, column='yx_fwhm_ratio',
-                             value=summary_table['y_fwhm_free'] / summary_table['x_fwhm_free'])
-        summary_table.insert(loc=15, column='fwhm_area_free',
-                             value=np.pi * summary_table['x_fwhm_free'] * summary_table['y_fwhm_free'])
-        summary_table.insert(loc=16, column='norm_snr_fit',
-                             value=candidates_fit['norm_snr_image']['amplitude'])
+        companion_table.insert(loc=13, column='theta_deviation',
+                               value=companion_table['position_angle'] - companion_table['theta_free'])
+        companion_table.insert(loc=14, column='yx_fwhm_ratio',
+                               value=companion_table['y_fwhm_free'] / companion_table['x_fwhm_free'])
+        companion_table.insert(loc=15, column='fwhm_area_free',
+                               value=np.pi * companion_table['x_fwhm_free'] * companion_table['y_fwhm_free'])
+        companion_table.insert(loc=16, column='norm_snr_fit',
+                               value=candidates_fit['norm_snr_image']['amplitude'])
 
-        summary_table = pd.merge(
-            summary_table, candidate_spectra,
+        companion_table = pd.merge(
+            companion_table, candidate_spectra,
             left_index=True, right_on='candidate_id', how='left')
 
-        mask = (summary_table['snr'] > snr_threshold) & (summary_table['good_fraction'] > good_fraction_threshold) \
-            & (summary_table['theta_deviation'] < theta_deviation_threshold) \
-            & (summary_table['yx_fwhm_ratio'] > yx_fwhm_ratio_threshold)
+        mask = (companion_table['snr'] > snr_threshold) & (companion_table['good_fraction'] > good_fraction_threshold) \
+            & (companion_table['theta_deviation'] < theta_deviation_threshold) \
+            & (companion_table['yx_fwhm_ratio'] > yx_fwhm_ratio_threshold)
 
-        return summary_table, mask
+        unique_candidates = np.unique(companion_table[mask]['candidate_id'].values)
+        validated_companion_table = companion_table[companion_table['candidate_id'].isin(unique_candidates)]
+
+        self.companion_table = companion_table
+        self.validated_companion_table = validated_companion_table
+
+        return companion_table, validated_companion_table
