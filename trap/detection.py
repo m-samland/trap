@@ -29,6 +29,7 @@ from natsort import natsorted
 from photutils import CircularAnnulus
 from scipy import linalg, stats
 from scipy.interpolate import interp1d
+from tqdm import tqdm
 from trap import image_coordinates, regressor_selection
 from trap.embed_shell import ipsh
 from trap.image_coordinates import (absolute_yx_to_relative_yx,
@@ -352,19 +353,19 @@ def plot_contrast_curve(
         pdf = PdfPages(contrast_plot_path_pdf)
 
     plt.close()
-    fig = plt.figure(figsize=(6, 6))
+    fig = plt.figure(figsize=(8, 6))
     grid = plt.GridSpec(1, 1)
     ax0 = fig.add_subplot(grid[0, 0])
 
     if colors is None:
         colors = colors = cmap(np.linspace(0, 1, len(contrast_table)))
 
-    if wavelengths[0] is not None:
-        wavelength_range = np.max(wavelengths - np.min(wavelengths))
-        scaled_values = (wavelengths - np.min(wavelengths)) / wavelength_range
-        colors = cmap(scaled_values)
-    else:
-        colors = cmap(np.linspace(0, 1, len(contrast_table)))
+        if wavelengths[0] is not None:
+            wavelength_range = np.max(wavelengths - np.min(wavelengths))
+            scaled_values = (wavelengths - np.min(wavelengths)) / wavelength_range
+            colors = cmap(scaled_values)
+        else:
+            colors = cmap(np.linspace(0, 1, len(contrast_table)))
 
     # Add contrast curve(s) to axis
     for idx, contrast_curve in enumerate(contrast_table):
@@ -390,20 +391,23 @@ def plot_contrast_curve(
         )
 
         if companion_table is not None:
-            wavelength_indices = np.unique(companion_table['wavelength_index'])
-            for wavelength_index in wavelength_indices:
+            if len(companion_table) > 0:
+                wavelength_indices = np.unique(companion_table['wavelength_index'])
                 temp_table = companion_table[companion_table['wavelength_index']
-                                             == wavelength_index]
-
-                ax0.errorbar(
-                    x=temp_table['separation'].values,
-                    y=temp_table['contrast'].values,
-                    yerr=temp_table['uncertainty'].values,
-                    fmt='o',
-                    color=colors[wavelength_index])
+                                             == wavelength_indices[idx]]
+                if np.all(np.isfinite(temp_table['contrast'].values)):
+                    ax0.errorbar(
+                        x=temp_table['separation'].values,
+                        y=temp_table['contrast'].values,
+                        yerr=temp_table['uncertainty'].values,
+                        fmt='o',
+                        color=colors[idx],
+                        markeredgecolor='k',
+                        markeredgewidth=1,
+                        capsize=3)
 
     for separation in np.unique(companion_table['separation']):
-        ax0.axvline(x=separation, color='k', linestyle=':', alpha=0.5)
+        ax0.axvline(x=separation, color='k', linestyle=':', alpha=0.3)
 
     ax0.set_yscale(yscale)
 
@@ -531,7 +535,18 @@ def plot_contrast_curve(
     if title is not None:
         plt.title(title)
 
-    ax0.legend(loc=1)
+    if len(contrast_table) < 3:
+        ax0.legend(loc=1)
+    else:
+        if wavelengths is not None:
+            sm = plt.cm.ScalarMappable(
+                cmap=cmap, norm=plt.Normalize(
+                    vmin=wavelengths.value[0], vmax=wavelengths.value[-1]))
+            cb = plt.colorbar(
+                sm, ax=ax3, pad=0.13, use_gridspec=True, fraction=0.045,
+                location='right')  # , format='%.2f')
+            cb.set_label('wavelength (micron)', rotation=90, labelpad=10)
+
     fig.tight_layout()
     if convert_to_mag:
         plt.gca().invert_yaxis()
@@ -810,8 +825,6 @@ def fit_2d_gaussian(
     rhophi = relative_yx_to_rhophi(relative_yx)
     phi = rhophi[1] * np.pi / 180.
 
-    # ipsh()
-
     g_init = models.Gaussian2D(
         amplitude=np.nanmax(cutout.data),
         x_mean=yx_position_cutout[1],
@@ -900,7 +913,6 @@ def fit_planet_parameters(
     #     radial_bounds=radial_bounds,
     #     known_companion_mask=detected_signal_mask,
     #     operation='median')
-    # ipsh()
     # detection_image[0] = detection_image[0] - profile
     # fit_snr, model_snr, stamp_snr, yx_pos_absolute_snr, yx_pos_relative_snr = fit_2d_gaussian(
     # normalized_detection_image, yx_position=yx_position, box_size=box_size)
@@ -1099,8 +1111,19 @@ class DetectionAnalysis(object):
 
         detection_products['normalized_detection_cube'] = np.array(normalized_detection_cube)
         detection_products['uncertainty_cube'] = np.array(uncertainty_cube)
-        detection_products['contrast_tables'] = contrast_tables
         detection_products['median_uncertainty_cube'] = np.array(median_uncertainty_cube)
+        detection_products['contrast_tables'] = contrast_tables
+
+        contrast_table = detection_products['contrast_tables'].copy()
+        for idx, wavelength_index in enumerate(self.wavelength_indices):
+            wavelength_index_column = np.ones(
+                len(contrast_table[idx])) * wavelength_index
+            contrast_table[idx] = contrast_table[idx].to_pandas()
+            contrast_table[idx].insert(
+                loc=0, column='wavelength_index',
+                value=wavelength_index_column.astype('int'))
+        contrast_table = pd.concat(contrast_table)
+        detection_products['contrast_table'] = contrast_table
 
         if save:
             fits.writeto(
@@ -1115,8 +1138,12 @@ class DetectionAnalysis(object):
                 self.file_paths['median_uncertainty_image_path'],
                 detection_products['median_uncertainty_cube'],
                 overwrite=overwrite)
+            contrast_table.to_csv(
+                os.path.splitext(self.file_paths['contrast_table_path'])[0]+'.csv',
+                index=False)
 
-            with open(self.file_paths['contrast_table_path'], 'wb') as handle:
+            with open(os.path.splitext(
+                    self.file_paths['contrast_table_path'])[0]+'.obj', 'wb') as handle:
                 pickle.dump(
                     detection_products['contrast_tables'], handle,
                     protocol=4)
@@ -1130,30 +1157,35 @@ class DetectionAnalysis(object):
 
         if companion_table is None and plot_companions:
             companion_table = self.validated_companion_table
-
         if not plot_companions:
             companion_table = None
 
-        colors = plt.cm.viridis(np.linspace(0, 1, len(self.wavelength_indices)))
+        # colors = plt.cm.viridis(np.linspace(0, 1, len(self.wavelength_indices)))
         if savefig:
             figure_path = self.file_paths['contrast_plot_path']
         else:
             figure_path = None
 
-        plot_contrast_curve(
+        if companion_table is not None:
+            mask = companion_table['wavelength_index'].isin(self.wavelength_indices)
+            companion_table_used = companion_table[mask]
+
+        fig = plot_contrast_curve(
             self.detection_products['contrast_tables'],
             instrument=self.instrument,
-            companion_table=companion_table,
+            companion_table=companion_table_used,
             # [wavelength_index:wavelength_index + 1],
             wavelengths=self.instrument.wavelengths[self.wavelength_indices],
             add_wavelength_label=True,
             curvelabels=np.array([None]).repeat(len(self.wavelength_indices)),
             linestyles=np.array(['-']).repeat(len(self.wavelength_indices)),
-            colors=colors,  # ['#1b1cd5'],  # '#de650a', '#ba174e'],
+            colors=None,  # ['#1b1cd5'],  # '#de650a', '#ba174e'],
             plot_vertical_lod=True, mirror_axis='mas',
             convert_to_mag=False, yscale='log',
             savefig=figure_path,  # contrast_plot_path[key],
             show=show)
+
+        return fig
 
     def mask_companions_in_detection(self, yx_known_companion_position=None,
                                      mask_radius=None):
@@ -1293,44 +1325,47 @@ class DetectionAnalysis(object):
         self.candidates = candidates
         return candidates
 
-    def find_candidates(self, wavelength_index=0, detection_threshold=5., candidate_threshold=3.5,
+    def find_candidates(self, detection_product_index=0, detection_threshold=5., candidate_threshold=3.5,
                         mask_radius=6, detection_products=None):
 
         if detection_products is None:
             detection_products = self.detection_products
 
+        wavelength_index = self.wavelength_indices[detection_product_index]
+
         smallest_non_nan_separation_idx = np.min(
             np.argwhere(
-                np.isfinite(detection_products['contrast_tables'][wavelength_index]['snr_normalization'])))
+                np.isfinite(detection_products['contrast_tables'][detection_product_index]['snr_normalization'])))
 
         smallest_separation_in_pixel = detection_products[
-            'contrast_tables'][wavelength_index]['sep (pix)'][smallest_non_nan_separation_idx]
+            'contrast_tables'][detection_product_index]['sep (pix)'][smallest_non_nan_separation_idx]
 
         candidates = self.find_approximate_candidate_positions(
-            detection_products['normalized_detection_cube'][wavelength_index],
+            detection_products['normalized_detection_cube'][detection_product_index],
             detection_threshold=detection_threshold, mask_radius=mask_radius)
 
         mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
         candidates = candidates[~mask_too_close]
 
-        yx_known_companion_position = candidates[['y_relative', 'x_relative']].values
-        self.reduction_parameters.yx_known_companion_position = yx_known_companion_position
-        self.mask_companions_in_detection()
-        detection_products = self.contrast_table_and_normalization(save=False, inplace=False)
+        if len(candidates) > 0:
+            yx_known_companion_position = candidates[['y_relative', 'x_relative']].values
+            self.reduction_parameters.yx_known_companion_position = yx_known_companion_position
+            detection_products = self.contrast_table_and_normalization(save=False, inplace=False)
 
-        candidates = self.find_approximate_candidate_positions(
-            detection_products['normalized_detection_cube'][wavelength_index],
-            detection_threshold=detection_threshold, mask_radius=mask_radius)
-        mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
-        candidates = candidates[~mask_too_close]
-        yx_known_companion_position = candidates[['y_relative', 'x_relative']].values
-        self.reduction_parameters.yx_known_companion_position = yx_known_companion_position
-        self.mask_companions_in_detection()
-        detection_products = self.contrast_table_and_normalization(save=False, inplace=False)
+            candidates = self.find_approximate_candidate_positions(
+                detection_products['normalized_detection_cube'][detection_product_index],
+                detection_threshold=detection_threshold, mask_radius=mask_radius)
+            mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
+            candidates = candidates[~mask_too_close]
+            yx_known_companion_position2 = candidates[['y_relative', 'x_relative']].values
+            if len(candidates) > 0 and not np.all(yx_known_companion_position == yx_known_companion_position2):
+                self.reduction_parameters.yx_known_companion_position = yx_known_companion_position2
+                # self.mask_companions_in_detection()
+                detection_products = self.contrast_table_and_normalization(save=False, inplace=False)
         # self.contrast_table_and_normalization(save=True)
 
         candidates = self.find_approximate_candidate_positions(
-            detection_products['normalized_detection_cube'][wavelength_index],
+            detection_products['normalized_detection_cube'][detection_product_index],
             detection_threshold=candidate_threshold, mask_radius=mask_radius)
         mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
         candidates = candidates[~mask_too_close].sort_values('separation', ignore_index=False)
@@ -1373,9 +1408,10 @@ class DetectionAnalysis(object):
         snr_image_results = []
         norm_snr_image_results = []
 
-        for candidate_idx in range(len(candidates)):
+        for candidate_idx in tqdm(range(len(candidates))):
             # Temporarily remove candidate position from normalization
             wavelength_index = candidates['wavelength_index'].values[candidate_idx]
+            detection_product_index = np.argwhere(self.wavelength_indices == wavelength_index)[0][0]
             yx_position_relative = candidates[['y_relative', 'x_relative']].values[candidate_idx]
             self.reduction_parameters.yx_known_companion_position = np.vstack(
                 [self.reduction_parameters.yx_known_companion_position,
@@ -1386,10 +1422,10 @@ class DetectionAnalysis(object):
                 self.reduction_parameters.yx_known_companion_position,
                 -1, axis=0)
             contrast_image_result, snr_image_result, norm_snr_image_result = fit_planet_parameters(
-                detection_image=self.detection_cube[wavelength_index],
-                uncertainty_image=detection_products['uncertainty_cube'][wavelength_index],  # ?
-                normalized_detection_image=detection_products['normalized_detection_cube'][wavelength_index],
-                contrast_table=detection_products['contrast_tables'][wavelength_index],
+                detection_image=self.detection_cube[detection_product_index],
+                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],  # ?
+                normalized_detection_image=detection_products['normalized_detection_cube'][detection_product_index],
+                contrast_table=detection_products['contrast_tables'][detection_product_index],
                 yx_position=candidates[['y', 'x']].values[candidate_idx],
                 x_stddev=x_stddev, y_stddev=y_stddev,
                 box_size=box_size, mask_deviating=False,
@@ -1398,10 +1434,10 @@ class DetectionAnalysis(object):
                 plot=plot)
 
             contrast_image_result_free, snr_image_result_free, norm_snr_image_result_free = fit_planet_parameters(
-                detection_image=self.detection_cube[wavelength_index],
-                uncertainty_image=detection_products['uncertainty_cube'][wavelength_index],  # ?
-                normalized_detection_image=detection_products['normalized_detection_cube'][wavelength_index],
-                contrast_table=detection_products['contrast_tables'][wavelength_index],
+                detection_image=self.detection_cube[detection_product_index],
+                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],  # ?
+                normalized_detection_image=detection_products['normalized_detection_cube'][detection_product_index],
+                contrast_table=detection_products['contrast_tables'][detection_product_index],
                 yx_position=candidates[['y', 'x']].values[candidate_idx],
                 x_stddev=x_stddev, y_stddev=y_stddev,
                 box_size=box_size, mask_deviating=False,
@@ -1410,13 +1446,16 @@ class DetectionAnalysis(object):
                 plot=plot)
 
             contrast_image_result = pd.merge(
-                contrast_image_result, contrast_image_result_free[['x_fwhm', 'y_fwhm', 'theta']],
+                contrast_image_result, contrast_image_result_free[[
+                    'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
                 left_index=True, right_index=True, how='left', suffixes=[None, '_free'])
             snr_image_result = pd.merge(
-                snr_image_result, snr_image_result_free[['x_fwhm', 'y_fwhm', 'theta']],
+                snr_image_result, snr_image_result_free[['x_fwhm', 'y_fwhm',
+                                                         'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
                 left_index=True, right_index=True, how='left', suffixes=[None, '_free'])
             norm_snr_image_result = pd.merge(
-                norm_snr_image_result, norm_snr_image_result_free[['x_fwhm', 'y_fwhm', 'theta']],
+                norm_snr_image_result, norm_snr_image_result_free[[
+                    'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
                 left_index=True, right_index=True, how='left', suffixes=[None, '_free'])
 
             contrast_image_result.insert(loc=0, column='candidate_index',
@@ -1452,7 +1491,8 @@ class DetectionAnalysis(object):
 
         return candidates_fit
 
-    def complete_candidate_table(self, wavelength_indices=None, detection_threshold=5., candidate_threshold=4., search_radius=4, detection_products=None):
+    def complete_candidate_table(self, wavelength_indices=None, detection_threshold=5.,
+                                 candidate_threshold=4., search_radius=5, detection_products=None):
 
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
@@ -1460,9 +1500,9 @@ class DetectionAnalysis(object):
             detection_products = self.detection_products
 
         candidates = []
-        for wavelength_index in wavelength_indices:
+        for detection_product_index in tqdm(range(len(wavelength_indices))):
             candidates.append(self.find_candidates(
-                wavelength_index=wavelength_index, detection_products=detection_products,
+                detection_product_index=detection_product_index, detection_products=detection_products,
                 candidate_threshold=candidate_threshold))
         candidates = pd.concat(candidates, axis=0, ignore_index=True)
 
@@ -1471,29 +1511,61 @@ class DetectionAnalysis(object):
             detection_products=detection_products, plot=False)
 
         unique_candidate_indices = []
+        rejected = []
+        final_position_table = []
+        weighted_average_key_list = [
+            'x', 'y', 'x_relative', 'y_relative', 'separation', 'position_angle',
+            'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area',
+            'good_fraction', 'x_fwhm_free', 'y_fwhm_free', 'theta_free',
+            'good_pixels_free', 'fwhm_area_free', 'good_fraction_free']
         for idx in range(len(candidates)):
             pos1 = candidates_fit['snr_image'].iloc[idx][['x_relative', 'y_relative']].values
             pos2 = candidates_fit['snr_image'][['x_relative', 'y_relative']].values
             dist = linalg.norm(pos1 - pos2, axis=1)
 
             # Find closest candidate that isn't itself
-            mask = np.logical_and(dist < search_radius, dist != 0.)
-            if np.sum(mask) == 0:
+            # mask = np.logical_and(dist < search_radius, dist != 0.)
+            mask = dist < search_radius
+            if np.sum(mask) == 1:
                 unique_candidate_indices.append(idx)
+                final_position_table.append(
+                    candidates_fit['snr_image'].iloc[idx][weighted_average_key_list].to_frame().T)
             else:
                 # Find wavelength with highest SNR
-                if idx not in unique_candidate_indices:
+
+                if idx not in unique_candidate_indices and idx not in rejected:
+                    # ipsh()
+                    # Perform weighted average of columns
+                    df = candidates_fit['snr_image'][mask]
+                    snr = candidates_fit['norm_snr_image']['amplitude'][mask]
+                    df.insert(loc=0, column='snr', value=snr)
+                    df.insert(loc=1, column='group', value=np.ones(len(df)))
+
+                    def weighted_average(grp, weight_column='snr'):
+                        return grp._get_numeric_data().multiply(grp[weight_column], axis=0).sum()/grp[weight_column].sum()
+                    weighted_agg = df.groupby('group').apply(weighted_average)
+                    weighted_agg = weighted_agg[weighted_average_key_list]
+
                     temp_idx = np.argmax(candidates_fit['norm_snr_image'][mask]['amplitude'])
                     candidate_index = int(candidates_fit['snr_image'][mask].iloc[temp_idx]['candidate_index'])
-                    unique_candidate_indices.append(candidate_index)
+                    mask[candidate_index] = False
+                    rejected = rejected + list(np.argwhere(mask)[:, 0])
+                    if candidate_index not in unique_candidate_indices and candidate_index not in rejected:
+                        unique_candidate_indices.append(candidate_index)
+                        final_position_table.append(
+                            weighted_agg[weighted_average_key_list])
 
+        final_position_table = pd.concat(final_position_table, ignore_index=True)
         candidates = candidates.iloc[unique_candidate_indices].sort_values('separation')
+
         candidates_fit['contrast_image'] = candidates_fit['contrast_image'].iloc[unique_candidate_indices].sort_values(
             'separation', ignore_index=True)
-        candidates_fit['snr_image'] = candidates_fit['snr_image'].iloc[unique_candidate_indices].sort_values(
-            'separation', ignore_index=True)
+        candidates_fit['snr_image'] = candidates_fit['snr_image'].iloc[unique_candidate_indices].reset_index()
         candidates_fit['norm_snr_image'] = candidates_fit['norm_snr_image'].iloc[unique_candidate_indices].sort_values(
             'separation', ignore_index=True)
+
+        candidates_fit['snr_image'][weighted_average_key_list] = final_position_table[weighted_average_key_list]
+        candidates_fit['snr_image'].sort_values('separation', ignore_index=True, inplace=True)
 
         self.candidates = candidates
         self.candidates_fit = candidates_fit
@@ -1547,13 +1619,11 @@ class DetectionAnalysis(object):
         uncertainty = np.array(uncertainty)
 
         # REDO NORMALIZATION
-        self.reduction_parameters.yx_known_companion_position = \
-            np.vstack([self.reduction_parameters.yx_known_companion_position,
-                       self.candidates[['y_relative', 'x_relative']].values])
+        self.reduction_parameters.yx_known_companion_position = np.vstack([self.reduction_parameters.yx_known_companion_position,
+                                                                           self.candidates[['y_relative', 'x_relative']].values])
         self.contrast_table_and_normalization(save=False)
-        self.reduction_parameters.yx_known_companion_position = \
-            np.delete(
-                self.reduction_parameters.yx_known_companion_position, -1, axis=0)
+        self.reduction_parameters.yx_known_companion_position = np.delete(
+            self.reduction_parameters.yx_known_companion_position, -1, axis=0)
 
         normalization_factors = []
         for contrast_table_index in range(len(wavelength_indices)):
@@ -1590,8 +1660,8 @@ class DetectionAnalysis(object):
 
         candidate_spectrum = {
             'candidate_id': id.astype('int'),
-            'wavelength_index': wavelength_indices,
-            'wavelengths': self.instrument.wavelengths.value[wavelength_indices],
+            'wavelength_index': np.arange(len(self.instrument.wavelengths)),
+            'wavelength': self.instrument.wavelengths.value,
             'contrast': contrast_for_table,
             'uncertainty': normalized_uncertainty_for_table,
             'snr': snr_for_table,
@@ -1620,7 +1690,7 @@ class DetectionAnalysis(object):
             candidate_positions = self.candidates_fit['snr_image'][['y_relative', 'x_relative']].values
         # detection1.reduction_parameters.reduce_single_position = True
 
-        for candidate_index, candidate_position in enumerate(candidate_positions):
+        for candidate_index, candidate_position in tqdm(enumerate(candidate_positions)):
             candidate_spectrum = self.rereduce_single_position(
                 candidate_index=candidate_index,
                 candidate_position=candidate_position, data_full=data_full,
@@ -1640,9 +1710,9 @@ class DetectionAnalysis(object):
             return candidate_spectra
 
     def detection_summary(self, candidates_fit, candidate_spectra,
-                          snr_threshold=4.5, good_fraction_threshold=0.75,
+                          snr_threshold=4.5, good_fraction_threshold=0.4,
                           theta_deviation_threshold=25.,
-                          yx_fwhm_ratio_threshold=1.1):
+                          yx_fwhm_ratio_threshold=[1.1, 3.5]):
 
         if candidates_fit is None:
             candidates_fit = self.candidates_fit
@@ -1669,8 +1739,9 @@ class DetectionAnalysis(object):
             left_index=True, right_on='candidate_id', how='left')
 
         mask = (companion_table['snr'] > snr_threshold) & (companion_table['good_fraction'] > good_fraction_threshold) \
-            & (companion_table['theta_deviation'] < theta_deviation_threshold) \
-            & (companion_table['yx_fwhm_ratio'] > yx_fwhm_ratio_threshold)
+            & (np.abs(companion_table['theta_deviation']) < theta_deviation_threshold) \
+            & (companion_table['yx_fwhm_ratio'] > yx_fwhm_ratio_threshold[0]) \
+            & (companion_table['yx_fwhm_ratio'] < yx_fwhm_ratio_threshold[1])
 
         unique_candidates = np.unique(companion_table[mask]['candidate_id'].values)
         validated_companion_table = companion_table[companion_table['candidate_id'].isin(unique_candidates)]
