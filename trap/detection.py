@@ -543,8 +543,7 @@ def plot_contrast_curve(
                 cmap=cmap, norm=plt.Normalize(
                     vmin=wavelengths.value[0], vmax=wavelengths.value[-1]))
             cb = plt.colorbar(
-                sm, ax=ax3, pad=0.13, use_gridspec=True, fraction=0.045,
-                location='right')  # , format='%.2f')
+                sm, ax=ax3, pad=0.13, use_gridspec=True, fraction=0.045)  # , format='%.2f')
             cb.set_label('wavelength (micron)', rotation=90, labelpad=10)
 
     fig.tight_layout()
