@@ -1412,9 +1412,13 @@ class DetectionAnalysis(object):
             wavelength_index = candidates['wavelength_index'].values[candidate_idx]
             detection_product_index = np.argwhere(self.wavelength_indices == wavelength_index)[0][0]
             yx_position_relative = candidates[['y_relative', 'x_relative']].values[candidate_idx]
-            self.reduction_parameters.yx_known_companion_position = np.vstack(
-                [self.reduction_parameters.yx_known_companion_position,
-                 yx_position_relative])
+            if self.reduction_parameters.yx_known_companion_position is not None:
+                self.reduction_parameters.yx_known_companion_position = np.vstack(
+                    [self.reduction_parameters.yx_known_companion_position,
+                     yx_position_relative])
+            else:
+                self.reduction_parameters.yx_known_companion_position = yx_position_relative
+
             detection_products = self.contrast_table_and_normalization(
                 detection_cube=detection_cube, save=False, inplace=False)
             self.reduction_parameters.yx_known_companion_position = np.delete(
