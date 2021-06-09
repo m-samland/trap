@@ -1116,7 +1116,7 @@ def run_complete_reduction(
             variance_full = np.delete(variance_full, bad_frames, axis=1)
 
         if xy_image_centers is not None:
-            xy_image_centers = np.delete(xy_image_centers, bad_frames, axis=0)
+            xy_image_centers = np.delete(xy_image_centers, bad_frames, axis=1)
 
     # Configure image centers
     if xy_image_centers is None:
