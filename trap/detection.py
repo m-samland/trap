@@ -1526,41 +1526,67 @@ class DetectionAnalysis(object):
             pos2 = candidates_fit['snr_image'][['x_relative', 'y_relative']].values
             dist = linalg.norm(pos1 - pos2, axis=1)
 
-            # Find closest candidate that isn't itself
-            # mask = np.logical_and(dist < search_radius, dist != 0.)
             mask = dist < search_radius
             if np.sum(mask) == 1:
                 unique_candidate_indices.append(idx)
-                final_position_table.append(
-                    candidates_fit['snr_image'].iloc[idx][weighted_average_key_list].to_frame().T)
+                # If candidate is only detected in one channel, uncertainty is NaN
+                entry = candidates_fit['snr_image'].iloc[idx][weighted_average_key_list].to_frame().T
+                entry.insert(loc=5, column='separation_sigma', value=np.nan)
+                entry.insert(loc=7, column='position_angle_sigma', value=np.nan)
+                entry.insert(loc=8, column='channels_above_threshold', value=np.array([1]))
+                final_position_table.append(entry)
             else:
                 # Find wavelength with highest SNR
 
                 if idx not in unique_candidate_indices and idx not in rejected:
-                    # ipsh()
                     # Perform weighted average of columns
                     df = candidates_fit['snr_image'][mask]
                     snr = candidates_fit['norm_snr_image']['amplitude'][mask]
                     df.insert(loc=0, column='snr', value=snr)
                     df.insert(loc=1, column='group', value=np.ones(len(df)))
 
+                    # Sigma clipping for position
+                    # from astropy.stats import sigma_clip, mad_std
+                    # filtered_data1 = sigma_clip(df['separation'], sigma=3.5, maxiters=3,
+                    #                             cenfunc=np.median, stdfunc=mad_std)
+                    # filtered_data2 = sigma_clip(df['position_angle'], sigma=3.5,
+                    #                             maxiters=3, cenfunc=np.median, stdfunc=mad_std)
+
+                    # Make new data frame of average weighted by SNR
                     def weighted_average(grp, weight_column='snr'):
                         return grp._get_numeric_data().multiply(grp[weight_column], axis=0).sum()/grp[weight_column].sum()
                     weighted_agg = df.groupby('group').apply(weighted_average)
                     weighted_agg = weighted_agg[weighted_average_key_list]
 
+                    # Compute uncertainty based on standard deviation
+                    std_dev_df = df.groupby('group').apply(np.std)
+                    weighted_agg.insert(loc=5, column='separation_sigma', value=std_dev_df['separation'].values)
+                    weighted_agg.insert(loc=7, column='position_angle_sigma', value=std_dev_df['position_angle'].values)
+                    weighted_agg.insert(loc=8, column='channels_above_threshold', value=np.array([len(df)]))
+
+                    # Get candidate id of channel with highest SNR
                     temp_idx = np.argmax(candidates_fit['norm_snr_image'][mask]['amplitude'])
                     candidate_index = int(candidates_fit['snr_image'][mask].iloc[temp_idx]['candidate_index'])
+                    # Set in mask, such that it won't be used in next iteration
                     mask[candidate_index] = False
                     rejected = rejected + list(np.argwhere(mask)[:, 0])
+
+                    # Add to our final position table
+                    final_position_table_key_list = [
+                        'x', 'y', 'x_relative', 'y_relative', 'separation', 'separation_sigma',
+                        'position_angle', 'position_angle_sigma', 'channels_above_threshold',
+                        'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area',
+                        'good_fraction', 'x_fwhm_free', 'y_fwhm_free', 'theta_free',
+                        'good_pixels_free', 'fwhm_area_free', 'good_fraction_free']
                     if candidate_index not in unique_candidate_indices and candidate_index not in rejected:
                         unique_candidate_indices.append(candidate_index)
                         final_position_table.append(
-                            weighted_agg[weighted_average_key_list])
+                            weighted_agg[final_position_table_key_list])
 
         final_position_table = pd.concat(final_position_table, ignore_index=True)
-        candidates = candidates.iloc[unique_candidate_indices].sort_values('separation')
 
+        # Filter out duplicates from candidate table, only retain one row entry per candidate
+        candidates = candidates.iloc[unique_candidate_indices].sort_values('separation')
         candidates_fit['contrast_image'] = candidates_fit['contrast_image'].iloc[unique_candidate_indices].sort_values(
             'separation', ignore_index=True)
         candidates_fit['snr_image'] = candidates_fit['snr_image'].iloc[unique_candidate_indices].reset_index()
@@ -1568,6 +1594,13 @@ class DetectionAnalysis(object):
             'separation', ignore_index=True)
 
         candidates_fit['snr_image'][weighted_average_key_list] = final_position_table[weighted_average_key_list]
+        candidates_fit['snr_image'].insert(loc=8, column='separation_sigma',
+                                           value=final_position_table['separation_sigma'].values)
+        candidates_fit['snr_image'].insert(loc=10, column='position_angle_sigma',
+                                           value=final_position_table['position_angle_sigma'].values)
+        candidates_fit['snr_image'].insert(loc=11, column='channels_above_threshold',
+                                           value=final_position_table['channels_above_threshold'].values)
+
         candidates_fit['snr_image'].sort_values('separation', ignore_index=True, inplace=True)
 
         self.candidates = candidates
@@ -1622,8 +1655,9 @@ class DetectionAnalysis(object):
         uncertainty = np.array(uncertainty)
 
         # REDO NORMALIZATION
-        self.reduction_parameters.yx_known_companion_position = np.vstack([self.reduction_parameters.yx_known_companion_position,
-                                                                           self.candidates[['y_relative', 'x_relative']].values])
+        self.reduction_parameters.yx_known_companion_position = np.vstack(
+            [self.reduction_parameters.yx_known_companion_position,
+             self.candidates[['y_relative', 'x_relative']].values])
         self.contrast_table_and_normalization(save=False)
         self.reduction_parameters.yx_known_companion_position = np.delete(
             self.reduction_parameters.yx_known_companion_position, -1, axis=0)
@@ -1724,17 +1758,18 @@ class DetectionAnalysis(object):
             candidate_spectra = self.candidate_spectra
 
         companion_table = candidates_fit['snr_image'][
-            ['x', 'y', 'x_relative', 'y_relative', 'separation', 'position_angle',
+            ['x', 'y', 'x_relative', 'y_relative', 'separation', 'separation_sigma',
+             'position_angle', 'position_angle_sigma', 'channels_above_threshold',
              'theta_free', 'x_fwhm', 'y_fwhm', 'fwhm_area', 'x_fwhm_free', 'y_fwhm_free',
              'good_fraction']]
 
-        companion_table.insert(loc=13, column='theta_deviation',
+        companion_table.insert(loc=16, column='theta_deviation',
                                value=companion_table['position_angle'] - companion_table['theta_free'])
-        companion_table.insert(loc=14, column='yx_fwhm_ratio',
+        companion_table.insert(loc=17, column='yx_fwhm_ratio',
                                value=companion_table['y_fwhm_free'] / companion_table['x_fwhm_free'])
-        companion_table.insert(loc=15, column='fwhm_area_free',
+        companion_table.insert(loc=18, column='fwhm_area_free',
                                value=np.pi * companion_table['x_fwhm_free'] * companion_table['y_fwhm_free'])
-        companion_table.insert(loc=16, column='norm_snr_fit',
+        companion_table.insert(loc=19, column='norm_snr_fit',
                                value=candidates_fit['norm_snr_image']['amplitude'])
 
         companion_table = pd.merge(
@@ -1753,3 +1788,5 @@ class DetectionAnalysis(object):
         self.validated_companion_table = validated_companion_table
 
         return companion_table, validated_companion_table
+
+    # def run_characterization(self, ):
