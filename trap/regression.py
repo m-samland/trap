@@ -558,12 +558,20 @@ def run_trap_with_model_temporal(
     ntime = data.shape[0]
 
     if reduction_parameters.reduce_single_position and reduction_parameters.plot_all_diagnostics:
-        if not os.path.exists('diagnostic_plots'):
-            os.makedirs('diagnostic_plots')
+        diagnostic_image_folder = os.path.join(
+            reduction_parameters.result_folder, 'diagnostic_plots')
+        if not os.path.exists(diagnostic_image_folder):
+            os.makedirs(diagnostic_image_folder)
         plt.close()
-        plt.imshow(reduction_mask.astype('int'), origin='bottom')
-        plt.savefig('diagnostic_plots/single_position_reduction_mask_test.jpg', dpi=300)
+        plt.imshow(reduction_mask.astype('int'), origin='lower')
+        plt.savefig(os.path.join(
+            diagnostic_image_folder, 'single_position_reduction_mask_test.jpg'), dpi=300)
         plt.close()
+
+    if reduction_parameters.reduce_single_position:
+        compute_robust_lambda = True
+    else:
+        compute_robust_lambda = False
 
     # Make array to contain stellar PSF model result
     model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
@@ -579,17 +587,10 @@ def run_trap_with_model_temporal(
         # maximum_counts = np.max(model)
         # number_of_frames_affected = np.sum(model > 0, axis=0)
         n_reduction_pix = np.sum(reduction_mask)
-
-        if model is not None:
-            diagnostic_image = np.empty((4, yx_dim[0], yx_dim[1],))
-            diagnostic_image[:] = np.nan
-
-            reduced_result = np.empty((n_reduction_pix, 3))
-            reduced_result[:] = np.nan
-
-        else:
-            diagnostic_image = None
-            reduced_result = None
+        diagnostic_image = np.empty((4, yx_dim[0], yx_dim[1],))
+        diagnostic_image[:] = np.nan
+        reduced_result = np.empty((n_reduction_pix, 3))
+        reduced_result[:] = np.nan
 
         # coefficients = np.empty((n_reduction_pix, number_of_pca_regressors))
         # coefficients[:] = np.nan
@@ -619,14 +620,15 @@ def run_trap_with_model_temporal(
                 if number_of_pca_regressors != 0:
                     training_matrix = data[:, regressor_pool_mask_global]
                     B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
-                        training_matrix, n_components=None, scaling=pca_scaling)
+                        training_matrix, n_components=None, scaling=pca_scaling,
+                        compute_robust_lambda=compute_robust_lambda)
                     B = B_full[:, :number_of_pca_regressors]
                     # S = S_full[:number_of_pca_regressors]
 
-    if plot_all_diagnostics:
+    if reduction_parameters.plot_all_diagnostics:
         plotting_tools.plot_scale(
             np.median(data, axis=0),
-            output_path='diagnostic_plots/pixel_to_fit.png',
+            output_path=os.path.join(diagnostic_image_folder, 'pixel_to_fit.png'),
             yx_coords=np.argwhere(reduction_mask),
             point_size1=0.5,
             plot_star_not_circle=False, scale='zscale', show=True)
@@ -671,7 +673,8 @@ def run_trap_with_model_temporal(
 
             if number_of_pca_regressors != 0:
                 B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
-                    training_matrix, n_components=None, scaling=pca_scaling)
+                    training_matrix, n_components=None, scaling=pca_scaling,
+                    compute_robust_lambda=compute_robust_lambda)
                 B = B_full[:, :number_of_pca_regressors]
         constant_offset = np.ones_like(y)
         if number_of_pca_regressors != 0:
@@ -720,14 +723,14 @@ def run_trap_with_model_temporal(
             model_cube = None
             noise_model_cube = None
 
-        if plot_all_diagnostics and model is not None:
+        if reduction_parameters.plot_all_diagnostics and model is not None:
             if np.array_equal(yx_pixel, test_pixel):
                 print("Selected pixel: {}".format(yx_pixel))
                 mask_coordinates = np.argwhere(regressor_pool_mask)
 
                 plotting_tools.plot_scale(np.median(data, axis=0), yx_coords=mask_coordinates,
                                           yx_coords2=[yx_pixel],  # , yx_center],
-                                          output_path='diagnostic_plots/regressor_selection_test2.pdf',
+                                          output_path=os.path.join(diagnostic_image_folder, 'regressor_selection.pdf'),
                                           point_size1=0.5,
                                           point_size2=3,
                                           show_cb=False,
@@ -738,25 +741,35 @@ def run_trap_with_model_temporal(
                 plt.xlabel('Frame')
                 plt.legend(loc='upper left')
                 plt.tight_layout()
-                plt.savefig('diagnostic_plots/pixel_data_test.jpg', dpi=300)
+                plt.savefig(os.path.join(diagnostic_image_folder, 'pixel_data_test.jpg'), dpi=300)
 
-                plt.close()
-                plt.plot(y, label='data for pixel')
-                plt.plot(model_for_pixel * reduction_parameters.true_contrast,
-                         color='green', label='planet contribution')
-                plt.xlabel('Frame')
-                plt.legend(loc='upper left')
-                plt.tight_layout()
-                plt.savefig('diagnostic_plots/pixel_with_planet_test.jpg', dpi=300)
+                if reduction_parameters.true_contrast is not None:
+                    plt.close()
+                    plt.plot(y, label='data for pixel')
+                    plt.plot(model_for_pixel * reduction_parameters.true_contrast,
+                             color='green', label='planet contribution')
+                    plt.xlabel('Frame')
+                    plt.legend(loc='upper left')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(diagnostic_image_folder, 'pixel_with_planet_test.jpg'), dpi=300)
 
-                plt.close()
-                fig, ax = plt.subplots(figsize=(9, 2))
-                ax.plot(model_for_pixel * reduction_parameters.true_contrast,
-                        label='planet contribution')
-                plt.xlabel('Frame')
-                plt.legend(loc='upper left')
-                plt.tight_layout()
-                plt.savefig('diagnostic_plots/planet_model_test.jpg', dpi=300)
+                    plt.close()
+                    fig, ax = plt.subplots(figsize=(9, 2))
+                    ax.plot(model_for_pixel * reduction_parameters.true_contrast,
+                            label='planet contribution')
+                    plt.xlabel('Frame')
+                    plt.legend(loc='upper left')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(diagnostic_image_folder, 'planet_model_test.jpg'), dpi=300)
+
+                    plt.close()
+                    plt.plot(y - model_for_pixel * reduction_parameters.true_contrast,
+                             label='data minus planet model')
+                    plt.plot(reconstructed_systematics, label='fit of systematics')
+                    plt.xlabel('Frame')
+                    plt.legend(loc='upper left')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(diagnostic_image_folder, 'data_minus_model_fit_test.jpg'), dpi=300)
 
                 plt.close()
                 fig, ax = plt.subplots(figsize=(9, 2))
@@ -764,7 +777,7 @@ def run_trap_with_model_temporal(
                 plt.xlabel('Frame')
                 plt.legend(loc='upper left')
                 plt.tight_layout()
-                plt.savefig('diagnostic_plots/data_for_pixel_long_test.jpg', dpi=300)
+                plt.savefig(os.path.join(diagnostic_image_folder, 'data_for_pixel_long_test.jpg'), dpi=300)
 
                 plt.close()
                 plt.style.use("paper")
@@ -781,35 +794,54 @@ def run_trap_with_model_temporal(
                 ax.set_ylabel('Counts (ADU)')
                 ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.25),
                           ncol=2, fancybox=False, shadow=False)
-                plt.savefig('diagnostic_plots/fitted_data_test.pdf', bbox_inches='tight')  # dpi=300)
-
-                plt.close()
-                plt.plot(y - model_for_pixel * reduction_parameters.true_contrast,
-                         label='data minus planet model')
-                plt.plot(reconstructed_systematics, label='fit of systematics')
-                plt.xlabel('Frame')
-                plt.legend(loc='upper left')
-                plt.tight_layout()
-                plt.savefig('diagnostic_plots/data_minus_model_fit_test.jpg', dpi=300)
+                plt.savefig(os.path.join(diagnostic_image_folder, 'fitted_data_test.pdf'),
+                            bbox_inches='tight')  # dpi=300)
 
                 plt.close()
                 plt.plot(y - reconstructed_lightcurve, label='residuals')
                 plt.xlabel('Frame')
                 plt.legend(loc='upper left')
                 plt.tight_layout()
-                plt.savefig('diagnostic_plots/residuals_test.jpg', dpi=300)
+                plt.savefig(os.path.join(diagnostic_image_folder, 'residuals_test.jpg'), dpi=300)
 
+                plt.close()
+                number_of_comp_plotted = 10
                 fig = plt.figure()
                 ax = plt.subplot(111)
-                for i in range(5):
-                    ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)
-                            [-1] + 0.1 * i, label=i)  # + 1 * i, label=i)
+                for i in range(number_of_comp_plotted):
+                    # ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)[-1] + 1 * i, label=i)  # + 1 * i, label=i)
+                    ax.plot(B[:, i] + 1 * i, label=i)  # + 1 * i, label=i)
+
+                ax.plot(model_for_pixel / np.max(model_for_pixel) +
+                        number_of_comp_plotted, color='black', label='model')
                 handles, labels = ax.get_legend_handles_labels()
                 ax.legend(handles[::-1], labels[::-1], loc='upper right')
                 plt.title('Principal component lightcurves')
                 # plt.ylim(-1, 5)
-                plt.xlim(0, 300)
-                plt.savefig('diagnostic_plots/principal_component_lightcurves_test.png', dpi=300)
+                # plt.xlim(0, 300)
+                # plt.show()
+                plt.savefig(os.path.join(diagnostic_image_folder,
+                            'principal_component_lightcurves_normalized_to_overall_variance.png'), dpi=300)
+
+                plt.close()
+                number_of_comp_plotted = 10
+                fig = plt.figure()
+                ax = plt.subplot(111)
+                for i in range(number_of_comp_plotted):
+                    ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)
+                            [-1] + 1 * i, label=i)  # + 1 * i, label=i)
+                    # ax.plot(B[:, i] + 1 * i, label=i)  # + 1 * i, label=i)
+
+                ax.plot(model_for_pixel / np.max(model_for_pixel) +
+                        number_of_comp_plotted, color='black', label='model')
+                handles, labels = ax.get_legend_handles_labels()
+                ax.legend(handles[::-1], labels[::-1], loc='upper right')
+                plt.title('Principal component lightcurves')
+                # plt.ylim(-1, 5)
+                # plt.xlim(0, 300)
+                # plt.show()
+                plt.savefig(os.path.join(diagnostic_image_folder,
+                            'principal_component_lightcurves.png'), dpi=300)
 
         if model is not None:
             diagnostic_image[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]] = (
@@ -1208,7 +1240,7 @@ def run_trap_with_model_wavelength(
         if not os.path.exists('diagnostic_plots'):
             os.makedirs('diagnostic_plots')
         plt.close()
-        plt.imshow(reduction_mask.astype('int'), origin='bottom')
+        plt.imshow(reduction_mask.astype('int'), origin='lower')
         plt.savefig('diagnostic_plots/single_position_reduction_mask_test.jpg', dpi=300)
         plt.close()
 
@@ -1342,7 +1374,7 @@ def run_trap_with_model_wavelength(
                 inverse_covariance_matrix = np.identity(len(y)) * (1. / y)
         else:
             inverse_covariance_matrix = None
-        # ipsh()
+
         P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
             design_matrix=A.T,
             data=y,

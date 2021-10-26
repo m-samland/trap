@@ -220,36 +220,37 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             right_handed=reduction_parameters.right_handed,
             pa=pa)
 
-        # result = regression.run_trap_with_model_temporal(
-        #     data=data_reduce,
-        #     model=model,
-        #     # model=None,
-        #     pa=pa,
-        #     reduction_parameters=reduction_parameters,
-        #     planet_relative_yx_pos=signal_position,
-        #     reduction_mask=reduction_mask_used,
-        #     known_companion_mask=known_companion_mask,
-        #     opposite_mask=opposite_mask,
-        #     yx_center=yx_center,
-        #     yx_center_injection=yx_center_injection,
-        #     signal_mask=signal_mask,
-        #     regressor_pool_mask=regressor_pool_mask,
-        #     bad_pixel_mask=bad_pixel_mask,
-        #     regressor_matrix=None,
-        #     true_contrast=true_contrast,
-        #     variance_reduction_area=variance_reduction_area,
-        #     plot_all_diagnostics=reduction_parameters.plot_all_diagnostics,
-        #     return_input_data=reduction_parameters.return_input_data)
-
-        result = regression.run_trap_with_model_temporal_optimized(
-            data=data_reduce,
-            model=model,
-            pa=pa,
-            reduction_parameters=reduction_parameters,
-            reduction_mask=reduction_mask_used,
-            regressor_pool_mask=regressor_pool_mask,
-            regressor_matrix=None,
-            variance_reduction_area=variance_reduction_area)
+        if reduction_parameters.reduce_single_position:
+            result = regression.run_trap_with_model_temporal(
+                data=data_reduce,
+                model=model,
+                # model=None,
+                pa=pa,
+                reduction_parameters=reduction_parameters,
+                planet_relative_yx_pos=signal_position,
+                reduction_mask=reduction_mask_used,
+                known_companion_mask=known_companion_mask,
+                opposite_mask=opposite_mask,
+                yx_center=yx_center,
+                yx_center_injection=yx_center_injection,
+                signal_mask=signal_mask,
+                regressor_pool_mask=regressor_pool_mask,
+                bad_pixel_mask=bad_pixel_mask,
+                regressor_matrix=None,
+                true_contrast=true_contrast,
+                variance_reduction_area=variance_reduction_area,
+                plot_all_diagnostics=reduction_parameters.plot_all_diagnostics,
+                return_input_data=reduction_parameters.return_input_data)
+        else:
+            result = regression.run_trap_with_model_temporal_optimized(
+                data=data_reduce,
+                model=model,
+                pa=pa,
+                reduction_parameters=reduction_parameters,
+                reduction_mask=reduction_mask_used,
+                regressor_pool_mask=regressor_pool_mask,
+                regressor_matrix=None,
+                variance_reduction_area=variance_reduction_area)
 
         # if result is not None:
         #     if reduction_parameters.fit_planet:
@@ -1407,6 +1408,8 @@ def run_complete_reduction(
                         center_yx=np.round(yx_center_full[wavelength_index])).copy()
             else:
                 known_companion_mask = None
+
+            known_companion_mask = None
 
             if reduction_parameters.inject_fake:
                 # Return copy of data when injecting fake to not contaminate data
