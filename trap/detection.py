@@ -1743,7 +1743,9 @@ class DetectionAnalysis(object):
             candidate_positions = self.candidates_fit['snr_image'][[
                 'y_relative', 'x_relative']].values
         # detection1.reduction_parameters.reduce_single_position = True
-        if len(candidate_positions) < 2:
+        if len(candidate_positions) == 0 or candidate_positions is None:
+            return None
+        if len(candidate_positions) == 1:
             candidate_positions = [candidate_positions]
 
         for candidate_index, candidate_position in tqdm(enumerate(candidate_positions)):
