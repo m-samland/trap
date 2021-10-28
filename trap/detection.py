@@ -181,7 +181,8 @@ def make_contrast_curve(detection_image, radial_bounds=None,
                     relative_pos=True, yx_center=None))
             detected_signal_mask = np.logical_or.reduce(detected_signal_masks)
         else:
-            raise ValueError("Dimensionality of known companion positions for contrast curve too large.")
+            raise ValueError(
+                "Dimensionality of known companion positions for contrast curve too large.")
     else:
         detected_signal_mask = None
         # detected_signal_mask = np.zeros(detection_image[0].shape, dtype='bool')
@@ -469,7 +470,8 @@ def plot_contrast_curve(
     else:
         ax0.set_ylabel("{}$\sigma$ contrast".format(sigma))
 
-    ax0.set_xlim(xmin, xmax + x_text_shift)  # set ticks visible, if using sharex = True. Not needed otherwise
+    # set ticks visible, if using sharex = True. Not needed otherwise
+    ax0.set_xlim(xmin, xmax + x_text_shift)
 
     if plot_iwa is not False:
         if plot_iwa > xmin:
@@ -658,7 +660,8 @@ def plot_contrast_curve_ratio(
     ax0.set_xlabel("Separation (pixel)")
     ax0.set_ylabel("Factor gained in contrast")
 
-    ax0.set_xlim(xmin, xmax + x_text_shift)  # set ticks visible, if using sharex = True. Not needed otherwise
+    # set ticks visible, if using sharex = True. Not needed otherwise
+    ax0.set_xlim(xmin, xmax + x_text_shift)
 
     if plot_iwa is not False:
         if plot_iwa > xmin:
@@ -757,7 +760,8 @@ def prepare_andromeda_output(andromeda_contrast, andromeda_norm_stddev, andromed
         andromeda_stack[2], radial_bounds=radial_bounds_test, bin_width=1,
         operation='mad_std',
         yx_center=None, known_companion_mask=None)
-    corrupt_separation = radial_bounds_test[0] + np.max(np.argwhere(np.isnan(andro_radial_test))) + 1
+    corrupt_separation = radial_bounds_test[0] + \
+        np.max(np.argwhere(np.isnan(andro_radial_test))) + 1
     assert corrupt_separation != radial_bounds_test[-1], "Innermost non-zero andromeda result at edge of image"
 
     xy_center = (andromeda_stack.shape[-1] // 2, andromeda_stack.shape[-2] // 2)
@@ -867,7 +871,8 @@ def fit_2d_gaussian(
     # Cutout works with x first and y second
     xy_fit_position_orig = cutout.to_original_position((par.x_mean.value, par.y_mean.value))
     yx_fit_position_orig = xy_fit_position_orig[::-1]
-    yx_fit_relative = (xy_fit_position_orig[1] - yx_center[0], xy_fit_position_orig[0] - yx_center[1])
+    yx_fit_relative = (xy_fit_position_orig[1] - yx_center[0],
+                       xy_fit_position_orig[0] - yx_center[1])
 
     fwhm_area = par.x_stddev.value * par.y_stddev.value * 2.355**2 * np.pi
 
@@ -1213,7 +1218,8 @@ class DetectionAnalysis(object):
                             relative_pos=True, yx_center=None))
                 self.detected_signal_mask = np.logical_or.reduce(detected_signal_masks)
             else:
-                raise ValueError("Dimensionality of known companion positions for contrast curve too large.")
+                raise ValueError(
+                    "Dimensionality of known companion positions for contrast curve too large.")
         else:
             self.detected_signal_mask = np.zeros([yx_dim[0], yx_dim[1]]).astype('bool')
 
@@ -1360,7 +1366,8 @@ class DetectionAnalysis(object):
             if len(candidates) > 0 and not np.all(yx_known_companion_position == yx_known_companion_position2):
                 self.reduction_parameters.yx_known_companion_position = yx_known_companion_position2
                 # self.mask_companions_in_detection()
-                detection_products = self.contrast_table_and_normalization(save=False, inplace=False)
+                detection_products = self.contrast_table_and_normalization(
+                    save=False, inplace=False)
         # self.contrast_table_and_normalization(save=True)
 
         candidates = self.find_approximate_candidate_positions(
@@ -1426,7 +1433,8 @@ class DetectionAnalysis(object):
                 -1, axis=0)
             contrast_image_result, snr_image_result, norm_snr_image_result = fit_planet_parameters(
                 detection_image=self.detection_cube[detection_product_index],
-                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],  # ?
+                # ?
+                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],
                 normalized_detection_image=detection_products['normalized_detection_cube'][detection_product_index],
                 contrast_table=detection_products['contrast_tables'][detection_product_index],
                 yx_position=candidates[['y', 'x']].values[candidate_idx],
@@ -1438,7 +1446,8 @@ class DetectionAnalysis(object):
 
             contrast_image_result_free, snr_image_result_free, norm_snr_image_result_free = fit_planet_parameters(
                 detection_image=self.detection_cube[detection_product_index],
-                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],  # ?
+                # ?
+                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],
                 normalized_detection_image=detection_products['normalized_detection_cube'][detection_product_index],
                 contrast_table=detection_products['contrast_tables'][detection_product_index],
                 yx_position=candidates[['y', 'x']].values[candidate_idx],
@@ -1560,13 +1569,17 @@ class DetectionAnalysis(object):
 
                     # Compute uncertainty based on standard deviation
                     std_dev_df = df.groupby('group').apply(np.std)
-                    weighted_agg.insert(loc=5, column='separation_sigma', value=std_dev_df['separation'].values)
-                    weighted_agg.insert(loc=7, column='position_angle_sigma', value=std_dev_df['position_angle'].values)
-                    weighted_agg.insert(loc=8, column='channels_above_threshold', value=np.array([len(df)]))
+                    weighted_agg.insert(loc=5, column='separation_sigma',
+                                        value=std_dev_df['separation'].values)
+                    weighted_agg.insert(loc=7, column='position_angle_sigma',
+                                        value=std_dev_df['position_angle'].values)
+                    weighted_agg.insert(loc=8, column='channels_above_threshold',
+                                        value=np.array([len(df)]))
 
                     # Get candidate id of channel with highest SNR
                     temp_idx = np.argmax(candidates_fit['norm_snr_image'][mask]['amplitude'])
-                    candidate_index = int(candidates_fit['snr_image'][mask].iloc[temp_idx]['candidate_index'])
+                    candidate_index = int(
+                        candidates_fit['snr_image'][mask].iloc[temp_idx]['candidate_index'])
                     # Set in mask, such that it won't be used in next iteration
                     mask[candidate_index] = False
                     rejected = rejected + list(np.argwhere(mask)[:, 0])
@@ -1649,7 +1662,8 @@ class DetectionAnalysis(object):
         component_key = str(temporal_components_fraction[0])
         for key in all_results[component_key]:
             contrast.append(all_results[component_key][key][self.reduction_type].measured_contrast)
-            uncertainty.append(all_results[component_key][key][self.reduction_type].contrast_uncertainty)
+            uncertainty.append(all_results[component_key][key]
+                               [self.reduction_type].contrast_uncertainty)
 
         contrast = np.array(contrast)
         uncertainty = np.array(uncertainty)
@@ -1664,8 +1678,10 @@ class DetectionAnalysis(object):
 
         normalization_factors = []
         for contrast_table_index in range(len(wavelength_indices)):
-            mask = np.isfinite(self.detection_products['contrast_tables'][contrast_table_index]['snr_normalization'])
-            separation = self.detection_products['contrast_tables'][contrast_table_index]['sep (pix)'][mask]
+            mask = np.isfinite(
+                self.detection_products['contrast_tables'][contrast_table_index]['snr_normalization'])
+            separation = self.detection_products['contrast_tables'][contrast_table_index]['sep (pix)'][
+                mask]
             norm_factors = self.detection_products['contrast_tables'][contrast_table_index]['snr_normalization'][mask]
 
             norm_factor_function = interp1d(separation, norm_factors, fill_value='extrapolate')
@@ -1724,8 +1740,11 @@ class DetectionAnalysis(object):
         candidate_spectra = []
 
         if candidate_positions is None:
-            candidate_positions = self.candidates_fit['snr_image'][['y_relative', 'x_relative']].values
+            candidate_positions = self.candidates_fit['snr_image'][[
+                'y_relative', 'x_relative']].values
         # detection1.reduction_parameters.reduce_single_position = True
+        if len(candidate_positions) < 2:
+            candidate_positions = [candidate_positions]
 
         for candidate_index, candidate_position in tqdm(enumerate(candidate_positions)):
             candidate_spectrum = self.rereduce_single_position(
@@ -1782,7 +1801,8 @@ class DetectionAnalysis(object):
             & (companion_table['yx_fwhm_ratio'] < yx_fwhm_ratio_threshold[1])
 
         unique_candidates = np.unique(companion_table[mask]['candidate_id'].values)
-        validated_companion_table = companion_table[companion_table['candidate_id'].isin(unique_candidates)]
+        validated_companion_table = companion_table[companion_table['candidate_id'].isin(
+            unique_candidates)]
 
         self.companion_table = companion_table
         self.validated_companion_table = validated_companion_table
