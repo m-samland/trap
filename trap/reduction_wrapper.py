@@ -92,11 +92,13 @@ def trap_one_position(guess_position, data, flux_psf, pa,
 
     if guess_position is not None:
         reduction_parameters.guess_position = guess_position
-        position_absolute = image_coordinates.relative_yx_to_absolute_yx(guess_position, yx_center).astype('int')
+        position_absolute = image_coordinates.relative_yx_to_absolute_yx(
+            guess_position, yx_center).astype('int')
     signal_position = np.array(reduction_parameters.guess_position)
 
     if contrast_map is not None:
-        reduction_parameters.true_contrast = contrast_map[position_absolute[0], position_absolute[1]]
+        reduction_parameters.true_contrast = contrast_map[position_absolute[0],
+                                                          position_absolute[1]]
     true_contrast = reduction_parameters.true_contrast
     # if reduction_parameters.true_position is not None:
     #     true_rhophi = image_coordinates.relative_yx_to_rhophi(
@@ -173,7 +175,8 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             # NOTE: Uses photon noise from data itself.
             # May not be valid based on pre-processing steps done
             if bad_pixel_mask is not None:
-                variance_reduction_area = np.abs(data_reduce[:, reduction_mask_wo_badpixels]) + read_noise**2
+                variance_reduction_area = np.abs(
+                    data_reduce[:, reduction_mask_wo_badpixels]) + read_noise**2
             else:
                 variance_reduction_area = np.abs(data_reduce[:, reduction_mask]) + read_noise**2
 
@@ -335,7 +338,8 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             else:
                 bad_pixel_mask = np.logical_or(bad_pixel_mask, bad_residual_mask)
             if variance_reduction_area is not None:
-                variance_reduction_area = variance_reduction_area[:, ~bad_residual_mask[reduction_mask_used]]
+                variance_reduction_area = variance_reduction_area[:,
+                                                                  ~bad_residual_mask[reduction_mask_used]]
             reduction_mask_used = np.logical_and(reduction_mask_used, ~bad_residual_mask)
 
         reduction_parameters_alternative = copy(reduction_parameters)
@@ -1193,7 +1197,8 @@ def run_complete_reduction(
 
     # Configure known companion information
     if reduction_parameters.yx_known_companion_position is not None:
-        reduction_parameters.yx_known_companion_position = np.array(reduction_parameters.yx_known_companion_position)
+        reduction_parameters.yx_known_companion_position = np.array(
+            reduction_parameters.yx_known_companion_position)
         # If ndim == 1, just one companion present, make new dimension for more companions
         if reduction_parameters.yx_known_companion_position.ndim == 1:
             reduction_parameters.yx_known_companion_position = np.expand_dims(
@@ -1204,7 +1209,8 @@ def run_complete_reduction(
     if reduction_parameters.known_companion_contrast is not None and reduction_parameters.remove_known_companions:
         assert reduction_parameters.yx_known_companion_position is not None, "No position for known companion given."
 
-        reduction_parameters.known_companion_contrast = np.array(reduction_parameters.known_companion_contrast)
+        reduction_parameters.known_companion_contrast = np.array(
+            reduction_parameters.known_companion_contrast)
 
         number_of_wavelengths = data_full.shape[0]
         number_of_companions = reduction_parameters.yx_known_companion_position.shape[0]
@@ -1216,7 +1222,8 @@ def run_complete_reduction(
             reduction_parameters.known_companion_contrast = np.expand_dims(
                 reduction_parameters.known_companion_contrast, axis=0)
         elif reduction_parameters.known_companion_contrast.ndim == 1 and number_of_wavelengths > 1:
-            raise ValueError("For multi-wavelength data, a known contrast has to be defined for every wavelength.")
+            raise ValueError(
+                "For multi-wavelength data, a known contrast has to be defined for every wavelength.")
         elif reduction_parameters.known_companion_contrast.ndim > 2:
             raise ValueError("Dimensionality of known companion contrast array too large.")
 
@@ -1360,7 +1367,8 @@ def run_complete_reduction(
                         reduction_parameters.contrast_curve_sigma))
 
             # if reduction_parameters.autosize_masks_in_lambda_over_d:
-            reduction_parameters.reduction_mask_psf_size = int(stamp_sizes_reduction[wavelength_index])
+            reduction_parameters.reduction_mask_psf_size = int(
+                stamp_sizes_reduction[wavelength_index])
             reduction_parameters.signal_mask_psf_size = int(stamp_sizes[wavelength_index])
             # reduction_parameters.signal_mask_psf_size = int(stamp_sizes[wavelength_index])
 
@@ -1381,7 +1389,8 @@ def run_complete_reduction(
             # Make companion mask before cropping to be consistent
             # Do this for each wavelength separately to account for PSF size
             # and differing center position
-            if reduction_parameters.yx_known_companion_position is not None:
+            if reduction_parameters.yx_known_companion_position is not None \
+                    and len(reduction_parameters.yx_known_companion_position) > 0:
                 if yx_center_injection_full is not None:
                     yx_center_before_crop = yx_center_injection_full[wavelength_index, :]
                 else:
@@ -1504,7 +1513,8 @@ def run_complete_reduction(
                 print("Skipping wavelength {}. NaNs detected in flux PSF.".format(wavelength_index))
                 continue
             if yx_center_injection_not_finite:
-                print("Skipping wavelength {}. NaNs detected in provided center position.".format(wavelength_index))
+                print("Skipping wavelength {}. NaNs detected in provided center position.".format(
+                    wavelength_index))
                 continue
 
             if reduction_parameters.remove_known_companions:
@@ -1566,79 +1576,86 @@ def run_complete_reduction(
                     # NOTE: Temporarily added for correlation, complex outputs should be implemented as in separate class
                     # or dictionary to reduce code duplication
                     if reduction_parameters.compute_residual_correlation and reduction_parameters.use_residual_correlation:
-                        fits.writeto(detection_image_corr_path[key], detection_image_corr[key], overwrite=True)
+                        fits.writeto(detection_image_corr_path[key],
+                                     detection_image_corr[key], overwrite=True)
                         fits.writeto(correlation_matrix_binned_path[key],
                                      correlation_matrix_binned[key], overwrite=True)
 
-                pixel_scale_mas = (1 * u.pixel).to(u.mas, instrument.pixel_scale).value
-
-                contrast_table = {}
-                contrast_table_corr = {}
-                for key in detection_image:
-                    normalized_detection_image, contrast_table[key], contrast_image, median_contrast_image = detection.make_contrast_curve(
-                        detection_image[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
-                        companion_mask_radius=reduction_parameters.companion_mask_radius,
-                        pixel_scale=pixel_scale_mas,
-                        yx_known_companion_position=reduction_parameters.yx_known_companion_position)
-                    fits.writeto(norm_detection_image_path[key], normalized_detection_image, overwrite=True)
-                    fits.writeto(contrast_image_path[key], contrast_image, overwrite=True)
-                    fits.writeto(median_contrast_image_path[key], median_contrast_image, overwrite=True)
-                    contrast_table[key].write(contrast_table_path[key], overwrite=True)
-
-                    if reduction_parameters.contrast_curve:
-                        detection.plot_contrast_curve(
-                            [contrast_table[key]],
-                            instrument=instrument,
-                            wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
-                            colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
-                            plot_vertical_lod=True, mirror_axis='mas',
-                            convert_to_mag=False, yscale='log',
-                            savefig=contrast_plot_path[key], show=False)
-
-                    # NOTE: Temporarily added for correlation, complex outputs should be implemented as in separate class
-                    # or dictionary to reduce code duplication
-                    if reduction_parameters.compute_residual_correlation and reduction_parameters.use_residual_correlation:
-                        normalized_detection_image_corr, contrast_table_corr[key], contrast_image_corr, median_contrast_image_corr = detection.make_contrast_curve(
-                            detection_image_corr[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
-                            companion_mask_radius=reduction_parameters.companion_mask_radius,
-                            pixel_scale=pixel_scale_mas,
-                            yx_known_companion_position=reduction_parameters.yx_known_companion_position)
-                        fits.writeto(norm_detection_image_corr_path[key],
-                                     normalized_detection_image_corr, overwrite=True)
-                        fits.writeto(contrast_image_corr_path[key], contrast_image_corr, overwrite=True)
-                        fits.writeto(median_contrast_image_corr_path[key], median_contrast_image_corr, overwrite=True)
-                        contrast_table_corr[key].write(contrast_table_corr_path[key], overwrite=True)
-
-                        if reduction_parameters.contrast_curve:
-                            detection.plot_contrast_curve(
-                                [contrast_table_corr[key]],
-                                instrument=instrument,
-                                wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
-                                colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
-                                plot_vertical_lod=True, mirror_axis='mas',
-                                convert_to_mag=False, yscale='log',
-                                savefig=contrast_plot_corr_path[key], show=False)
-
-                if reduction_parameters.temporal_plus_spatial_model:
-                    detection.plot_contrast_curve(
-                        [
-                            contrast_table['temporal'],
-                            contrast_table['temporal_plus_spatial']
-                        ],
-                        instrument=instrument,
-                        wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1].repeat(2),
-                        curvelabels=['temporal', 'temporal + spatial'],
-                        linestyles=['-', '--'],
-                        colors=['#1b1cd5', '#de650a'],  # , '#ba174e'],
-                        plot_vertical_lod=True, mirror_axis='mas',
-                        convert_to_mag=False, yscale='log',
-                        savefig=contrast_plot_comparison_path, show=False)
-
                 del detection_image
-                del contrast_table
-                del normalized_detection_image
-                del contrast_image
-                del median_contrast_image
+                # pixel_scale_mas = (1 * u.pixel).to(u.mas, instrument.pixel_scale).value
+                #
+                # contrast_table = {}
+                # contrast_table_corr = {}
+                # for key in detection_image:
+                #     normalized_detection_image, contrast_table[key], contrast_image, median_contrast_image = detection.make_contrast_curve(
+                #         detection_image[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
+                #         companion_mask_radius=reduction_parameters.companion_mask_radius,
+                #         pixel_scale=pixel_scale_mas,
+                #         yx_known_companion_position=reduction_parameters.yx_known_companion_position)
+                #     fits.writeto(norm_detection_image_path[key],
+                #                  normalized_detection_image, overwrite=True)
+                #     fits.writeto(contrast_image_path[key], contrast_image, overwrite=True)
+                #     fits.writeto(median_contrast_image_path[key],
+                #                  median_contrast_image, overwrite=True)
+                #     contrast_table[key].write(contrast_table_path[key], overwrite=True)
+                #
+                #     if reduction_parameters.contrast_curve:
+                #         detection.plot_contrast_curve(
+                #             [contrast_table[key]],
+                #             instrument=instrument,
+                #             wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
+                #             colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
+                #             plot_vertical_lod=True, mirror_axis='mas',
+                #             convert_to_mag=False, yscale='log',
+                #             savefig=contrast_plot_path[key], show=False)
+                #
+                #     # NOTE: Temporarily added for correlation, complex outputs should be implemented as in separate class
+                #     # or dictionary to reduce code duplication
+                #     if reduction_parameters.compute_residual_correlation and reduction_parameters.use_residual_correlation:
+                #         normalized_detection_image_corr, contrast_table_corr[key], contrast_image_corr, median_contrast_image_corr = detection.make_contrast_curve(
+                #             detection_image_corr[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
+                #             companion_mask_radius=reduction_parameters.companion_mask_radius,
+                #             pixel_scale=pixel_scale_mas,
+                #             yx_known_companion_position=reduction_parameters.yx_known_companion_position)
+                #         fits.writeto(norm_detection_image_corr_path[key],
+                #                      normalized_detection_image_corr, overwrite=True)
+                #         fits.writeto(contrast_image_corr_path[key],
+                #                      contrast_image_corr, overwrite=True)
+                #         fits.writeto(
+                #             median_contrast_image_corr_path[key], median_contrast_image_corr, overwrite=True)
+                #         contrast_table_corr[key].write(
+                #             contrast_table_corr_path[key], overwrite=True)
+                #
+                #         if reduction_parameters.contrast_curve:
+                #             detection.plot_contrast_curve(
+                #                 [contrast_table_corr[key]],
+                #                 instrument=instrument,
+                #                 wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
+                #                 colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
+                #                 plot_vertical_lod=True, mirror_axis='mas',
+                #                 convert_to_mag=False, yscale='log',
+                #                 savefig=contrast_plot_corr_path[key], show=False)
+                #
+                # if reduction_parameters.temporal_plus_spatial_model:
+                #     detection.plot_contrast_curve(
+                #         [
+                #             contrast_table['temporal'],
+                #             contrast_table['temporal_plus_spatial']
+                #         ],
+                #         instrument=instrument,
+                #         wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1].repeat(
+                #             2),
+                #         curvelabels=['temporal', 'temporal + spatial'],
+                #         linestyles=['-', '--'],
+                #         colors=['#1b1cd5', '#de650a'],  # , '#ba174e'],
+                #         plot_vertical_lod=True, mirror_axis='mas',
+                #         convert_to_mag=False, yscale='log',
+                #         savefig=contrast_plot_comparison_path, show=False)
+
+                # del contrast_table
+                # del normalized_detection_image
+                # del contrast_image
+                # del median_contrast_image
         if reduction_parameters.reduce_single_position:
             all_results['{}'.format(temporal_components_fraction[comp_index])] = wavelength_results
 

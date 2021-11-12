@@ -29,14 +29,16 @@ def mark_coordinates(fig, ax, yx_coords, color, point_size=10, plot_star_not_cir
     if len(yx_coords.shape) == 1:
         # Because origin is 'bottom' Circle takes x first
         if plot_star_not_circle:
-            symbols = plt.scatter(yx_coords[1], yx_coords[0], s=point_size, color=color, marker='x')  # (5, 1))
+            symbols = plt.scatter(yx_coords[1], yx_coords[0],
+                                  s=point_size, color=color, marker='x')  # (5, 1))
         else:
             symbols = plt.Circle((yx_coords[1], yx_coords[0]), point_size, color=color)
         ax.add_artist(symbols)
     elif len(yx_coords.shape) == 2:
         for yx in yx_coords:
             if plot_star_not_circle:
-                symbols = plt.scatter(yx[1], yx[0], point_size, color=color, marker='+')  # marker=(5, 1))
+                symbols = plt.scatter(yx[1], yx[0], point_size, color=color,
+                                      marker='+')  # marker=(5, 1))
             else:
                 symbols = plt.Circle((yx[1], yx[0]), point_size, color=color)
             ax.add_artist(symbols)
@@ -52,7 +54,7 @@ def plot_scale(
         cb_label=None, show_cb=True):
 
     plt.close()
-    plt.style.use("paper")
+    # plt.style.use("paper")
     image_size = np.shape(image)[0]
     r_max = image_size // 2
 

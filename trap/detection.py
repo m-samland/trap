@@ -160,7 +160,8 @@ def make_contrast_curve(detection_image, radial_bounds=None,
                         bin_width=3.,
                         companion_mask_radius=9,
                         pixel_scale=12.25,
-                        yx_known_companion_position=None):
+                        yx_known_companion_position=None,
+                        mask_above_sigma=None):
     yx_dim = (detection_image.shape[-2], detection_image.shape[-1])
 
     if radial_bounds is None:
@@ -191,33 +192,51 @@ def make_contrast_curve(detection_image, radial_bounds=None,
         detection_image[2], (radial_bounds[0], radial_bounds[1]),
         bin_width=bin_width,
         operation='mad_std', known_companion_mask=detected_signal_mask)
+    normalized_detection_image = detection_image[2] / snr_norm_profile
+
+    # Repeat normalization without higher than 'mask_above_sigma' values
+    # Removes most contamination by clear companion signals and binaries
+    if mask_above_sigma is not None:
+        local_detection_image = detection_image.copy()
+        mask_high_values = normalized_detection_image > mask_above_sigma
+        local_detection_image[:, mask_high_values] = np.nan
+
+        snr_norm_profile, snr_norm = make_radial_profile(
+            local_detection_image[2], (radial_bounds[0], radial_bounds[1]),
+            bin_width=bin_width,
+            operation='mad_std', known_companion_mask=detected_signal_mask)
+        normalized_detection_image = detection_image[2] / snr_norm_profile
+    else:
+        local_detection_image = detection_image
+
     median_flux_profile, percentile_flux_values = make_radial_profile(
-        detection_image[0], (radial_bounds[0], radial_bounds[1]),
+        local_detection_image[0], (radial_bounds[0], radial_bounds[1]),
         bin_width=bin_width,
         operation='percentiles', known_companion_mask=detected_signal_mask)
     stddev_flux_profile, stddev_flux_values = make_radial_profile(
-        detection_image[0], (radial_bounds[0], radial_bounds[1]),
+        local_detection_image[0], (radial_bounds[0], radial_bounds[1]),
         bin_width=bin_width,
         operation='mad_std', known_companion_mask=detected_signal_mask)
     median_uncertainty_profile, percentile_uncertainty_values = make_radial_profile(
-        detection_image[1], (radial_bounds[0], radial_bounds[1]),
+        local_detection_image[1], (radial_bounds[0], radial_bounds[1]),
         bin_width=bin_width,
         operation='percentiles', known_companion_mask=detected_signal_mask)
     min_uncertainty_profile, min_uncertainty_values = make_radial_profile(
-        detection_image[1], (radial_bounds[0], radial_bounds[1]),
+        local_detection_image[1], (radial_bounds[0], radial_bounds[1]),
         bin_width=bin_width,
         operation='min', known_companion_mask=detected_signal_mask)
+
     # contrast_norm_profile, contrast_norm_values = make_radial_profile(
     #     detection_image[1], (radial_bounds[0], radial_bounds[1]),
     #     bin_width=bin_width,
     #     operation='std', known_companion_mask=detected_signal_mask)
 
     # contrast_curve_table = np.vstack([np.arange(radial_bounds[0], radial_bounds[1])])
-    contrast_image = detection_image[1] * snr_norm_profile
-    median_contrast_image = median_uncertainty_profile * snr_norm_profile
+    uncertainty_image = detection_image[1] * snr_norm_profile
+    median_uncertainty_image = median_uncertainty_profile * snr_norm_profile
     percentile_contrast_curve = percentile_uncertainty_values * snr_norm[:, None]
     min_contrast_curve = min_uncertainty_values * snr_norm
-    normalized_detection_image = detection_image[2] / snr_norm_profile
+
     separation_pix = np.arange(radial_bounds[0], radial_bounds[1])
     separation_mas = np.arange(radial_bounds[0], radial_bounds[1]) * pixel_scale
 
@@ -235,7 +254,7 @@ def make_contrast_curve(detection_image, radial_bounds=None,
         'contrast_97.5', 'contrast_99.85', 'snr_normalization']
     contrast_table = Table(cols, names=col_names)
 
-    return normalized_detection_image, contrast_table, contrast_image, median_contrast_image
+    return normalized_detection_image, contrast_table, uncertainty_image, median_uncertainty_image
 
 
 def ratio_contrast_tables(table1, table2):
@@ -407,8 +426,8 @@ def plot_contrast_curve(
                         markeredgewidth=1,
                         capsize=3)
 
-    for separation in np.unique(companion_table['separation']):
-        ax0.axvline(x=separation, color='k', linestyle=':', alpha=0.3)
+            for separation in np.unique(companion_table['separation']):
+                ax0.axvline(x=separation, color='k', linestyle=':', alpha=0.3)
 
     ax0.set_yscale(yscale)
 
@@ -1085,12 +1104,21 @@ class DetectionAnalysis(object):
             fits.writeto(
                 self.file_paths['detection_image_path'], self.detection_cube, overwrite=True)
 
-    def contrast_table_and_normalization(self, detection_cube=None, save=True, overwrite=True, inplace=True):
+    def contrast_table_and_normalization(
+            self, detection_cube=None,
+            yx_known_companion_position=None,
+            mask_above_sigma=None,
+            save=True,
+            overwrite=True,
+            inplace=True):
 
         if detection_cube is None:
             detection_cube_used = self.detection_cube
         else:
             detection_cube_used = detection_cube
+
+        if yx_known_companion_position is None:
+            yx_known_companion_position = self.reduction_parameters.yx_known_companion_position
 
         detection_products = {}
         normalized_detection_cube = []
@@ -1107,7 +1135,8 @@ class DetectionAnalysis(object):
                 bin_width=self.reduction_parameters.normalization_width,
                 companion_mask_radius=self.reduction_parameters.companion_mask_radius,
                 pixel_scale=self.pixel_scale_mas,
-                yx_known_companion_position=self.reduction_parameters.yx_known_companion_position)
+                mask_above_sigma=mask_above_sigma,
+                yx_known_companion_position=yx_known_companion_position)
             normalized_detection_cube.append(normalized_detection_image)
             contrast_tables.append(contrast_table)
             uncertainty_cube.append(uncertainty_image)
@@ -1173,6 +1202,8 @@ class DetectionAnalysis(object):
         if companion_table is not None:
             mask = companion_table['wavelength_index'].isin(self.wavelength_indices)
             companion_table_used = companion_table[mask]
+        else:
+            companion_table_used = None
 
         fig = plot_contrast_curve(
             self.detection_products['contrast_tables'],
@@ -1289,13 +1320,13 @@ class DetectionAnalysis(object):
 
         self.empirical_correlation = empirical_correlation
 
-    def find_approximate_candidate_positions(self, snr_image, detection_threshold=4.75, mask_radius=6.):
+    def find_approximate_candidate_positions(self, snr_image, candidate_threshold=4.75, mask_radius=6.):
         snr_image = np.ma.masked_array(snr_image)
 
         yx_dim = snr_image.shape
         yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
 
-        significant_pixel_mask = snr_image > detection_threshold
+        significant_pixel_mask = snr_image.data > candidate_threshold
         snr_image.mask = ~significant_pixel_mask
 
         candidates = {'x': [], 'y': [], 'x_relative': [], 'y_relative': [],
@@ -1347,33 +1378,34 @@ class DetectionAnalysis(object):
 
         candidates = self.find_approximate_candidate_positions(
             detection_products['normalized_detection_cube'][detection_product_index],
-            detection_threshold=detection_threshold, mask_radius=mask_radius)
+            candidate_threshold=candidate_threshold, mask_radius=mask_radius)
 
+        # Exclude "detections" very close to the IWA of the reduction
         mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
         candidates = candidates[~mask_too_close]
 
-        if len(candidates) > 0:
-            yx_known_companion_position = candidates[['y_relative', 'x_relative']].values
-            self.reduction_parameters.yx_known_companion_position = yx_known_companion_position
-            detection_products = self.contrast_table_and_normalization(save=False, inplace=False)
-
-            candidates = self.find_approximate_candidate_positions(
-                detection_products['normalized_detection_cube'][detection_product_index],
-                detection_threshold=detection_threshold, mask_radius=mask_radius)
-            mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
-            candidates = candidates[~mask_too_close]
-            yx_known_companion_position2 = candidates[['y_relative', 'x_relative']].values
-            if len(candidates) > 0 and not np.all(yx_known_companion_position == yx_known_companion_position2):
-                self.reduction_parameters.yx_known_companion_position = yx_known_companion_position2
-                # self.mask_companions_in_detection()
-                detection_products = self.contrast_table_and_normalization(
-                    save=False, inplace=False)
-        # self.contrast_table_and_normalization(save=True)
-
-        candidates = self.find_approximate_candidate_positions(
-            detection_products['normalized_detection_cube'][detection_product_index],
-            detection_threshold=candidate_threshold, mask_radius=mask_radius)
-        mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
+        # if len(candidates) > 0:
+        #     yx_known_companion_position = candidates[['y_relative', 'x_relative']].values
+        #     self.reduction_parameters.yx_known_companion_position = yx_known_companion_position
+        #     detection_products = self.contrast_table_and_normalization(save=False, inplace=False)
+        #
+        #     candidates = self.find_approximate_candidate_positions(
+        #         detection_products['normalized_detection_cube'][detection_product_index],
+        #         detection_threshold=detection_threshold, mask_radius=mask_radius)
+        #     mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
+        #     candidates = candidates[~mask_too_close]
+        #     yx_known_companion_position2 = candidates[['y_relative', 'x_relative']].values
+        #     if len(candidates) > 0 and not np.all(yx_known_companion_position == yx_known_companion_position2):
+        #         self.reduction_parameters.yx_known_companion_position = yx_known_companion_position2
+        #         # self.mask_companions_in_detection()
+        #         detection_products = self.contrast_table_and_normalization(
+        #             save=False, inplace=False)
+        #     self.contrast_table_and_normalization(save=True)
+        #
+        #         candidates = self.find_approximate_candidate_positions(
+        #             detection_products['normalized_detection_cube'][detection_product_index],
+        #             detection_threshold=candidate_threshold, mask_radius=mask_radius)
+        #         mask_too_close = candidates['separation'] < smallest_separation_in_pixel + 2
         candidates = candidates[~mask_too_close].sort_values('separation', ignore_index=False)
 
         number_of_candidates = len(candidates)
@@ -1414,23 +1446,30 @@ class DetectionAnalysis(object):
         snr_image_results = []
         norm_snr_image_results = []
 
+        # Only consider candidates from one channel for normalization to prevent
+        # accumulating too many false positives in the normalization
+
         for candidate_idx in tqdm(range(len(candidates))):
             # Temporarily remove candidate position from normalization
             wavelength_index = candidates['wavelength_index'].values[candidate_idx]
             detection_product_index = np.argwhere(self.wavelength_indices == wavelength_index)[0][0]
             yx_position_relative = candidates[['y_relative', 'x_relative']].values[candidate_idx]
+
             if self.reduction_parameters.yx_known_companion_position is not None:
                 self.reduction_parameters.yx_known_companion_position = np.vstack(
                     [self.reduction_parameters.yx_known_companion_position,
                      yx_position_relative])
             else:
-                self.reduction_parameters.yx_known_companion_position = yx_position_relative
+                self.reduction_parameters.yx_known_companion_position = np.expand_dims(
+                    yx_position_relative, axis=0)
 
+            # EDIT: Change implementation to only normalize one wavelength and not all...
             detection_products = self.contrast_table_and_normalization(
-                detection_cube=detection_cube, save=False, inplace=False)
+                detection_cube=detection_cube, mask_above_sigma=5., save=False, inplace=False)
             self.reduction_parameters.yx_known_companion_position = np.delete(
                 self.reduction_parameters.yx_known_companion_position,
                 -1, axis=0)
+
             contrast_image_result, snr_image_result, norm_snr_image_result = fit_planet_parameters(
                 detection_image=self.detection_cube[detection_product_index],
                 # ?
@@ -1516,7 +1555,11 @@ class DetectionAnalysis(object):
             candidates.append(self.find_candidates(
                 detection_product_index=detection_product_index, detection_products=detection_products,
                 candidate_threshold=candidate_threshold))
+
         candidates = pd.concat(candidates, axis=0, ignore_index=True)
+
+        if len(candidates) == 0:
+            return None, None
 
         candidates_fit = self.fit_candidates(
             candidates=candidates, detection_cube=None,
@@ -1636,6 +1679,7 @@ class DetectionAnalysis(object):
         re_reduction_parameters.guess_position = candidate_position
         re_reduction_parameters.reduce_single_position = True
         re_reduction_parameters.data_auto_crop = True
+        re_reduction_parameters.yx_known_companion_position = None
         # To avoid manipulating data in place (multiple injections)
         # Set remove_known_companions to False
         re_reduction_parameters.remove_known_companions = False
@@ -1745,8 +1789,6 @@ class DetectionAnalysis(object):
         # detection1.reduction_parameters.reduce_single_position = True
         if len(candidate_positions) == 0 or candidate_positions is None:
             return None
-        if len(candidate_positions) == 1:
-            candidate_positions = [candidate_positions]
 
         for candidate_index, candidate_position in tqdm(enumerate(candidate_positions)):
             candidate_spectrum = self.rereduce_single_position(
