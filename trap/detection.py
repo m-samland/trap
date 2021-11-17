@@ -916,7 +916,7 @@ def plot_model_and_data(model, stamp):
 
 
 def fit_planet_parameters(
-        detection_image, uncertainty_image, normalized_detection_image,
+        detection_image, normalized_detection_image,
         contrast_table, yx_position, x_stddev=1.43, y_stddev=2.63,
         box_size=7, iterate=False, mask_deviating=False, deviation_threshold=0.1,
         fix_width=True, fix_orientation=True, plot=False):
@@ -1105,10 +1105,10 @@ class DetectionAnalysis(object):
                 self.file_paths['detection_image_path'], self.detection_cube, overwrite=True)
 
     def contrast_table_and_normalization(
-            self, detection_cube=None,
+            self, detection_cube=None, cube_indices=None,
             yx_known_companion_position=None,
             mask_above_sigma=None,
-            save=True,
+            save=False,
             overwrite=True,
             inplace=True):
 
@@ -1128,9 +1128,13 @@ class DetectionAnalysis(object):
 
         self.pixel_scale_mas = (1 * u.pixel).to(u.mas, self.instrument.pixel_scale).value
 
-        for detection_image in detection_cube_used:
+        if cube_indices is None:
+            cube_indices = list(range(len(detection_cube_used)))
+
+        for cube_index in cube_indices:
+            # for detection_image in detection_cube_used:
             normalized_detection_image, contrast_table, uncertainty_image, median_uncertainty_image = make_contrast_curve(
-                detection_image,
+                detection_cube_used[cube_index],
                 radial_bounds=None,
                 bin_width=self.reduction_parameters.normalization_width,
                 companion_mask_radius=self.reduction_parameters.companion_mask_radius,
@@ -1147,8 +1151,9 @@ class DetectionAnalysis(object):
         detection_products['median_uncertainty_cube'] = np.array(median_uncertainty_cube)
         detection_products['contrast_tables'] = contrast_tables
 
+        # Add real wavelength to contrast tables and concatenate into one table
         contrast_table = detection_products['contrast_tables'].copy()
-        for idx, wavelength_index in enumerate(self.wavelength_indices):
+        for idx, wavelength_index in enumerate(self.wavelength_indices[cube_indices]):
             wavelength_index_column = np.ones(
                 len(contrast_table[idx])) * wavelength_index
             contrast_table[idx] = contrast_table[idx].to_pandas()
@@ -1463,19 +1468,17 @@ class DetectionAnalysis(object):
                 self.reduction_parameters.yx_known_companion_position = np.expand_dims(
                     yx_position_relative, axis=0)
 
-            # EDIT: Change implementation to only normalize one wavelength and not all...
             detection_products = self.contrast_table_and_normalization(
-                detection_cube=detection_cube, mask_above_sigma=5., save=False, inplace=False)
+                detection_cube=detection_cube, cube_indices=[detection_product_index], mask_above_sigma=5., save=False, inplace=False)
             self.reduction_parameters.yx_known_companion_position = np.delete(
                 self.reduction_parameters.yx_known_companion_position,
                 -1, axis=0)
 
             contrast_image_result, snr_image_result, norm_snr_image_result = fit_planet_parameters(
-                detection_image=self.detection_cube[detection_product_index],
-                # ?
-                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],
-                normalized_detection_image=detection_products['normalized_detection_cube'][detection_product_index],
-                contrast_table=detection_products['contrast_tables'][detection_product_index],
+                detection_image=detection_cube[detection_product_index],
+                # uncertainty_image=detection_products['uncertainty_cube'][0],
+                normalized_detection_image=detection_products['normalized_detection_cube'][0],
+                contrast_table=detection_products['contrast_tables'][0],
                 yx_position=candidates[['y', 'x']].values[candidate_idx],
                 x_stddev=x_stddev, y_stddev=y_stddev,
                 box_size=box_size, mask_deviating=False,
@@ -1484,11 +1487,10 @@ class DetectionAnalysis(object):
                 plot=plot)
 
             contrast_image_result_free, snr_image_result_free, norm_snr_image_result_free = fit_planet_parameters(
-                detection_image=self.detection_cube[detection_product_index],
-                # ?
-                uncertainty_image=detection_products['uncertainty_cube'][detection_product_index],
-                normalized_detection_image=detection_products['normalized_detection_cube'][detection_product_index],
-                contrast_table=detection_products['contrast_tables'][detection_product_index],
+                detection_image=detection_cube[detection_product_index],
+                # uncertainty_image=detection_products['uncertainty_cube'][0],
+                normalized_detection_image=detection_products['normalized_detection_cube'][0],
+                contrast_table=detection_products['contrast_tables'][0],
                 yx_position=candidates[['y', 'x']].values[candidate_idx],
                 x_stddev=x_stddev, y_stddev=y_stddev,
                 box_size=box_size, mask_deviating=False,
@@ -1557,10 +1559,11 @@ class DetectionAnalysis(object):
                 candidate_threshold=candidate_threshold))
 
         candidates = pd.concat(candidates, axis=0, ignore_index=True)
-
         if len(candidates) == 0:
             return None, None
 
+        # NOTE: This fits all signals above threshold. Can be a lot for multiple cadidates
+        # detected in multiple wavelengths.
         candidates_fit = self.fit_candidates(
             candidates=candidates, detection_cube=None,
             detection_products=detection_products, plot=False)
@@ -1589,7 +1592,6 @@ class DetectionAnalysis(object):
                 final_position_table.append(entry)
             else:
                 # Find wavelength with highest SNR
-
                 if idx not in unique_candidate_indices and idx not in rejected:
                     # Perform weighted average of columns
                     df = candidates_fit['snr_image'][mask]
@@ -1669,7 +1671,8 @@ class DetectionAnalysis(object):
             temporal_components_fraction, variance_full=None, instrument=None,
             bad_frames=None, bad_pixel_mask_full=None, xy_image_centers=None,
             amplitude_modulation_full=None,
-            return_table=False):
+            return_table=False,
+            verbose=False):
 
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
@@ -1696,7 +1699,8 @@ class DetectionAnalysis(object):
             bad_frames=bad_frames,
             bad_pixel_mask_full=bad_pixel_mask_full,
             xy_image_centers=xy_image_centers,
-            amplitude_modulation_full=amplitude_modulation_full)
+            amplitude_modulation_full=amplitude_modulation_full,
+            verbose=verbose)
 
         # AUTOMATICALLY COLLECT ALL WAVELENGTHS FOR REDUCTION
         # NOTE: This should be generalized to allow automatically collect results from
@@ -1716,7 +1720,7 @@ class DetectionAnalysis(object):
         self.reduction_parameters.yx_known_companion_position = np.vstack(
             [self.reduction_parameters.yx_known_companion_position,
              self.candidates[['y_relative', 'x_relative']].values])
-        self.contrast_table_and_normalization(save=False)
+        self.contrast_table_and_normalization(save=False, inplace=True)
         self.reduction_parameters.yx_known_companion_position = np.delete(
             self.reduction_parameters.yx_known_companion_position, -1, axis=0)
 
@@ -1800,7 +1804,8 @@ class DetectionAnalysis(object):
                 variance_full=variance_full, instrument=instrument,
                 bad_frames=bad_frames, bad_pixel_mask_full=bad_pixel_mask_full,
                 xy_image_centers=xy_image_centers,
-                amplitude_modulation_full=amplitude_modulation_full)
+                amplitude_modulation_full=amplitude_modulation_full,
+                verbose=False)
             candidate_spectra.append(candidate_spectrum)
 
         candidate_spectra = pd.concat(candidate_spectra, axis=0, ignore_index=False)
