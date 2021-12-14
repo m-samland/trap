@@ -32,10 +32,13 @@ from scipy.interpolate import interp1d
 from tqdm import tqdm
 from trap import image_coordinates, regressor_selection
 from trap.embed_shell import ipsh
+from trap import (regressor_selection, image_coordinates, pca_regression)
 from trap.image_coordinates import (absolute_yx_to_relative_yx,
                                     relative_yx_to_rhophi)
 from trap.reduction_wrapper import run_complete_reduction
-from trap.utils import compute_empirical_correlation_matrix
+from trap.utils import (compute_empirical_correlation_matrix,
+                        remove_channel_from_correlation_matrix,
+                        find_nearest)
 
 # plt.style.use("paper")
 
@@ -340,6 +343,7 @@ def add_contrast_curve_to_ax(
 def plot_contrast_curve(
         contrast_table, instrument=None, wavelengths=[None],
         companion_table=None,
+        template_fitted=False,
         colors=['#1b1cd5'],
         linestyles=['-'],
         curvelabels=[None],
@@ -415,11 +419,29 @@ def plot_contrast_curve(
                 wavelength_indices = np.unique(companion_table['wavelength_index'])
                 temp_table = companion_table[companion_table['wavelength_index']
                                              == wavelength_indices[idx]]
-                if np.all(np.isfinite(temp_table['contrast'].values)):
+                if template_fitted:
+                    contrast_indices_closest_to_candidate = []
+                    contrast_closest_to_candidate = []
+                    for separation in temp_table['separation'].values:
+                        contrast_index_closest_to_candidate = \
+                            find_nearest(
+                                separation,
+                                contrast_curve['sep (pix)'])
+                        contrast_indices_closest_to_candidate.append(
+                            contrast_index_closest_to_candidate)
+                        contrast_closest_to_candidate.append(
+                            contrast_curve['contrast_50'][contrast_index_closest_to_candidate])
+
+                    contrast = temp_table['norm_snr_fit'].values * contrast_closest_to_candidate
+                    contrast_uncertainty = None
+                else:
+                    contrast = temp_table['contrast'].values
+                    contrast_uncertainty = temp_table['uncertainty'].values
+                if np.all(np.isfinite(contrast)):
                     ax0.errorbar(
                         x=temp_table['separation'].values,
-                        y=temp_table['contrast'].values,
-                        yerr=temp_table['uncertainty'].values,
+                        y=contrast,
+                        yerr=contrast_uncertainty,
                         fmt='o',
                         color=colors[idx],
                         markeredgecolor='k',
@@ -556,7 +578,7 @@ def plot_contrast_curve(
     if title is not None:
         plt.title(title)
 
-    if len(contrast_table) < 3:
+    if len(contrast_table) < 5:
         ax0.legend(loc=1)
     else:
         if wavelengths is not None:
@@ -567,7 +589,7 @@ def plot_contrast_curve(
                 sm, ax=ax3, pad=0.13, use_gridspec=True, fraction=0.045)  # , format='%.2f')
             cb.set_label('wavelength (micron)', rotation=90, labelpad=10)
 
-    fig.tight_layout()
+    # fig.tight_layout()
     if convert_to_mag:
         plt.gca().invert_yaxis()
     if savefig is not None:
@@ -1105,12 +1127,15 @@ class DetectionAnalysis(object):
                 self.file_paths['detection_image_path'], self.detection_cube, overwrite=True)
 
     def contrast_table_and_normalization(
-            self, detection_cube=None, cube_indices=None,
+            self, detection_cube=None,
+            cube_indices=None,
             yx_known_companion_position=None,
             mask_above_sigma=None,
             save=False,
+            file_paths=None,
             overwrite=True,
             inplace=True):
+        """ detection_cube contains the detection_image for all wavelengths """
 
         if detection_cube is None:
             detection_cube_used = self.detection_cube
@@ -1164,24 +1189,31 @@ class DetectionAnalysis(object):
         detection_products['contrast_table'] = contrast_table
 
         if save:
+            if file_paths is None:
+                contrast_table_file_name = os.path.splitext(
+                    file_paths['contrast_table_path'])[0]+'.csv'
+                file_paths = self.file_paths
+            else:
+                contrast_table_file_name = file_paths['contrast_table_path']
+
             fits.writeto(
-                self.file_paths['norm_detection_image_path'],
+                file_paths['norm_detection_image_path'],
                 detection_products['normalized_detection_cube'],
                 overwrite=overwrite)
             fits.writeto(
-                self.file_paths['uncertainty_image_path'],
+                file_paths['uncertainty_image_path'],
                 detection_products['uncertainty_cube'],
                 overwrite=overwrite)
             fits.writeto(
-                self.file_paths['median_uncertainty_image_path'],
+                file_paths['median_uncertainty_image_path'],
                 detection_products['median_uncertainty_cube'],
                 overwrite=overwrite)
             contrast_table.to_csv(
-                os.path.splitext(self.file_paths['contrast_table_path'])[0]+'.csv',
+                contrast_table_file_name,
                 index=False)
 
             with open(os.path.splitext(
-                    self.file_paths['contrast_table_path'])[0]+'.obj', 'wb') as handle:
+                    file_paths['contrast_table_path'])[0]+'.obj', 'wb') as handle:
                 pickle.dump(
                     detection_products['contrast_tables'], handle,
                     protocol=4)
@@ -1191,16 +1223,37 @@ class DetectionAnalysis(object):
         else:
             return detection_products
 
-    def contrast_plot(self, companion_table=None, plot_companions=True, savefig=True, show=False):
+    def contrast_plot(self, detection_products=None,
+                      wavelengths=None, add_wavelength_label=True,
+                      companion_table=None,
+                      template_fitted=False,
+                      plot_companions=True, curvelabels=None,
+                      linestyles=None, colors=None,
+                      plot_vertical_lod=True,
+                      file_paths=None,
+                      savefig=True, show=False):
+
+        if detection_products is None:
+            detection_products = self.detection_products
+
+        if wavelengths is None:
+            wavelengths = self.instrument.wavelengths[self.wavelength_indices]
 
         if companion_table is None and plot_companions:
             companion_table = self.validated_companion_table
         if not plot_companions:
             companion_table = None
 
+        if curvelabels is None:
+            curvelabels = np.array([None]).repeat(len(detection_products))
+        if linestyles is None:
+            linestyles = np.array(['-']).repeat(len(detection_products))
+
+        if file_paths is None:
+            file_paths = self.file_paths
         # colors = plt.cm.viridis(np.linspace(0, 1, len(self.wavelength_indices)))
         if savefig:
-            figure_path = self.file_paths['contrast_plot_path']
+            figure_path = file_paths['contrast_plot_path']
         else:
             figure_path = None
 
@@ -1211,16 +1264,18 @@ class DetectionAnalysis(object):
             companion_table_used = None
 
         fig = plot_contrast_curve(
-            self.detection_products['contrast_tables'],
+            detection_products['contrast_tables'],
             instrument=self.instrument,
             companion_table=companion_table_used,
+            template_fitted=template_fitted,
             # [wavelength_index:wavelength_index + 1],
-            wavelengths=self.instrument.wavelengths[self.wavelength_indices],
-            add_wavelength_label=True,
-            curvelabels=np.array([None]).repeat(len(self.wavelength_indices)),
-            linestyles=np.array(['-']).repeat(len(self.wavelength_indices)),
-            colors=None,  # ['#1b1cd5'],  # '#de650a', '#ba174e'],
-            plot_vertical_lod=True, mirror_axis='mas',
+            wavelengths=wavelengths,
+            add_wavelength_label=add_wavelength_label,
+            curvelabels=curvelabels,
+            linestyles=linestyles,
+            colors=colors,  # ['#1b1cd5'],  # '#de650a', '#ba174e'],
+            plot_vertical_lod=plot_vertical_lod,
+            mirror_axis='mas',
             convert_to_mag=False, yscale='log',
             savefig=figure_path,  # contrast_plot_path[key],
             show=show)
@@ -1469,7 +1524,8 @@ class DetectionAnalysis(object):
                     yx_position_relative, axis=0)
 
             detection_products = self.contrast_table_and_normalization(
-                detection_cube=detection_cube, cube_indices=[detection_product_index], mask_above_sigma=5., save=False, inplace=False)
+                detection_cube=detection_cube, cube_indices=[detection_product_index],
+                mask_above_sigma=5., save=False, inplace=False)
             self.reduction_parameters.yx_known_companion_position = np.delete(
                 self.reduction_parameters.yx_known_companion_position,
                 -1, axis=0)
@@ -1500,15 +1556,15 @@ class DetectionAnalysis(object):
 
             contrast_image_result = pd.merge(
                 contrast_image_result, contrast_image_result_free[[
-                    'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
+                    'amplitude', 'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
                 left_index=True, right_index=True, how='left', suffixes=[None, '_free'])
             snr_image_result = pd.merge(
-                snr_image_result, snr_image_result_free[['x_fwhm', 'y_fwhm',
-                                                         'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
+                snr_image_result, snr_image_result_free[[
+                    'amplitude', 'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
                 left_index=True, right_index=True, how='left', suffixes=[None, '_free'])
             norm_snr_image_result = pd.merge(
                 norm_snr_image_result, norm_snr_image_result_free[[
-                    'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
+                    'amplitude', 'x_fwhm', 'y_fwhm', 'theta', 'good_pixels', 'fwhm_area', 'good_fraction']],
                 left_index=True, right_index=True, how='left', suffixes=[None, '_free'])
 
             contrast_image_result.insert(loc=0, column='candidate_index',
@@ -1544,13 +1600,16 @@ class DetectionAnalysis(object):
 
         return candidates_fit
 
-    def complete_candidate_table(self, wavelength_indices=None, detection_threshold=5.,
-                                 candidate_threshold=4., search_radius=5, detection_products=None):
+    def find_candidates_all_wavelengths(self, detection_cube=None, detection_products=None,
+                                        wavelength_indices=None,
+                                        candidate_threshold=4.):
 
-        if wavelength_indices is None:
-            wavelength_indices = self.wavelength_indices
+        if detection_cube is None:
+            detection_cube = self.detection_cube
         if detection_products is None:
             detection_products = self.detection_products
+        if wavelength_indices is None:
+            wavelength_indices = self.wavelength_indices
 
         candidates = []
         for detection_product_index in tqdm(range(len(wavelength_indices))):
@@ -1559,13 +1618,36 @@ class DetectionAnalysis(object):
                 candidate_threshold=candidate_threshold))
 
         candidates = pd.concat(candidates, axis=0, ignore_index=True)
+        candidates = candidates.sort_values('separation')
+
+        return candidates
+
+    def complete_candidate_table(self, candidates=None,
+                                 detection_cube=None, detection_products=None,
+                                 wavelength_indices=None, detection_threshold=5.,
+                                 candidate_threshold=4., search_radius=5):
+
+        if detection_cube is None:
+            detection_cube = self.detection_cube
+        if detection_products is None:
+            detection_products = self.detection_products
+        if wavelength_indices is None:
+            wavelength_indices = self.wavelength_indices
+
+        if candidates is None:
+            candidates = self.find_candidates_all_wavelengths(
+                detection_cube=detection_cube,
+                detection_products=detection_products,
+                wavelength_indices=wavelength_indices,
+                candidate_threshold=candidate_threshold)
+
         if len(candidates) == 0:
             return None, None
 
         # NOTE: This fits all signals above threshold. Can be a lot for multiple cadidates
         # detected in multiple wavelengths.
         candidates_fit = self.fit_candidates(
-            candidates=candidates, detection_cube=None,
+            candidates=candidates, detection_cube=detection_cube,
             detection_products=detection_products, plot=False)
 
         unique_candidate_indices = []
@@ -1814,22 +1896,28 @@ class DetectionAnalysis(object):
         if return_spectra:
             return candidate_spectra
 
-    def detection_summary(self, candidates_fit, candidate_spectra,
-                          snr_threshold=4.5, good_fraction_threshold=0.4,
+    def detection_summary(self, candidates, candidates_fit, candidate_spectra=None,
+                          use_spectra=True, template_name=None,
+                          snr_threshold=4.5,
+                          snr_threshold_spectrum=True,
+                          good_fraction_threshold=0.05,
                           theta_deviation_threshold=25.,
-                          yx_fwhm_ratio_threshold=[1.1, 3.5]):
+                          yx_fwhm_ratio_threshold=[1.1, 4.5]):
+
+        if candidates is None:
+            candidates = self.candidates
 
         if candidates_fit is None:
             candidates_fit = self.candidates_fit
 
-        if candidate_spectra is None:
+        if candidate_spectra is None and use_spectra:
             candidate_spectra = self.candidate_spectra
 
         companion_table = candidates_fit['snr_image'][
             ['x', 'y', 'x_relative', 'y_relative', 'separation', 'separation_sigma',
              'position_angle', 'position_angle_sigma', 'channels_above_threshold',
              'theta_free', 'x_fwhm', 'y_fwhm', 'fwhm_area', 'x_fwhm_free', 'y_fwhm_free',
-             'good_fraction']]
+             'good_fraction', 'good_fraction_free']]
 
         companion_table.insert(loc=16, column='theta_deviation',
                                value=companion_table['position_angle'] - companion_table['theta_free'])
@@ -1839,23 +1927,415 @@ class DetectionAnalysis(object):
                                value=np.pi * companion_table['x_fwhm_free'] * companion_table['y_fwhm_free'])
         companion_table.insert(loc=19, column='norm_snr_fit',
                                value=candidates_fit['norm_snr_image']['amplitude'])
+        companion_table.insert(loc=20, column='norm_snr_fit_free',
+                               value=candidates_fit['norm_snr_image']['amplitude_free'])
+        companion_table.insert(loc=21, column='peak_pixel_snr',
+                               value=candidates['snr'])
 
-        companion_table = pd.merge(
-            companion_table, candidate_spectra,
-            left_index=True, right_on='candidate_id', how='left')
+        if template_name is not None:
+            companion_table.insert(loc=22, column='template_name',
+                                   value=np.array([template_name]).repeat(
+                                       len(companion_table)))
 
-        mask = (companion_table['snr'] > snr_threshold) & (companion_table['good_fraction'] > good_fraction_threshold) \
+        if use_spectra:
+            companion_table = pd.merge(
+                companion_table, candidate_spectra,
+                left_index=True, right_on='candidate_id', how='left')
+
+        if snr_threshold_spectrum and use_spectra:
+            snr = companion_table['snr']
+        else:
+            snr = np.max([companion_table['norm_snr_fit_free'],
+                         companion_table['peak_pixel_snr']], axis=0)
+
+        mask = (snr > snr_threshold) \
+            & (companion_table['good_fraction_free'] > good_fraction_threshold) \
             & (np.abs(companion_table['theta_deviation']) < theta_deviation_threshold) \
             & (companion_table['yx_fwhm_ratio'] > yx_fwhm_ratio_threshold[0]) \
             & (companion_table['yx_fwhm_ratio'] < yx_fwhm_ratio_threshold[1])
 
-        unique_candidates = np.unique(companion_table[mask]['candidate_id'].values)
-        validated_companion_table = companion_table[companion_table['candidate_id'].isin(
-            unique_candidates)]
+        if use_spectra:
+            unique_candidates = np.unique(companion_table[mask]['candidate_id'].values)
+            validated_companion_table = companion_table[companion_table['candidate_id'].isin(
+                unique_candidates)]
+        else:
+            validated_companion_table = companion_table[mask]
 
         self.companion_table = companion_table
         self.validated_companion_table = validated_companion_table
 
         return companion_table, validated_companion_table
+
+    def template_matching_detection(
+            self, contrast_template, template_name,
+            fit_offset=False, fit_slope=False,
+            number_of_pca_regressors=0,
+            use_spectral_correlation=True,
+            inner_mask_radius=5.,
+            detection_threshold=5.,
+            file_paths=None,
+            save=True):
+
+        wavelengths = self.instrument.wavelengths[self.wavelength_indices]
+
+        contrast_cube = self.detection_cube[:, 0].astype('float64')
+        uncertainty_cube = self.detection_products['uncertainty_cube'].astype(
+            'float64')  # / detection1.reduction_parameters.contrast_curve_sigma
+        yx_dim = [contrast_cube.shape[-2], contrast_cube.shape[-1]]
+        yx_center_output = [yx_dim[0] // 2, yx_dim[1]]
+        reduced_positions_mask = np.isfinite(contrast_cube[0])
+        self.reduction_parameters.annulus_width = 3
+
+        center_mask = regressor_selection.make_signal_mask(
+            yx_dim, (0, 0), inner_mask_radius,
+            relative_pos=True, yx_center=None)
+
+        reduced_positions_mask = np.logical_and(reduced_positions_mask, ~center_mask)
+
+        position_indices = np.argwhere(reduced_positions_mask)
+
+        template_matched_image = np.zeros((3, yx_dim[0], yx_dim[1]))
+
+        median_contrast = bn.nanmedian(contrast_cube, axis=0)
+
+        # regressors_centered = contrast_cube - median_contrast
+
+        # position_indices = [[32, 77]]
+        # number_of_pca_regressors = int(np.round(38 * 0.1))
+        wavelength_indices = self.wavelength_indices
+        self.make_spectral_correlation_matrices()
+
+        for idx, yx_pixel in tqdm(enumerate(position_indices)):
+            # wavelength indices are not applicable to contrast cube when not all wavelengths are reduced
+            # contrasts = contrast_cube[wavelength_indices, yx_pixel[0], yx_pixel[1]]
+            contrasts = contrast_cube[:, yx_pixel[0], yx_pixel[1]]
+            # contrasts = contrasts[self.good_residual_mask].astype('float64')
+            # uncertainties = np.sqrt(self.reduced_result[:, 1])
+            uncertainties = uncertainty_cube[:, yx_pixel[0], yx_pixel[1]]
+
+            yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
+            relative_coords = image_coordinates.absolute_yx_to_relative_yx(
+                yx_pixel, yx_center_output)
+
+            if use_spectral_correlation:
+                separation = np.sqrt(
+                    relative_coords[0]**2 + relative_coords[1]**2)
+
+                correlation_array_index = find_nearest(
+                    array=self.empirical_correlation['separation'],
+                    value=separation)
+
+                # channel_mask = np.zeros(len(self.instrument.wavelengths)).astype('bool')
+                # channel_mask[wavelength_indices] = True
+                psi_ij = self.empirical_correlation['matrices'][correlation_array_index]
+                # psi_ij = remove_channel_from_correlation_matrix(channel_mask, psi_ij)
+                cov_ij = uncertainties[:, None] * psi_ij * uncertainties[None, :]
+            # plot_scale(cov_ij)
+            # plt.show()
+            # inverse = inv(cov_ij)
+            variance_vector = uncertainties**2
+            inverse_covariance_matrix = np.identity(len(contrasts)) * (1. / variance_vector)
+            # if show:
+            # plot_scale(np.dot(inverse, cov_ij))
+            # plt.show()
+
+            model_components = []
+
+            if fit_offset:
+                model_components.append(np.ones(contrasts.shape[0]))
+            if fit_slope:
+                model_components.append(wavelengths.value)
+            if contrast_template is not None:
+                model_components.append(contrast_template[None, :])
+
+            if len(model_components) > 0:
+                model_matrix = np.vstack(model_components)
+            else:
+                raise ValueError(
+                    "No model present to fit. Provide `model`, `fit_offset` or `fit_slope`")
+
+            if number_of_pca_regressors > 0:
+                self.reduction_parameters.target_pix_mask_radius = 11
+                regressor_pool_mask_global = regressor_selection.make_regressor_pool_for_pixel(
+                    reduction_parameters=self.reduction_parameters,
+                    yx_pixel=yx_pixel,
+                    yx_dim=yx_dim,
+                    yx_center=yx_center_output,
+                    known_companion_mask=None)
+                regressor_pool_mask_global = np.logical_and(
+                    regressor_pool_mask_global,
+                    reduced_positions_mask)
+                training_matrix = contrast_cube[:][:, regressor_pool_mask_global]
+                B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
+                    training_matrix, n_components=None, scaling=None)  # 'temp-median')
+                B = B_full[:, :number_of_pca_regressors]
+                A = np.hstack((B, model_matrix.T))
+            # A = np.ones(len(uncertainties))[:, None]
+            else:
+                A = model_matrix.T
+
+            P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
+                design_matrix=A.T,
+                data=contrasts,
+                inverse_covariance_matrix=inverse_covariance_matrix)
+            # reconstructed_lightcurve = np.dot(A, P)
+
+            template_matched_image[0, yx_pixel[0], yx_pixel[1]] = P[-1]
+            template_matched_image[1, yx_pixel[0], yx_pixel[1]] = np.sqrt(P_sigma_squared[-1])
+            template_matched_image[2, yx_pixel[0], yx_pixel[1]] = \
+                P[-1] / np.sqrt(P_sigma_squared[-1])
+
+        if file_paths is None:
+            file_paths = {}
+            output_dir_matching = os.path.join(
+                reduction_parameters.result_folder, 'template_matching/')
+            if not os.path.exists(output_dir_matching):
+                os.makedirs(output_dir_matching)
+            file_paths['norm_detection_image_path'] = os.path.join(
+                output_dir_matching, f'normalized_detection_image_{template_name}.fits')
+            file_paths['uncertainty_image_path'] = os.path.join(
+                output_dir_matching, f'uncertainty_image_{template_name}.fits')
+            file_paths['median_uncertainty_image_path'] = os.path.join(
+                output_dir_matching, f'median_uncertainty_image_{template_name}.fits')
+            file_paths['contrast_table_path'] = os.path.join(
+                output_dir_matching, f'contrast_table_{template_name}.csv')
+            file_paths['contrast_plot_path'] = os.path.join(
+                output_dir_matching, f'contrast_plot_{template_name}')
+
+        self.reduction_parameters.yx_known_companion_position = None
+        detection_products_matched = self.contrast_table_and_normalization(
+            detection_cube=[template_matched_image], cube_indices=[0],
+            yx_known_companion_position=None, inplace=False,
+            save=save, file_paths=file_paths,
+            mask_above_sigma=detection_threshold)
+
+        detection_cube = np.expand_dims(template_matched_image, axis=0)
+        detection_products = detection_products_matched
+
+        return detection_cube, detection_products
+
+    def run_template_matching(self,
+                              contrast_template,
+                              template_name,
+                              fit_offset=False, fit_slope=False,
+                              number_of_pca_regressors=0,
+                              use_spectral_correlation=True,
+                              detection_threshold=5.,
+                              candidate_threshold=4.75,
+                              inner_mask_radius=4,
+                              search_radius=5,
+                              good_fraction_threshold=0.05,
+                              theta_deviation_threshold=25,
+                              yx_fwhm_ratio_threshold=[1.1, 4.5],
+                              data_full=None,
+                              flux_psf_full=None,
+                              pa=None,
+                              instrument=None,
+                              temporal_components_fraction=None,
+                              wavelength_indices=None,
+                              variance_full=None,
+                              bad_frames=None,
+                              bad_pixel_mask_full=None,
+                              xy_image_centers=None,
+                              amplitude_modulation_full=None,
+                              file_paths=None,
+                              save=True):
+
+        if file_paths is None:
+            file_paths = {}
+            output_dir_matching = os.path.join(
+                self.reduction_parameters.result_folder, 'template_matching/')
+            if not os.path.exists(output_dir_matching):
+                os.makedirs(output_dir_matching)
+            file_paths['norm_detection_image_path'] = os.path.join(
+                output_dir_matching, f'normalized_detection_image_{template_name}.fits')
+            file_paths['uncertainty_image_path'] = os.path.join(
+                output_dir_matching, f'uncertainty_image_{template_name}.fits')
+            file_paths['median_uncertainty_image_path'] = os.path.join(
+                output_dir_matching, f'median_uncertainty_image_{template_name}.fits')
+            file_paths['contrast_table_path'] = os.path.join(
+                output_dir_matching, f'contrast_table_{template_name}.csv')
+            file_paths['contrast_plot_path'] = os.path.join(
+                output_dir_matching, f'contrast_plot_{template_name}')
+        wavelengths = self.instrument.wavelengths[self.wavelength_indices]
+
+        detection_cube, detection_products = self.template_matching_detection(
+            contrast_template=contrast_template,
+            template_name=template_name,
+            fit_offset=fit_offset, fit_slope=fit_slope,
+            number_of_pca_regressors=number_of_pca_regressors,
+            use_spectral_correlation=use_spectral_correlation,
+            inner_mask_radius=inner_mask_radius,
+            detection_threshold=detection_threshold,
+            file_paths=file_paths,
+            save=save)
+
+        candidates = self.find_candidates_all_wavelengths(
+            detection_cube=detection_cube, detection_products=detection_products,
+            wavelength_indices=[0],
+            candidate_threshold=candidate_threshold)
+
+        # if self.reduction_parameters.yx_known_companion_position is not None:
+        #     self.reduction_parameters.yx_known_companion_position = np.vstack(
+        #         [self.reduction_parameters.yx_known_companion_position,
+        #          yx_position_relative])
+        # else:
+        #     self.reduction_parameters.yx_known_companion_position = np.expand_dims(
+        #         yx_position_relative, axis=0)
+
+        # _, candidates_fit_all_indices = analysis.complete_candidate_table(
+        #     candidates=candidates,
+        #     detection_cube=None, detection_products=None,
+        #     wavelength_indices=None, detection_threshold=detection_threshold,
+        #     candidate_threshold=candidate_threshold, search_radius=5)
+
+        _, candidates_fit_template = self.complete_candidate_table(
+            candidates=candidates,
+            detection_cube=detection_cube, detection_products=detection_products,
+            wavelength_indices=[0], detection_threshold=detection_threshold,
+            candidate_threshold=candidate_threshold,
+            search_radius=search_radius)
+
+        # fig = analysis.contrast_plot(detection_products=detection_products_matched,
+        #                              companion_table=None,
+        #                              plot_companions=False, savefig=False, show=True)
+
+        if candidates is None or len(candidates) == 0:
+            validated_companion_table = None
+            plot_companions = False
+        else:
+            # companion_table, validated_companion_table = analysis.detection_summary(
+            #     candidates=candidates, candidates_fit=candidates_fit_template, candidate_spectra=None, use_spectra=False,
+            #     template_name=template_name, snr_threshold_spectrum=False,
+            #     snr_threshold=5., good_fraction_threshold=0.25,
+            #     theta_deviation_threshold=25.,
+            #     yx_fwhm_ratio_threshold=[1.1, 4.5])
+
+            # mask = candidates['snr'] > detection_threshold
+            yx_known_companion_position = \
+                candidates_fit_template['snr_image'][[
+                    'y_relative', 'x_relative']].values  # [mask]
+            # yx_known_companion_position = np.unique(
+            #     validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
+
+            self.reduction_parameters.companion_mask_radius = 11.
+
+            # Masking out detections
+            detection_products_matched = self.contrast_table_and_normalization(
+                detection_cube=detection_cube, cube_indices=[0],
+                yx_known_companion_position=yx_known_companion_position,
+                inplace=False, save=save, file_paths=file_paths, mask_above_sigma=None)
+
+            candidates = self.find_candidates_all_wavelengths(
+                detection_cube=detection_cube, detection_products=detection_products_matched,
+                wavelength_indices=[0],
+                candidate_threshold=candidate_threshold)
+
+            _, candidates_fit_template = self.complete_candidate_table(
+                candidates=candidates,
+                detection_cube=detection_cube, detection_products=detection_products_matched,
+                wavelength_indices=[0], detection_threshold=detection_threshold,
+                candidate_threshold=candidate_threshold,
+                search_radius=search_radius)
+
+            print('Extracting candidate spectra.')
+            candidate_spectra = self.extract_candidate_spectra(
+                candidate_positions=candidates_fit_template['snr_image'][[
+                    'y_relative', 'x_relative']].values,
+                temporal_components_fraction=temporal_components_fraction,
+                data_full=data_full,
+                flux_psf_full=flux_psf_full,
+                pa=pa,
+                wavelength_indices=None,
+                variance_full=variance_full,
+                instrument=None,
+                bad_frames=bad_frames,
+                bad_pixel_mask_full=bad_pixel_mask_full,
+                xy_image_centers=xy_image_centers,
+                amplitude_modulation_full=amplitude_modulation_full,
+                return_spectra=True)
+
+            companion_table, validated_companion_table = self.detection_summary(
+                candidates=candidates, candidates_fit=candidates_fit_template, candidate_spectra=candidate_spectra, use_spectra=True,
+                template_name=template_name, snr_threshold_spectrum=False,
+                snr_threshold=detection_threshold, good_fraction_threshold=good_fraction_threshold,
+                theta_deviation_threshold=theta_deviation_threshold,
+                yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold)
+
+            # companion_table, validated_companion_table = analysis.detection_summary(
+            #     candidates_fit_template, candidate_spectra,
+            #     snr_threshold=detection_threshold, good_fraction_threshold=0.3,
+            #     theta_deviation_threshold=25.,
+            #     yx_fwhm_ratio_threshold=[1.1, 3.5])
+
+            # yx_known_companion_position = np.unique(
+            #     validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
+
+            self.reduction_parameters.yx_known_companion_position = yx_known_companion_position
+
+            companion_table.to_csv(
+                os.path.join(output_dir_matching, f'companion_table_{template_name}.csv'),
+                index=False)
+
+            validated_companion_table.to_csv(
+                os.path.join(output_dir_matching,
+                             f'validated_companion_table_{template_name}.csv'),
+                index=False)
+
+            validated_companion_table_short = validated_companion_table[
+                ['candidate_id', 'x', 'y', 'x_relative',
+                 'y_relative', 'separation', 'separation_sigma',
+                 'position_angle', 'position_angle_sigma',
+                 # 'channels_above_threshold',
+                 'template_name',
+                 'norm_snr_fit_free',
+                 'peak_pixel_snr',
+                 'wavelength_index', 'wavelength',
+                 'contrast', 'uncertainty']]
+
+            validated_companion_table_short.to_csv(
+                os.path.join(output_dir_matching,
+                             f'validated_companion_table_short_{template_name}.csv'),
+                index=False)
+
+            plt.close()
+            candidate_indices = np.unique(validated_companion_table['candidate_id'])
+            for candidate_index in candidate_indices:
+                temp_table = validated_companion_table[validated_companion_table['candidate_id']
+                                                       == candidate_index]
+                plt.errorbar(
+                    x=temp_table['wavelength'],
+                    y=temp_table['contrast'],
+                    yerr=temp_table['uncertainty'],
+                    fmt='o',
+                    label='candidate {}'.format(candidate_index))
+            plt.axhline(y=0, color='k', linestyle='--', alpha=0.5)
+            plt.xlabel('wavelength')
+            plt.ylabel('contrast')
+            plt.legend()
+            plt.savefig(os.path.join(output_dir_matching,
+                        f'companion_spectra_{template_name}.pdf'))
+            plt.close()
+
+            # analysis.contrast_table_and_normalization(save=False)
+            # _ = analysis.contrast_plot(
+            #     savefig=False, plot_companions=plot_companions,
+            #     companion_table=validated_companion_table, show=True)
+
+            _ = self.contrast_plot(detection_products=detection_products,
+                                   companion_table=validated_companion_table,
+                                   wavelengths=np.median(wavelengths).repeat(2)[:1],
+                                   add_wavelength_label=False,
+                                   curvelabels=[f'{template_name}'],
+                                   linestyles=['-', '--'],
+                                   colors=['blue'],
+                                   plot_companions=True,
+                                   template_fitted=True,
+                                   savefig=True,
+                                   file_paths=file_paths,
+                                   show=False)
+
+            return companion_table, validated_companion_table, validated_companion_table_short, detection_products
+        return None, None, None, detection_products
 
     # def run_characterization(self, ):

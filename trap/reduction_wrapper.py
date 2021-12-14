@@ -989,7 +989,8 @@ def run_complete_reduction(
         bad_frames=None,
         bad_pixel_mask_full=None,
         xy_image_centers=None,
-        amplitude_modulation_full=None):
+        amplitude_modulation_full=None,
+        verbose=False):
     """Runs complete TRAP reduction on data and produces contrast and
     normalized detection maps as well as contrast curves. This is the most
     high-level wrapper for the code. The wrapper hierarchy is:
@@ -1668,56 +1669,56 @@ def run_complete_reduction(
         return None
 
 
-def make_contrast_from_output(
-        result_folder,
-        instrument,
-        glob_pattern='detection*fits',
-        yx_known_companion_position=None,
-        sigma=5,
-        radial_bounds=None,
-        bin_width=3.,
-        companion_mask_radius=11):
-
-    detection_files = glob(os.path.join(result_folder, glob_pattern))
-    assert len(detection_files) > 0, "No output files found."
-
-    # Loop over reductions for different numbers of components
-    for idx, detection_file in tqdm(enumerate(detection_files)):
-        # TODO: Add sigma to output filename
-        basename = os.path.basename(detection_file)
-        norm_detection_image_path = os.path.join(
-            result_folder, basename.replace('detection', 'norm_detection'))
-        contrast_table_path = os.path.join(
-            result_folder, basename.replace('detection', 'contrast_table'))
-        contrast_image_path = os.path.join(
-            result_folder, basename.replace('detection', 'contrast_image'))
-        median_contrast_image_path = os.path.join(
-            result_folder, basename.replace('detection', 'median_contrast_image'))
-        contrast_plot_path = os.path.join(
-            result_folder, os.path.splitext(basename)[0].replace('detection', 'contrast_plot') + '.jpg')
-
-        string_index = basename.find('lam') + 3
-        # string_index = basename.find('lam_') + 4
-        wavelength_index = int(basename[string_index:string_index + 2])
-
-        detection_image = fits.getdata(detection_file)
-        pixel_scale_mas = (1 * u.pixel).to(u.mas, instrument.pixel_scale).value
-        normalized_detection_image, contrast_table, contrast_image, median_contrast_image = detection.make_contrast_curve(
-            detection_image, radial_bounds=radial_bounds,
-            bin_width=bin_width,
-            companion_mask_radius=companion_mask_radius,
-            pixel_scale=pixel_scale_mas,
-            yx_known_companion_position=yx_known_companion_position)
-        fits.writeto(norm_detection_image_path, normalized_detection_image, overwrite=True)
-        fits.writeto(contrast_image_path, contrast_image, overwrite=True)
-        fits.writeto(median_contrast_image_path, median_contrast_image, overwrite=True)
-        contrast_table.write(contrast_table_path, overwrite=True)
-
-        detection.plot_contrast_curve(
-            [contrast_table],
-            instrument=instrument,
-            wavelengths=wavelengths[wavelength_index:wavelength_index + 1],
-            colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
-            plot_vertical_lod=True, mirror_axis='mas',
-            convert_to_mag=False, yscale='log',
-            savefig=contrast_plot_path, show=False)
+# def make_contrast_from_output(
+#         result_folder,
+#         instrument,
+#         glob_pattern='detection*fits',
+#         yx_known_companion_position=None,
+#         sigma=5,
+#         radial_bounds=None,
+#         bin_width=3.,
+#         companion_mask_radius=11):
+#
+#     detection_files = glob(os.path.join(result_folder, glob_pattern))
+#     assert len(detection_files) > 0, "No output files found."
+#
+#     # Loop over reductions for different numbers of components
+#     for idx, detection_file in tqdm(enumerate(detection_files)):
+#         # TODO: Add sigma to output filename
+#         basename = os.path.basename(detection_file)
+#         norm_detection_image_path = os.path.join(
+#             result_folder, basename.replace('detection', 'norm_detection'))
+#         contrast_table_path = os.path.join(
+#             result_folder, basename.replace('detection', 'contrast_table'))
+#         contrast_image_path = os.path.join(
+#             result_folder, basename.replace('detection', 'contrast_image'))
+#         median_contrast_image_path = os.path.join(
+#             result_folder, basename.replace('detection', 'median_contrast_image'))
+#         contrast_plot_path = os.path.join(
+#             result_folder, os.path.splitext(basename)[0].replace('detection', 'contrast_plot') + '.jpg')
+#
+#         string_index = basename.find('lam') + 3
+#         # string_index = basename.find('lam_') + 4
+#         wavelength_index = int(basename[string_index:string_index + 2])
+#
+#         detection_image = fits.getdata(detection_file)
+#         pixel_scale_mas = (1 * u.pixel).to(u.mas, instrument.pixel_scale).value
+#         normalized_detection_image, contrast_table, contrast_image, median_contrast_image = detection.make_contrast_curve(
+#             detection_image, radial_bounds=radial_bounds,
+#             bin_width=bin_width,
+#             companion_mask_radius=companion_mask_radius,
+#             pixel_scale=pixel_scale_mas,
+#             yx_known_companion_position=yx_known_companion_position)
+#         fits.writeto(norm_detection_image_path, normalized_detection_image, overwrite=True)
+#         fits.writeto(contrast_image_path, contrast_image, overwrite=True)
+#         fits.writeto(median_contrast_image_path, median_contrast_image, overwrite=True)
+#         contrast_table.write(contrast_table_path, overwrite=True)
+#
+#         detection.plot_contrast_curve(
+#             [contrast_table],
+#             instrument=instrument,
+#             wavelengths=wavelengths[wavelength_index:wavelength_index + 1],
+#             colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
+#             plot_vertical_lod=True, mirror_axis='mas',
+#             convert_to_mag=False, yscale='log',
+#             savefig=contrast_plot_path, show=False)

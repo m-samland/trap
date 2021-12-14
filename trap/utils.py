@@ -315,7 +315,8 @@ def resize_cube(arr, new_dim):
 def derotate_cube(flux_arr, pa, right_handed, verbose=False):
     for i in range(flux_arr.shape[0]):
         if verbose is True:
-            print("Derotating Spectral Channel: Frame: {:02d} by {:02.03f} degree.".format(i + 1, pa[i]))
+            print("Derotating Spectral Channel: Frame: {:02d} by {:02.03f} degree.".format(
+                i + 1, pa[i]))
         flux_arr[i] = ndimage.rotate(flux_arr[i], pa[i], reshape=False)
 
     return flux_arr
@@ -358,7 +359,8 @@ def scale_images(arr, lam, newdim):
         for j in range(arr.shape[1]):
             print("Magnifing Channel {0}: Frame {1}".format(i + 1, j + 1))
             # Crop Image before saving into flux is necessary!
-            flux[i, j] = resize_arr(ndimage.interpolation.zoom(arr[i, j], float(magnification[i]), order=3), newdim)
+            flux[i, j] = resize_arr(ndimage.interpolation.zoom(
+                arr[i, j], float(magnification[i]), order=3), newdim)
     return flux
 
 
@@ -373,7 +375,8 @@ def scale_images_sdi(arr, lam, newdim):
         magnification[i] = np.divide(lam[-1], lam[i])
         print("Magnifing Channel {0}".format(i + 1))
         # Crop Image before saving into flux is necessary!
-        flux[i] = resize_arr(ndimage.interpolation.zoom(arr[i], float(magnification[i]), order=3), newdim)
+        flux[i] = resize_arr(ndimage.interpolation.zoom(
+            arr[i], float(magnification[i]), order=3), newdim)
     return flux
 
 
@@ -587,3 +590,20 @@ def get_data_base(arr):
 
 def arrays_share_data(x, y):
     return get_data_base(x) is get_data_base(y)
+
+
+def find_nearest(array, value):
+    """Return index of array value closest to specified value.
+    """
+    idx = (np.abs(array - value)).argmin()
+    return idx
+
+
+def remove_channel_from_correlation_matrix(bool_arr, psi_ij):
+    channels_to_remove = np.where(bool_arr == False)[0]
+    counter = 0
+    for i in channels_to_remove:
+        psi_ij = np.delete(psi_ij, (i - counter), axis=0)
+        psi_ij = np.delete(psi_ij, (i - counter), axis=1)
+        counter += 1
+    return psi_ij
