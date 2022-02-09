@@ -1981,18 +1981,35 @@ class DetectionAnalysis(object):
             use_spectral_correlation=True):
 
         os.chdir(species_database_directory)
-        database = species.Database()
+        try:
+            database = species.Database()
+        except:
+            FileNotFoundError(
+                f"No initialized species database found in: {species_database_directory}")
 
         if instrument is None:
             instrument = self.instrument
+        try:
+            cool_planet_read_model = species.ReadModel(
+                model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
+        except:
+            print("Adding 'petit-cool-cloudy' models to database.")
+            database.add_model(model='petitcode-cool-cloudy', teff_range=(700., 800.))
+            cool_planet_read_model = species.ReadModel(
+                model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
 
-        cool_planet_read_model = species.ReadModel(
-            model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
         cool_planet_model_param = {'teff': 760., 'logg': 4.26,
                                    'feh': 1.0, 'fsed': 1.26, 'radius': 1.1,
                                    'distance': 30.}
-        hot_planet_read_model = species.ReadModel(
-            model='drift-phoenix', wavel_range=(0.85, 3.6))
+        try:
+            hot_planet_read_model = species.ReadModel(
+                model='drift-phoenix', wavel_range=(0.85, 3.6))
+        except:
+            print("Adding 'drift-phoenix' models to database.")
+            database.add_model(model='drift-phoenix', teff_range=(1400., 1600.))
+            hot_planet_read_model = species.ReadModel(
+                model='drift-phoenix', wavel_range=(0.85, 3.6))
+
         hot_planet_model_param = {'teff': 1500., 'logg': 4.,
                                   'feh': 0., 'radius': 1.1,
                                   'distance': 30.}
