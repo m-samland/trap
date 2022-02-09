@@ -9,7 +9,8 @@ from __future__ import (absolute_import, division, print_function,
 
 import os
 import pickle
-from copy import copy
+import copy
+from collections import OrderedDict
 from glob import glob
 
 import bottleneck as bn
@@ -39,6 +40,9 @@ from trap.reduction_wrapper import run_complete_reduction
 from trap.utils import (compute_empirical_correlation_matrix,
                         remove_channel_from_correlation_matrix,
                         find_nearest)
+from trap.template import SpectralTemplate
+
+import species
 
 # plt.style.use("paper")
 
@@ -1055,6 +1059,7 @@ class DetectionAnalysis(object):
         self.instrument = instrument
         self.reduction_parameters = reduction_parameters
         self.detected_signal_mask = None
+        self.templates = OrderedDict()
 
         if instrument is not None:
             self.instrument.compute_fwhm()
@@ -1759,7 +1764,7 @@ class DetectionAnalysis(object):
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
 
-        re_reduction_parameters = copy(self.reduction_parameters)
+        re_reduction_parameters = copy.copy(self.reduction_parameters)
 
         re_reduction_parameters.guess_position = candidate_position
         re_reduction_parameters.reduce_single_position = True
@@ -1950,7 +1955,7 @@ class DetectionAnalysis(object):
 
         mask = (snr > snr_threshold) \
             & (companion_table['good_fraction_free'] > good_fraction_threshold) \
-            & (np.abs(companion_table['theta_deviation']) < theta_deviation_threshold) \
+            & ((np.abs(companion_table['theta_deviation']) % 360) < theta_deviation_threshold) \
             & (companion_table['yx_fwhm_ratio'] > yx_fwhm_ratio_threshold[0]) \
             & (companion_table['yx_fwhm_ratio'] < yx_fwhm_ratio_threshold[1])
 
@@ -1966,15 +1971,90 @@ class DetectionAnalysis(object):
 
         return companion_table, validated_companion_table
 
+    def add_templates(self, template):
+        self.templates[template.name] = template
+
+    def add_default_templates(
+            self, stellar_modelbox, species_database_directory,
+            instrument=None,
+            correct_transmission=False,
+            use_spectral_correlation=True):
+
+        os.chdir(species_database_directory)
+        database = species.Database()
+
+        if instrument is None:
+            instrument = self.instrument
+
+        cool_planet_read_model = species.ReadModel(
+            model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
+        cool_planet_model_param = {'teff': 760., 'logg': 4.26,
+                                   'feh': 1.0, 'fsed': 1.26, 'radius': 1.1,
+                                   'distance': 30.}
+        hot_planet_read_model = species.ReadModel(
+            model='drift-phoenix', wavel_range=(0.85, 3.6))
+        hot_planet_model_param = {'teff': 1500., 'logg': 4.,
+                                  'feh': 0., 'radius': 1.1,
+                                  'distance': 30.}
+
+        cool_planet_modelbox = cool_planet_read_model.get_model(
+            model_param=cool_planet_model_param)
+        hot_planet_modelbox = hot_planet_read_model.get_model(
+            model_param=hot_planet_model_param)
+
+        flat_model = copy.deepcopy(cool_planet_modelbox)
+        flat_model.flux = np.ones_like(flat_model.wavelength)
+
+        if stellar_modelbox is None:
+            stellar_modelbox = copy.deepcopy(flat_model)
+
+        self.templates['T-type'] = \
+            SpectralTemplate(
+                name='T-type',
+                instrument=instrument,
+                companion_modelbox=cool_planet_modelbox,
+                stellar_modelbox=stellar_modelbox,  # star_modelflux,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=True,
+                fit_slope=True,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation)
+
+        self.templates['L-type'] = \
+            SpectralTemplate(
+                name='L-type',
+                instrument=instrument,
+                companion_modelbox=hot_planet_modelbox,
+                stellar_modelbox=stellar_modelbox,  # star_modelflux,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=False,
+                fit_slope=False,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation)
+
+        self.templates['flat'] = \
+            SpectralTemplate(
+                name='flat',
+                instrument=instrument,
+                companion_modelbox=flat_model,
+                stellar_modelbox=flat_model,  # star_modelflux,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=False,
+                fit_slope=False,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation)
+
     def template_matching_detection(
-            self, contrast_template, template_name,
-            fit_offset=False, fit_slope=False,
-            number_of_pca_regressors=0,
-            use_spectral_correlation=True,
+            self, template,
             inner_mask_radius=5.,
             detection_threshold=5.,
             file_paths=None,
             save=True):
+
+        template_name = template.name
 
         wavelengths = self.instrument.wavelengths[self.wavelength_indices]
 
@@ -2017,7 +2097,7 @@ class DetectionAnalysis(object):
             relative_coords = image_coordinates.absolute_yx_to_relative_yx(
                 yx_pixel, yx_center_output)
 
-            if use_spectral_correlation:
+            if template.use_spectral_correlation:
                 separation = np.sqrt(
                     relative_coords[0]**2 + relative_coords[1]**2)
 
@@ -2041,12 +2121,12 @@ class DetectionAnalysis(object):
 
             model_components = []
 
-            if fit_offset:
+            if template.fit_offset:
                 model_components.append(np.ones(contrasts.shape[0]))
-            if fit_slope:
+            if template.fit_slope:
                 model_components.append(wavelengths.value)
-            if contrast_template is not None:
-                model_components.append(contrast_template[None, :])
+            if template.normalized_contrast_modelbox.flux is not None:
+                model_components.append(template.normalized_contrast_modelbox.flux[None, :])
 
             if len(model_components) > 0:
                 model_matrix = np.vstack(model_components)
@@ -2054,7 +2134,7 @@ class DetectionAnalysis(object):
                 raise ValueError(
                     "No model present to fit. Provide `model`, `fit_offset` or `fit_slope`")
 
-            if number_of_pca_regressors > 0:
+            if template.number_of_pca_regressors > 0:
                 self.reduction_parameters.target_pix_mask_radius = 11
                 regressor_pool_mask_global = regressor_selection.make_regressor_pool_for_pixel(
                     reduction_parameters=self.reduction_parameters,
@@ -2115,11 +2195,7 @@ class DetectionAnalysis(object):
         return detection_cube, detection_products
 
     def run_template_matching(self,
-                              contrast_template,
-                              template_name,
-                              fit_offset=False, fit_slope=False,
-                              number_of_pca_regressors=0,
-                              use_spectral_correlation=True,
+                              template,
                               detection_threshold=5.,
                               candidate_threshold=4.75,
                               inner_mask_radius=4,
@@ -2142,6 +2218,7 @@ class DetectionAnalysis(object):
                               save=True):
 
         if file_paths is None:
+            template_name = template.name
             file_paths = {}
             output_dir_matching = os.path.join(
                 self.reduction_parameters.result_folder, 'template_matching/')
@@ -2160,11 +2237,7 @@ class DetectionAnalysis(object):
         wavelengths = self.instrument.wavelengths[self.wavelength_indices]
 
         detection_cube, detection_products = self.template_matching_detection(
-            contrast_template=contrast_template,
-            template_name=template_name,
-            fit_offset=fit_offset, fit_slope=fit_slope,
-            number_of_pca_regressors=number_of_pca_regressors,
-            use_spectral_correlation=use_spectral_correlation,
+            template,
             inner_mask_radius=inner_mask_radius,
             detection_threshold=detection_threshold,
             file_paths=file_paths,
@@ -2201,8 +2274,7 @@ class DetectionAnalysis(object):
         #                              plot_companions=False, savefig=False, show=True)
 
         if candidates is None or len(candidates) == 0:
-            validated_companion_table = None
-            plot_companions = False
+            templates.validated_companion_table = None
         else:
             # companion_table, validated_companion_table = analysis.detection_summary(
             #     candidates=candidates, candidates_fit=candidates_fit_template, candidate_spectra=None, use_spectra=False,
@@ -2335,7 +2407,59 @@ class DetectionAnalysis(object):
                                    file_paths=file_paths,
                                    show=False)
 
-            return companion_table, validated_companion_table, validated_companion_table_short, detection_products
-        return None, None, None, detection_products
+            template.companion_table = companion_table
+            template.validated_companion_table = validated_companion_table
+            template.validated_companion_table_short = validated_companion_table_short
+            # return companion_table, validated_companion_table, validated_companion_table_short, detection_products
+
+        template.detection_products = detection_products
+        # return None, None, None, detection_products
+
+    def match_all_templates(self,
+                            detection_threshold=5.,
+                            candidate_threshold=4.75,
+                            inner_mask_radius=4,
+                            search_radius=5,
+                            good_fraction_threshold=0.05,
+                            theta_deviation_threshold=25,
+                            yx_fwhm_ratio_threshold=[1.1, 4.5],
+                            data_full=None,
+                            flux_psf_full=None,
+                            pa=None,
+                            instrument=None,
+                            temporal_components_fraction=None,
+                            wavelength_indices=None,
+                            variance_full=None,
+                            bad_frames=None,
+                            bad_pixel_mask_full=None,
+                            xy_image_centers=None,
+                            amplitude_modulation_full=None,
+                            file_paths=None,
+                            save=True):
+
+        if self.templates:
+            for key in self.templates:
+                self.run_template_matching(
+                    template=self.templates[key],
+                    detection_threshold=detection_threshold,
+                    candidate_threshold=candidate_threshold,
+                    inner_mask_radius=inner_mask_radius,
+                    search_radius=search_radius,
+                    good_fraction_threshold=good_fraction_threshold,
+                    theta_deviation_threshold=theta_deviation_threshold,
+                    yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
+                    data_full=data_full,
+                    flux_psf_full=flux_psf_full,
+                    pa=pa,
+                    instrument=instrument,
+                    temporal_components_fraction=temporal_components_fraction,
+                    wavelength_indices=wavelength_indices,
+                    variance_full=variance_full,
+                    bad_frames=bad_frames,
+                    bad_pixel_mask_full=bad_pixel_mask_full,
+                    xy_image_centers=xy_image_centers,
+                    amplitude_modulation_full=amplitude_modulation_full,
+                    file_paths=file_paths,
+                    save=save)
 
     # def run_characterization(self, ):

@@ -25,7 +25,7 @@ class Instrument(object):
     read_noise : float
         The detector read noise (e rms/pix/readout).
     instrument_type : str, optional
-        Can take values 'photometry', 'ifu' or None. Only used for spectral
+        Can take values 'phot', 'ifu' or None. Only used for spectral
         template matching in detection.
         Default is 'photometry'.
     wavelengths : `~astropy.units.Quantity`
