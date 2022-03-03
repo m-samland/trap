@@ -39,7 +39,7 @@ from trap.image_coordinates import (absolute_yx_to_relative_yx,
 from trap.reduction_wrapper import run_complete_reduction
 from trap.utils import (compute_empirical_correlation_matrix,
                         remove_channel_from_correlation_matrix,
-                        find_nearest)
+                        find_nearest, subtract_angles)
 from trap.template import SpectralTemplate
 
 import species
@@ -1925,7 +1925,8 @@ class DetectionAnalysis(object):
              'good_fraction', 'good_fraction_free']]
 
         companion_table.insert(loc=16, column='theta_deviation',
-                               value=companion_table['position_angle'] - companion_table['theta_free'])
+                               value=subtract_angles(
+                                   companion_table['position_angle'], companion_table['theta_free']))
         companion_table.insert(loc=17, column='yx_fwhm_ratio',
                                value=companion_table['y_fwhm_free'] / companion_table['x_fwhm_free'])
         companion_table.insert(loc=18, column='fwhm_area_free',
@@ -1955,7 +1956,7 @@ class DetectionAnalysis(object):
 
         mask = (snr > snr_threshold) \
             & (companion_table['good_fraction_free'] > good_fraction_threshold) \
-            & ((np.abs(companion_table['theta_deviation']) % 360) < theta_deviation_threshold) \
+            & (np.abs(companion_table['theta_deviation']) < theta_deviation_threshold) \
             & (companion_table['yx_fwhm_ratio'] > yx_fwhm_ratio_threshold[0]) \
             & (companion_table['yx_fwhm_ratio'] < yx_fwhm_ratio_threshold[1])
 
@@ -2025,6 +2026,11 @@ class DetectionAnalysis(object):
         if stellar_modelbox is None:
             stellar_modelbox = copy.deepcopy(flat_model)
 
+        if instrument.instrument_type == 'photometry' or len(instrument.wavelengths) <= 2:
+            t_type_slope_fit = False
+        else:
+            t_type_slope_fit = True
+
         self.templates['T-type'] = \
             SpectralTemplate(
                 name='T-type',
@@ -2034,7 +2040,7 @@ class DetectionAnalysis(object):
                 wavelength_indices=self.wavelength_indices,
                 correct_transmission=correct_transmission,
                 fit_offset=True,
-                fit_slope=True,
+                fit_slope=t_type_slope_fit,
                 number_of_pca_regressors=0,
                 use_spectral_correlation=use_spectral_correlation)
 
@@ -2179,8 +2185,8 @@ class DetectionAnalysis(object):
 
             template_matched_image[0, yx_pixel[0], yx_pixel[1]] = P[-1]
             template_matched_image[1, yx_pixel[0], yx_pixel[1]] = np.sqrt(P_sigma_squared[-1])
-            template_matched_image[2, yx_pixel[0], yx_pixel[1]] = \
-                P[-1] / np.sqrt(P_sigma_squared[-1])
+            template_matched_image[2, yx_pixel[0], yx_pixel[1]
+                                   ] = P[-1] / np.sqrt(P_sigma_squared[-1])
 
         if file_paths is None:
             file_paths = {}
@@ -2291,7 +2297,9 @@ class DetectionAnalysis(object):
         #                              plot_companions=False, savefig=False, show=True)
 
         if candidates is None or len(candidates) == 0:
-            templates.validated_companion_table = None
+            template.companion_table = None
+            template.validated_companion_table = None
+            template.validated_companion_table_short = None
         else:
             # companion_table, validated_companion_table = analysis.detection_summary(
             #     candidates=candidates, candidates_fit=candidates_fit_template, candidate_spectra=None, use_spectra=False,

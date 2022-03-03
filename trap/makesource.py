@@ -62,8 +62,10 @@ def yx_position_in_cube(
 
     pa = pa * (2. * np.pi / 360.)
     if image_center is None:
-        x = (pos[1] * np.cos(pa) - pos[0] * np.sin(pa)) * 1 / yx_anamorphism[1] + image_size[-1] // 2
-        y = (pos[1] * np.sin(pa) + pos[0] * np.cos(pa)) * 1 / yx_anamorphism[0] + image_size[-2] // 2
+        x = (pos[1] * np.cos(pa) - pos[0] * np.sin(pa)) * \
+            1 / yx_anamorphism[1] + image_size[-1] // 2
+        y = (pos[1] * np.sin(pa) + pos[0] * np.cos(pa)) * \
+            1 / yx_anamorphism[0] + image_size[-2] // 2
     elif image_center.ndim == 1:
         x = (pos[1] * np.cos(pa) - pos[0] * np.sin(pa)) * 1 / yx_anamorphism[1] + image_center[1]
         y = (pos[1] * np.sin(pa) + pos[0] * np.cos(pa)) * 1 / yx_anamorphism[0] + image_center[0]
@@ -111,8 +113,10 @@ def yx_position_in_cube_optimized(
 
     pa = pa * (2. * np.pi / 360.)
     if image_center is None:
-        x = (pos[1] * np.cos(pa) - pos[0] * np.sin(pa)) * 1 / yx_anamorphism[1] + image_size[-1] // 2
-        y = (pos[1] * np.sin(pa) + pos[0] * np.cos(pa)) * 1 / yx_anamorphism[0] + image_size[-2] // 2
+        x = (pos[1] * np.cos(pa) - pos[0] * np.sin(pa)) * \
+            1 / yx_anamorphism[1] + image_size[-1] // 2
+        y = (pos[1] * np.sin(pa) + pos[0] * np.cos(pa)) * \
+            1 / yx_anamorphism[0] + image_size[-2] // 2
     elif image_center.ndim == 1:
         x = (pos[1] * np.cos(pa) - pos[0] * np.sin(pa)) * 1 / yx_anamorphism[1] + image_center[1]
         y = (pos[1] * np.sin(pa) + pos[0] * np.cos(pa)) * 1 / yx_anamorphism[0] + image_center[0]
@@ -305,7 +309,8 @@ def addsource(flux_arr, pos, pa, psf_arr, image_center=None,
     for idx, position in enumerate(yx_position):
         cutout = Cutout2D(flux[idx], (position[-1], position[-2]), stamp_size, copy=False)
         if subpixel:
-            subpixel_shift = np.array(cutout.position_original) - np.array(cutout.input_position_original)
+            subpixel_shift = np.array(cutout.position_original) - \
+                np.array(cutout.input_position_original)
             shifted_psf = shift(filtered_psf, (-subpixel_shift[-1], -subpixel_shift[-2]),
                                 output=None, order=3,
                                 mode='constant', cval=0., prefilter=False)
@@ -365,7 +370,8 @@ def extract_stamps(flux_arr, pos, pa, stamp_size, image_center=None,
             plt.imshow(flux_arr[idx], origin='lower')
             cutout.plot_on_original(color='white')
             plt.show()
-        subpixel_shift = np.array(cutout.position_original) - np.array(cutout.input_position_original)
+        subpixel_shift = np.array(cutout.position_original) - \
+            np.array(cutout.input_position_original)
         shifts.append(subpixel_shift)
         stamps.append(shift(
             cutout.data, (subpixel_shift[-1], subpixel_shift[-2]), output=None,

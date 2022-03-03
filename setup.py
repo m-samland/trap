@@ -23,8 +23,8 @@ setuptools.setup(
         "Operating System :: OS Independent",
         "Intended Audience :: Science/Research",
     ],
-    python_requires='>=3.5',
+    python_requires='>=3.8',
     install_requires=['numpy', 'scipy', 'matplotlib', 'numba', 'pandas',
                       'scikit-learn', 'astropy', 'photutils', 'seaborn', 'tqdm',
-                      'ray', 'bottleneck']
+                      'ray', 'bottleneck', 'natsorted']
 )

@@ -607,3 +607,15 @@ def remove_channel_from_correlation_matrix(bool_arr, psi_ij):
         psi_ij = np.delete(psi_ij, (i - counter), axis=1)
         counter += 1
     return psi_ij
+
+
+def subtract_angles(lhs, rhs):
+    """Return the signed difference between angles lhs and rhs
+    Return ``(lhs - rhs)``, the value will be within ``[-math.pi, math.pi)``.
+    Both ``lhs`` and ``rhs`` may either be zero-based (within
+    ``[0, 2*math.pi]``), or ``-pi``-based (within ``[-math.pi, math.pi]``).
+
+    Source: Adapted from Chris Aichinger's code
+    """
+
+    return np.fmod((lhs - rhs) + 180. * 3, 2 * 180.) - 180.

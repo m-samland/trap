@@ -88,7 +88,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
     if yx_center is None:
         yx_center = (yx_dim[0] // 2, yx_dim[1] // 2)
     if amplitude_modulation is None:
-        amplitude_modulation = 1.
+        amplitude_modulation = np.ones(data.shape[0])
 
     if guess_position is not None:
         reduction_parameters.guess_position = guess_position
@@ -1191,10 +1191,10 @@ def run_complete_reduction(
 
     # Configure PSF amplitude variation
     if amplitude_modulation_full is not None:
-        if amplitude_modulation_full.ndim < 3:
+        if amplitude_modulation_full.ndim < 2:
             amplitude_modulation_full = np.expand_dims(amplitude_modulation_full, axis=0)
         amplitude_modulation_full = np.delete(amplitude_modulation_full, bad_frames, axis=1)
-        print("Amplitude variation: {}".format(np.std(amplitude_modulation_full, axis=0)))
+        print("Amplitude variation: {}".format(np.std(amplitude_modulation_full, axis=1)))
 
     # Configure known companion information
     if reduction_parameters.yx_known_companion_position is not None:
@@ -1505,7 +1505,7 @@ def run_complete_reduction(
             if amplitude_modulation_full is None:
                 amplitude_modulation = np.ones(data_full.shape[1])
             else:
-                amplitude_modulation = amplitude_modulation_full[:, wavelength_index]
+                amplitude_modulation = amplitude_modulation_full[wavelength_index, :]
 
             # Do not reduce data for wavelength if flux PSF or center position contains NaNs
             flux_psf_not_finite = np.any(~np.isfinite(flux_psf))

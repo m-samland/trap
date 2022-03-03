@@ -94,7 +94,7 @@ class SpectralTemplate(object):
 
         if instrument.instrument_type == 'photometry':
             if wavelength_indices is not None:
-                filters = self.instrument.filters[wavelength_indices]
+                filters = np.array(self.instrument.filters)[wavelength_indices]
             else:
                 filters = self.instrument.filters
             if not correct_transmission:
