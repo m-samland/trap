@@ -1999,6 +1999,7 @@ class DetectionAnalysis(object):
         try:
             cool_planet_read_model = species.ReadModel(
                 model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
+            cool_planet_read_model.get_bounds()
         except:
             print("First time running cool planet template: adding 'petit-cool-cloudy' models to database.")
             database.add_model(model='petitcode-cool-cloudy', teff_range=(700., 800.))
@@ -2011,6 +2012,7 @@ class DetectionAnalysis(object):
         try:
             hot_planet_read_model = species.ReadModel(
                 model='drift-phoenix', wavel_range=(0.85, 3.6))
+            hot_planet_read_model.get_bounds()
         except:
             print("First time running hot planet template: adding 'drift-phoenix' models to database.")
             database.add_model(model='drift-phoenix', teff_range=(1400., 1600.))
@@ -2036,6 +2038,7 @@ class DetectionAnalysis(object):
                 try:
                     star_read_model = species.ReadModel(
                         model='bt-nextgen', wavel_range=(0.85, 3.6))
+                    star_read_model.get_bounds()
                 except:
                     print("First time running stellar template: adding 'bt-nextgen' models to database.")
                     database.add_model(model='bt-nextgen',
