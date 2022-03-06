@@ -132,7 +132,7 @@ class SpectralTemplate(object):
         self.normalized_contrast_modelbox = copy.deepcopy(self.contrast_modelbox)
         self.normalized_contrast_modelbox.flux = self.contrast_modelbox.flux / self.mean_normalized_contrast_value
 
-    def plot_template(self, output_path='./contrast_template.png', plot_normalized=True):
+    def plot_template(self, output_path=None, plot_normalized=True):
         if plot_normalized:
             modelbox = self.normalized_contrast_modelbox
         else:

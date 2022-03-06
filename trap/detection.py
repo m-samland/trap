@@ -1067,7 +1067,8 @@ class DetectionAnalysis(object):
     def read_output(
             self, component_fraction, result_folder=None,
             reduction_type='temporal', correlated_residuals=False,
-            read_parameters=True):
+            read_parameters=True, reduction_parameters=None,
+            instrument=None):
 
         if result_folder is None:
             self.result_folder = self.reduction_parameters.result_folder
@@ -1084,7 +1085,11 @@ class DetectionAnalysis(object):
 
             with open(os.path.join(result_folder, "instrument.obj"), 'rb') as handle:
                 self.instrument = pickle.load(handle)
-            self.instrument.compute_fwhm()
+        else:
+            if reduction_parameters is not None and instrument is not None:
+                self.reduction_parameters = reduction_parameters
+                self.instrument = instrument
+        self.instrument.compute_fwhm()
 
         if correlated_residuals:
             detection_image_name = "detection_corr_lam"
@@ -1977,6 +1982,7 @@ class DetectionAnalysis(object):
 
     def add_default_templates(
             self, stellar_modelbox, species_database_directory,
+            stellar_parameters=None,
             instrument=None,
             correct_transmission=False,
             use_spectral_correlation=True):
@@ -1994,7 +2000,7 @@ class DetectionAnalysis(object):
             cool_planet_read_model = species.ReadModel(
                 model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
         except:
-            print("Adding 'petit-cool-cloudy' models to database.")
+            print("First time running cool planet template: adding 'petit-cool-cloudy' models to database.")
             database.add_model(model='petitcode-cool-cloudy', teff_range=(700., 800.))
             cool_planet_read_model = species.ReadModel(
                 model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
@@ -2006,7 +2012,7 @@ class DetectionAnalysis(object):
             hot_planet_read_model = species.ReadModel(
                 model='drift-phoenix', wavel_range=(0.85, 3.6))
         except:
-            print("Adding 'drift-phoenix' models to database.")
+            print("First time running hot planet template: adding 'drift-phoenix' models to database.")
             database.add_model(model='drift-phoenix', teff_range=(1400., 1600.))
             hot_planet_read_model = species.ReadModel(
                 model='drift-phoenix', wavel_range=(0.85, 3.6))
@@ -2024,25 +2030,26 @@ class DetectionAnalysis(object):
         flat_model.flux = np.ones_like(flat_model.wavelength)
 
         if stellar_modelbox is None:
-            stellar_modelbox = copy.deepcopy(flat_model)
+            if stellar_parameters is None:
+                stellar_modelbox = copy.deepcopy(flat_model)
+            else:
+                try:
+                    star_read_model = species.ReadModel(
+                        model='bt-nextgen', wavel_range=(0.85, 3.6))
+                except:
+                    print("First time running stellar template: adding 'bt-nextgen' models to database.")
+                    database.add_model(model='bt-nextgen',
+                                       teff_range=(3000., 30000.))
+                    star_read_model = species.ReadModel(
+                        model='bt-nextgen', wavel_range=(0.85, 3.6))
+
+                stellar_modelbox = star_read_model.get_model(
+                    model_param=stellar_parameters)
 
         if instrument.instrument_type == 'photometry' or len(instrument.wavelengths) <= 2:
             t_type_slope_fit = False
         else:
             t_type_slope_fit = True
-
-        self.templates['T-type'] = \
-            SpectralTemplate(
-                name='T-type',
-                instrument=instrument,
-                companion_modelbox=cool_planet_modelbox,
-                stellar_modelbox=stellar_modelbox,  # star_modelflux,
-                wavelength_indices=self.wavelength_indices,
-                correct_transmission=correct_transmission,
-                fit_offset=True,
-                fit_slope=t_type_slope_fit,
-                number_of_pca_regressors=0,
-                use_spectral_correlation=use_spectral_correlation)
 
         self.templates['L-type'] = \
             SpectralTemplate(
@@ -2057,18 +2064,57 @@ class DetectionAnalysis(object):
                 number_of_pca_regressors=0,
                 use_spectral_correlation=use_spectral_correlation)
 
-        self.templates['flat'] = \
+        self.templates['L-type + offset'] = \
             SpectralTemplate(
-                name='flat',
+                name='L-type + offset',
                 instrument=instrument,
-                companion_modelbox=flat_model,
-                stellar_modelbox=flat_model,  # star_modelflux,
+                companion_modelbox=hot_planet_modelbox,
+                stellar_modelbox=stellar_modelbox,  # star_modelflux,
                 wavelength_indices=self.wavelength_indices,
                 correct_transmission=correct_transmission,
-                fit_offset=False,
+                fit_offset=True,
                 fit_slope=False,
                 number_of_pca_regressors=0,
                 use_spectral_correlation=use_spectral_correlation)
+
+        self.templates['L-type + offset + slope'] = \
+            SpectralTemplate(
+                name='L-type + offset + slope',
+                instrument=instrument,
+                companion_modelbox=hot_planet_modelbox,
+                stellar_modelbox=stellar_modelbox,  # star_modelflux,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=True,
+                fit_slope=True,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation)
+
+        # self.templates['T-type'] = \
+        #     SpectralTemplate(
+        #         name='T-type',
+        #         instrument=instrument,
+        #         companion_modelbox=cool_planet_modelbox,
+        #         stellar_modelbox=stellar_modelbox,  # star_modelflux,
+        #         wavelength_indices=self.wavelength_indices,
+        #         correct_transmission=correct_transmission,
+        #         fit_offset=True,
+        #         fit_slope=t_type_slope_fit,
+        #         number_of_pca_regressors=0,
+        #         use_spectral_correlation=use_spectral_correlation)
+        #
+        # self.templates['flat'] = \
+        #     SpectralTemplate(
+        #         name='flat',
+        #         instrument=instrument,
+        #         companion_modelbox=flat_model,
+        #         stellar_modelbox=flat_model,  # star_modelflux,
+        #         wavelength_indices=self.wavelength_indices,
+        #         correct_transmission=correct_transmission,
+        #         fit_offset=False,
+        #         fit_slope=False,
+        #         number_of_pca_regressors=0,
+        #         use_spectral_correlation=use_spectral_correlation)
 
     def template_matching_detection(
             self, template,
