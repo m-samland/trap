@@ -2064,57 +2064,57 @@ class DetectionAnalysis(object):
                 number_of_pca_regressors=0,
                 use_spectral_correlation=use_spectral_correlation)
 
-        self.templates['L-type + offset'] = \
-            SpectralTemplate(
-                name='L-type + offset',
-                instrument=instrument,
-                companion_modelbox=hot_planet_modelbox,
-                stellar_modelbox=stellar_modelbox,  # star_modelflux,
-                wavelength_indices=self.wavelength_indices,
-                correct_transmission=correct_transmission,
-                fit_offset=True,
-                fit_slope=False,
-                number_of_pca_regressors=0,
-                use_spectral_correlation=use_spectral_correlation)
-
-        self.templates['L-type + offset + slope'] = \
-            SpectralTemplate(
-                name='L-type + offset + slope',
-                instrument=instrument,
-                companion_modelbox=hot_planet_modelbox,
-                stellar_modelbox=stellar_modelbox,  # star_modelflux,
-                wavelength_indices=self.wavelength_indices,
-                correct_transmission=correct_transmission,
-                fit_offset=True,
-                fit_slope=True,
-                number_of_pca_regressors=0,
-                use_spectral_correlation=use_spectral_correlation)
-
-        # self.templates['T-type'] = \
+        # self.templates['L-type + offset'] = \
         #     SpectralTemplate(
-        #         name='T-type',
+        #         name='L-type + offset',
         #         instrument=instrument,
-        #         companion_modelbox=cool_planet_modelbox,
+        #         companion_modelbox=hot_planet_modelbox,
         #         stellar_modelbox=stellar_modelbox,  # star_modelflux,
         #         wavelength_indices=self.wavelength_indices,
         #         correct_transmission=correct_transmission,
         #         fit_offset=True,
-        #         fit_slope=t_type_slope_fit,
-        #         number_of_pca_regressors=0,
-        #         use_spectral_correlation=use_spectral_correlation)
-        #
-        # self.templates['flat'] = \
-        #     SpectralTemplate(
-        #         name='flat',
-        #         instrument=instrument,
-        #         companion_modelbox=flat_model,
-        #         stellar_modelbox=flat_model,  # star_modelflux,
-        #         wavelength_indices=self.wavelength_indices,
-        #         correct_transmission=correct_transmission,
-        #         fit_offset=False,
         #         fit_slope=False,
         #         number_of_pca_regressors=0,
         #         use_spectral_correlation=use_spectral_correlation)
+        #
+        # self.templates['L-type + offset + slope'] = \
+        #     SpectralTemplate(
+        #         name='L-type + offset + slope',
+        #         instrument=instrument,
+        #         companion_modelbox=hot_planet_modelbox,
+        #         stellar_modelbox=stellar_modelbox,  # star_modelflux,
+        #         wavelength_indices=self.wavelength_indices,
+        #         correct_transmission=correct_transmission,
+        #         fit_offset=True,
+        #         fit_slope=True,
+        #         number_of_pca_regressors=0,
+        #         use_spectral_correlation=use_spectral_correlation)
+
+        self.templates['T-type'] = \
+            SpectralTemplate(
+                name='T-type',
+                instrument=instrument,
+                companion_modelbox=cool_planet_modelbox,
+                stellar_modelbox=stellar_modelbox,  # star_modelflux,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=True,
+                fit_slope=t_type_slope_fit,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation)
+
+        self.templates['flat'] = \
+            SpectralTemplate(
+                name='flat',
+                instrument=instrument,
+                companion_modelbox=flat_model,
+                stellar_modelbox=flat_model,  # star_modelflux,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=False,
+                fit_slope=False,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation)
 
     def template_matching_detection(
             self, template,
