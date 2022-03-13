@@ -36,7 +36,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
                       yx_center=None, yx_center_injection=None,
                       amplitude_modulation=None,
                       contrast_map=None,
-                      read_noise=0.):
+                      readnoise=0.):
     """Runs TRAP on individual position.
 
     Parameters
@@ -70,7 +70,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
         and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
-    read_noise : scalar
+    readnoise : scalar
         The detector read noise (e rms/pix/readout).
 
     Returns
@@ -176,9 +176,9 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             # May not be valid based on pre-processing steps done
             if bad_pixel_mask is not None:
                 variance_reduction_area = np.abs(
-                    data_reduce[:, reduction_mask_wo_badpixels]) + read_noise**2
+                    data_reduce[:, reduction_mask_wo_badpixels]) + readnoise**2
             else:
-                variance_reduction_area = np.abs(data_reduce[:, reduction_mask]) + read_noise**2
+                variance_reduction_area = np.abs(data_reduce[:, reduction_mask]) + readnoise**2
 
         else:
             if bad_pixel_mask is not None:
@@ -379,7 +379,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
                     yx_center=None, yx_center_injection=None,
                     amplitude_modulation=None,
                     contrast_map=None,
-                    read_noise=0.):
+                    readnoise=0.):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
 
@@ -414,7 +414,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
         and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
-    read_noise : scalar
+    readnoise : scalar
         The detector read noise (e rms/pix/readout).
 
     Returns
@@ -529,7 +529,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
                 yx_center=yx_center, yx_center_injection=yx_center_injection,
                 amplitude_modulation=amplitude_modulation_id,
                 contrast_map=contrast_map_id,
-                read_noise=read_noise, pba=actor))
+                readnoise=readnoise, pba=actor))
         pb.print_until_done()
         results = ray.get(result_ids)
         results == list(range(num_ticks))
@@ -543,7 +543,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         #     yx_center=yx_center, yx_center_injection=yx_center_injection,
         #     amplitude_modulation=amplitude_modulation,
         #     contrast_map=contrast_map,
-        #     read_noise=read_noise)
+        #     readnoise=readnoise)
         # result_ids = []
         # pool = Pool(processes=reduction_parameters.ncpus)
         # for idx, sub_region_results in enumerate(tqdm(pool.imap(multiprocess_trap_region, relative_coords_regions),
@@ -609,7 +609,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
                 yx_center=yx_center, yx_center_injection=yx_center_injection,
                 amplitude_modulation=amplitude_modulation,
                 contrast_map=contrast_map,
-                read_noise=read_noise)
+                readnoise=readnoise)
             for key in detection_image:
                 if result[key] is not None:
                     detection_image[key][0][search_coordinates[idx]
@@ -667,7 +667,7 @@ def trap_search_region(relative_coords, data, flux_psf, pa,
                        yx_center=None, yx_center_injection=None,
                        amplitude_modulation=None,
                        contrast_map=None,
-                       read_noise=0.,
+                       readnoise=0.,
                        pba=None):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
@@ -703,7 +703,7 @@ def trap_search_region(relative_coords, data, flux_psf, pa,
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
         and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
-    read_noise : scalar
+    readnoise : scalar
         The detector read noise (e rms/pix/readout).
 
     Returns
@@ -731,7 +731,7 @@ def trap_search_region(relative_coords, data, flux_psf, pa,
             yx_center=yx_center, yx_center_injection=yx_center_injection,
             amplitude_modulation=amplitude_modulation,
             contrast_map=contrast_map,
-            read_noise=read_noise)
+            readnoise=readnoise)
         sub_region_results.append(result)
         if pba is not None:
             pba.update.remote(1)
@@ -745,7 +745,7 @@ def run_trap_search_old(data, flux_psf, pa, wavelength,
                         yx_center=None, yx_center_injection=None,
                         amplitude_modulation=None,
                         contrast_map=None,
-                        read_noise=0.):
+                        readnoise=0.):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
 
@@ -780,7 +780,7 @@ def run_trap_search_old(data, flux_psf, pa, wavelength,
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
         and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
-    read_noise : scalar
+    readnoise : scalar
         The detector read noise (e rms/pix/readout).
 
     Returns
@@ -863,7 +863,7 @@ def run_trap_search_old(data, flux_psf, pa, wavelength,
             yx_center=yx_center, yx_center_injection=yx_center_injection,
             amplitude_modulation=amplitude_modulation,
             contrast_map=contrast_map,
-            read_noise=read_noise)
+            readnoise=readnoise)
 
         if reduction_parameters.ncpus is None:
             reduction_parameters.ncpus = multiprocessing.cpu_count()
@@ -924,7 +924,7 @@ def run_trap_search_old(data, flux_psf, pa, wavelength,
                 yx_center=yx_center, yx_center_injection=yx_center_injection,
                 amplitude_modulation=amplitude_modulation,
                 contrast_map=contrast_map,
-                read_noise=read_noise)
+                readnoise=readnoise)
             for key in detection_image:
                 if result[key] is not None:
                     detection_image[key][0][search_coordinates[idx]
@@ -1438,16 +1438,18 @@ def run_complete_reduction(
                         center_yx=np.round(yx_center_full[wavelength_index]))
                 else:
                     data = data_full[wavelength_index]
+            data = data.astype('float64')
 
             if variance_full is not None:
                 variance = crop_box_from_3D_cube(
                     variance_full[wavelength_index],
                     data_crop_size,
                     center_yx=np.round(yx_center_full[wavelength_index])).copy()
+                variance = variance.astype('float64')
             else:
                 variance = None
 
-            flux_psf = psf_stamps[wavelength_index]
+            flux_psf = psf_stamps[wavelength_index].astype('float64')
 
             if bad_pixel_mask_full is None:
                 bad_pixel_mask = None
@@ -1551,13 +1553,13 @@ def run_complete_reduction(
                     yx_center=yx_center, yx_center_injection=yx_center_injection,
                     amplitude_modulation=amplitude_modulation,
                     contrast_map=contrast_map,
-                    read_noise=instrument.read_noise)
+                    readnoise=instrument.readnoise)
 
                 wavelength_results['{}'.format(wavelength_index)] = results
 
             else:
                 detection_image, detection_image_corr, correlation_matrix_binned = run_trap_search(
-                    data=data,
+                    data=data.astype('float64'),
                     variance=variance,
                     flux_psf=flux_psf,
                     pa=pa,
@@ -1569,7 +1571,7 @@ def run_complete_reduction(
                     yx_center_injection=yx_center_injection,
                     amplitude_modulation=amplitude_modulation,
                     contrast_map=contrast_map,
-                    read_noise=instrument.read_noise)
+                    readnoise=instrument.readnoise)
 
                 # NOTE: Moved out from run_trap_search
                 for key in detection_image:
