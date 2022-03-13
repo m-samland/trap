@@ -22,7 +22,7 @@ class Instrument(object):
         The diameter of the telescopy in units of length.
     detector_gain : float
         The detector gain (electrons/ADU).
-    read_noise : float
+    readnoise : float
         The detector read noise (e rms/pix/readout).
     instrument_type : str, optional
         Can take values 'phot', 'ifu' or None. Only used for spectral
@@ -47,7 +47,7 @@ class Instrument(object):
     pixel_scale
     telescope_diameter
     detector_gain
-    read_noise
+    readnoise
     instrument_type
     wavelengths
     spectral_resolution
@@ -57,14 +57,14 @@ class Instrument(object):
     """
 
     def __init__(
-            self, name, pixel_scale, telescope_diameter, detector_gain=1.0, read_noise=0.,
+            self, name, pixel_scale, telescope_diameter, detector_gain=1.0, readnoise=0.,
             instrument_type='photometry', wavelengths=None, spectral_resolution=None, filters=None,
             transmission=None):
         self.name = name
         self.pixel_scale = pixel_scale
         self.telescope_diameter = telescope_diameter
         self.detector_gain = detector_gain
-        self.read_noise = read_noise
+        self.readnoise = readnoise
 
         self.instrument_type = instrument_type
         self.wavelengths = wavelengths

@@ -249,7 +249,8 @@ class Result(object):
 
             df_binned = df.groupby('distance').median()
             df_count = df.groupby('distance').count()
-            covariance_times_npixel = df_binned['empirical_covariance'] * df_count['empirical_covariance']
+            covariance_times_npixel = df_binned['empirical_covariance'] * \
+                df_count['empirical_covariance']
             # plt.plot(np.cumsum(correlation_times_npixel[0:6]) / np.sum(correlation_times_npixel[0:6]))
 
             if show:
@@ -305,7 +306,8 @@ class Result(object):
             kernel_function = matern52_kernel
         distance = self.correlation_info['summary_dataframe'].index.values
         empirical_correlation = self.correlation_info['summary_dataframe'].empirical_correlation.values
-        popt, pcov = curve_fit(f=kernel_function, xdata=distance[1:3], ydata=empirical_correlation[1:3], p0=[1])
+        popt, pcov = curve_fit(
+            f=kernel_function, xdata=distance[1:3], ydata=empirical_correlation[1:3], p0=[1])
         return popt, pcov
 
     def compute_contrast_weighted_average(self, contrast=None, variance=None, mask_outliers=False):
@@ -331,8 +333,10 @@ class Result(object):
         self.snr = self.measured_contrast / self.contrast_uncertainty
         self.relative_uncertainty = 1. / self.snr
         if self.true_contrast is not None:
-            self.relative_deviation_from_true = (self.measured_contrast - self.true_contrast) / self.true_contrast
-            self.wrong_in_sigma = (self.measured_contrast - self.true_contrast) / self.contrast_uncertainty
+            self.relative_deviation_from_true = (
+                self.measured_contrast - self.true_contrast) / self.true_contrast
+            self.wrong_in_sigma = (self.measured_contrast -
+                                   self.true_contrast) / self.contrast_uncertainty
 
     def compute_contrast_with_correlation(self, kernel='matern32', show=False):
 
@@ -373,7 +377,8 @@ class Result(object):
             self.relative_deviation_from_true_with_corr = \
                 (self.measured_contrast_with_corr - self.true_contrast) / self.true_contrast
             self.wrong_in_sigma_with_corr = \
-                (self.measured_contrast_with_corr - self.true_contrast) / self.contrast_uncertainty_with_corr
+                (self.measured_contrast_with_corr - self.true_contrast) / \
+                self.contrast_uncertainty_with_corr
         # return P, P_sigma_squared
 
     def plot_median_residual_image(self, savefig=False, outputdir=None):
@@ -428,7 +433,8 @@ class Result(object):
         mean_residual_pix = np.median(self.residuals, axis=1)
         mask = np.logical_and(mask, mean_residual_pix != 0)
         mean_residual_pix = mean_residual_pix[mask]
-        stddev_residual_pix = np.std(self.residuals[mask], axis=1) / np.median(self.residuals[mask], axis=1)
+        stddev_residual_pix = np.std(
+            self.residuals[mask], axis=1) / np.median(self.residuals[mask], axis=1)
         f, axes = plt.subplots(1, 2, figsize=(7, 3.5), sharex=False)
         sns.despine(left=False)
         axes[0].set_title('Residual mean over time')
@@ -554,7 +560,8 @@ def run_trap_with_model_temporal(
     if yx_center is None:
         yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
 
-    planet_absolute_yx_pos = image_coordinates.relative_yx_to_absolute_yx(planet_relative_yx_pos, yx_center)
+    planet_absolute_yx_pos = image_coordinates.relative_yx_to_absolute_yx(
+        planet_relative_yx_pos, yx_center)
     ntime = data.shape[0]
 
     if reduction_parameters.reduce_single_position and reduction_parameters.plot_all_diagnostics:
@@ -698,11 +705,81 @@ def run_trap_with_model_temporal(
                 inverse_covariance_matrix = np.identity(len(y)) * (1. / y)
         else:
             inverse_covariance_matrix = None
-        # ipsh()
+
+        # if np.array_equal(yx_pixel, test_pixel):
+        #     ipsh()
+        #     mean_data = np.mean(y)
+        #     max_model = np.max(A[:, -1])
+        #     A_norm = A.copy()
+        #     A_norm[:, -1] = A_norm[:, -1] / max_model
+        #     y_norm = y / mean_data
+        #     covariance_matrix = np.identity(len(y)) * variance_vector.astype('float64')
+        #     covariance_matrix_norm = np.identity(len(y)) * variance_vector / mean_data**2
+        #     inverse_covariance_matrix_norm = np.identity(
+        #         len(y)) * (1. / (variance_vector / mean_data**2))
+        #     # from datetime import datetime
+        #     # a = datetime.now()
+        #     # for i in range(1000):
+        #     fit_parameters, err_fit_parameters, sigma_hat_sqr = pca_regression.ols(
+        #         design_matrix=A, data=y, covariance=covariance_matrix)
+        #
+        #     fit_parameters_no_err, err_fit_parameters_no_err, sigma_hat_sqr = pca_regression.ols(
+        #         design_matrix=A, data=y, covariance=np.identity(len(y)))
+        #
+        #     fit_parameters2, err_fit_parameters2, sigma_hat_sqr2 = pca_regression.ols(
+        #         design_matrix=A_norm, data=y_norm, covariance=covariance_matrix_norm)
+        #
+        #     P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
+        #         design_matrix=A.T,
+        #         data=y,
+        #         inverse_covariance_matrix=inverse_covariance_matrix)
+        #
+        #     P_wo_marginalization3, P_wo_sigma_squared3 = pca_regression.solve_linear_equation_simple(
+        #         design_matrix=A.T,
+        #         data=y,
+        #         inverse_covariance_matrix=None)
+        #
+        #     P_wo_marginalization2, P_wo_sigma_squared2 = pca_regression.solve_linear_equation_simple(
+        #         design_matrix=A_norm.T,
+        #         data=y_norm,
+        #         inverse_covariance_matrix=inverse_covariance_matrix_norm)
+        #     print(f'{fit_parameters[-1]} +/- {err_fit_parameters[-1]}')
+        #     print(
+        #         f'{fit_parameters2[-1] * mean_data / max_model} +/- {err_fit_parameters2[-1] * mean_data / max_model}')
+        #     print(f'{P_wo_marginalization[-1]} +/- {np.sqrt(P_wo_sigma_squared[-1])}')
+        #     print(
+        #         f'{P_wo_marginalization2[-1] * mean_data / max_model} +/- {np.sqrt(P_wo_sigma_squared2[-1]) * mean_data / max_model}')
+
+        # fit_parameters2[-1] * max_data / max_model
+        # b = datetime.now()
+        # c = b - a
+
+        # a = datetime.now()
+        # for i in range(1000):
         P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
             design_matrix=A.T,
             data=y,
             inverse_covariance_matrix=inverse_covariance_matrix)
+        # b = datetime.now()
+        # d = b - a
+
+        # if ~np.all(np.isfinite(y)) or ~np.all(np.isfinite(variance_vector)):
+        #     ipsh()
+        # mean_data = np.mean(y)
+        # max_model = np.max(A[:, -1])
+        # A_norm = A.copy()
+        # A_norm[:, -1] = A_norm[:, -1] / max_model
+        # y_norm = y / mean_data
+        # covariance_matrix = np.identity(len(y)) * variance_vector
+        # covariance_matrix_norm = np.identity(len(y)) * variance_vector / mean_data**2
+        # inverse_covariance_matrix_norm = np.identity(
+        #     len(y)) * (1. / (variance_vector / mean_data**2))
+
+        # fit_parameters, err_fit_parameters, sigma_hat_sqr = pca_regression.ols(
+        #     design_matrix=A, data=y, covariance=None)  # covariance_matrix)
+
+        # P_wo_marginalization = fit_parameters  # * mean_data / max_model
+        # P_wo_sigma_squared = err_fit_parameters**2  # * mean_data / max_model)**2
 
         reconstructed_lightcurve = np.dot(A, P_wo_marginalization)
 
@@ -730,7 +807,8 @@ def run_trap_with_model_temporal(
 
                 plotting_tools.plot_scale(np.median(data, axis=0), yx_coords=mask_coordinates,
                                           yx_coords2=[yx_pixel],  # , yx_center],
-                                          output_path=os.path.join(diagnostic_image_folder, 'regressor_selection.pdf'),
+                                          output_path=os.path.join(
+                                              diagnostic_image_folder, 'regressor_selection.pdf'),
                                           point_size1=0.5,
                                           point_size2=3,
                                           show_cb=False,
@@ -751,7 +829,8 @@ def run_trap_with_model_temporal(
                     plt.xlabel('Frame')
                     plt.legend(loc='upper left')
                     plt.tight_layout()
-                    plt.savefig(os.path.join(diagnostic_image_folder, 'pixel_with_planet_test.jpg'), dpi=300)
+                    plt.savefig(os.path.join(diagnostic_image_folder,
+                                'pixel_with_planet_test.jpg'), dpi=300)
 
                     plt.close()
                     fig, ax = plt.subplots(figsize=(9, 2))
@@ -760,7 +839,8 @@ def run_trap_with_model_temporal(
                     plt.xlabel('Frame')
                     plt.legend(loc='upper left')
                     plt.tight_layout()
-                    plt.savefig(os.path.join(diagnostic_image_folder, 'planet_model_test.jpg'), dpi=300)
+                    plt.savefig(os.path.join(diagnostic_image_folder,
+                                'planet_model_test.jpg'), dpi=300)
 
                     plt.close()
                     plt.plot(y - model_for_pixel * reduction_parameters.true_contrast,
@@ -769,7 +849,8 @@ def run_trap_with_model_temporal(
                     plt.xlabel('Frame')
                     plt.legend(loc='upper left')
                     plt.tight_layout()
-                    plt.savefig(os.path.join(diagnostic_image_folder, 'data_minus_model_fit_test.jpg'), dpi=300)
+                    plt.savefig(os.path.join(diagnostic_image_folder,
+                                'data_minus_model_fit_test.jpg'), dpi=300)
 
                 plt.close()
                 fig, ax = plt.subplots(figsize=(9, 2))
@@ -777,7 +858,8 @@ def run_trap_with_model_temporal(
                 plt.xlabel('Frame')
                 plt.legend(loc='upper left')
                 plt.tight_layout()
-                plt.savefig(os.path.join(diagnostic_image_folder, 'data_for_pixel_long_test.jpg'), dpi=300)
+                plt.savefig(os.path.join(diagnostic_image_folder,
+                            'data_for_pixel_long_test.jpg'), dpi=300)
 
                 plt.close()
                 plt.style.use("paper")
@@ -851,7 +933,8 @@ def run_trap_with_model_temporal(
     # This is not correct for local model, the range to fit is different for each pixel and should be added to
     # a uniform cube, and later take into account ignoring Nans!
     if make_reconstructed_lightcurve:
-        residuals = (data[data_range_to_fit][:, reduction_mask] - model_cube[data_range_to_fit][:, reduction_mask]).T
+        residuals = (data[data_range_to_fit][:, reduction_mask] -
+                     model_cube[data_range_to_fit][:, reduction_mask]).T
     else:
         residuals = None
 
@@ -1016,7 +1099,8 @@ def run_trap_with_model_spatial(
         #     print('Returning None because nPCA could not be determined')
         #     return None
 
-        number_of_pca_regressors = int(np.round(max_ncomp[idx][0] * reduction_parameters.spatial_components_fraction))
+        number_of_pca_regressors = int(
+            np.round(max_ncomp[idx][0] * reduction_parameters.spatial_components_fraction))
         B = B_full[:, :number_of_pca_regressors]
         # S = S_full[:number_of_pca_regressors]
         # V = V_full[:number_of_pca_regressors, :]
@@ -1074,7 +1158,8 @@ def run_trap_with_model_spatial(
 
         refined_speckle_subtraction = np.empty((yx_dim[0], yx_dim[1]))
         refined_speckle_subtraction[:] = np.nan
-        refined_speckle_subtraction[reduction_mask] = data[idx][reduction_mask] - reconstructed_systematics
+        refined_speckle_subtraction[reduction_mask] = data[idx][reduction_mask] - \
+            reconstructed_systematics
 
         psf_mask = model[idx] > 0.
         non_psf_mask = np.logical_and(reduction_mask, ~psf_mask)
@@ -1233,7 +1318,8 @@ def run_trap_with_model_wavelength(
     if yx_center is None:
         yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
 
-    planet_absolute_yx_pos = image_coordinates.relative_yx_to_absolute_yx(planet_relative_yx_pos, yx_center)
+    planet_absolute_yx_pos = image_coordinates.relative_yx_to_absolute_yx(
+        planet_relative_yx_pos, yx_center)
     ntime = data.shape[0]
 
     if reduction_parameters.reduce_single_position and reduction_parameters.plot_all_diagnostics:
@@ -1460,7 +1546,8 @@ def run_trap_with_model_wavelength(
                 ax.set_ylabel('Counts (ADU)')
                 ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.25),
                           ncol=2, fancybox=False, shadow=False)
-                plt.savefig('diagnostic_plots/fitted_data_test.pdf', bbox_inches='tight')  # dpi=300)
+                plt.savefig('diagnostic_plots/fitted_data_test.pdf',
+                            bbox_inches='tight')  # dpi=300)
 
                 plt.close()
                 plt.plot(y - model_for_pixel * reduction_parameters.true_contrast,
@@ -1498,7 +1585,8 @@ def run_trap_with_model_wavelength(
     # This is not correct for local model, the range to fit is different for each pixel and should be added to
     # a uniform cube, and later take into account ignoring Nans!
     if make_reconstructed_lightcurve:
-        residuals = (data[data_range_to_fit][:, reduction_mask] - model_cube[data_range_to_fit][:, reduction_mask]).T
+        residuals = (data[data_range_to_fit][:, reduction_mask] -
+                     model_cube[data_range_to_fit][:, reduction_mask]).T
     else:
         residuals = None
 
@@ -1578,6 +1666,7 @@ def run_trap_with_model_temporal_optimized(
     # reduced_result[:] = np.nan
 
     reduction_pix_indeces = np.argwhere(reduction_mask)
+    test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
     # EDIT: !!!!!!!
     # Provide pre-stacked training matrix, only add model on top!
     training_matrix = data[:, regressor_pool_mask]
@@ -1618,6 +1707,124 @@ def run_trap_with_model_temporal_optimized(
         fitted_model[idx] = reconstructed_lightcurve
 
         reduced_result[idx] = (P[-1], P_sigma_squared[-1])
+
+    residuals = (data[:, reduction_mask].T - fitted_model)
+
+    result = Result(
+        data=None,
+        model_cube=None,
+        noise_model_cube=None,
+        diagnostic_image=None,
+        reduced_result=reduced_result,
+        reduction_mask=None,
+        residuals=residuals,
+        number_of_pca_regressors=reduction_parameters.number_of_pca_regressors,
+        true_contrast=None,
+        yx_center=None,
+        compute_residual_correlation=reduction_parameters.compute_residual_correlation,
+        use_residual_correlation=reduction_parameters.use_residual_correlation)
+
+    result.compute_contrast_weighted_average(mask_outliers=True)
+    # Get rid of arrays for to save memory when accomulating results for many models
+    result.residuals = None
+    result.reduced_result = None
+    return result
+
+
+def run_temporal_pca_cross_validation(
+        data, model, pa, reduction_parameters,
+        reduction_mask,
+        variance_reduction_area=None,
+        regressor_matrix=None,
+        regressor_pool_mask=None):
+    """Core function of the TRAP analysis. Builds the temporal regression
+    model and perform model fitting for all time series vectors in the
+    `reduction_mask` as described in Samland et al. 2020.
+
+    Parameters
+    ----------
+    data : array_like
+        Temporal image cube. First axis is time.
+    model : array_like, optional
+        Temporal image cube containing the companion model.
+    pa : array_like
+        Vector containing the parallactic angles for each frame.
+    reduction_parameters : `~trap.parameters.Reduction_parameters`
+        A `~trap.parameters.Reduction_parameters` object all parameters
+        necessary for the TRAP pipeline.
+    reduction_mask : array_like
+        Boolean mask of data included in the reduction
+        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+    variance_reduction_area : array_like, optional
+        Variance for pixels in `reduction_mask`. Use if `include_noise`
+        in `reduction_parameters` is True.
+    regressor_matrix : array_like, optional
+        Pre-computed regressor matrix. If not given regressor_matrix
+        will be made using the provided masks.
+    regressor_pool_mask : array_like, optional
+        Boolean mask of pixels to include as regressors.
+        If None, `regressor_pool_mask` will be constructed from provided
+        masks.
+
+    Returns
+    -------
+    ~trap.analyze_data.Result
+        Regression results for all pixels contained in the `reduction_mask`
+        for a single tested planet position.
+
+    """
+
+    ntime = data.shape[0]
+
+    n_reduction_pix = np.sum(reduction_mask)
+    reduced_result = np.empty((n_reduction_pix, 2))
+    fitted_model = np.empty((n_reduction_pix, ntime))
+    # reduced_result[:] = np.nan
+
+    reduction_pix_indeces = np.argwhere(reduction_mask)
+    test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
+    # EDIT: !!!!!!!
+    # Provide pre-stacked training matrix, only add model on top!
+    training_matrix = data[:, regressor_pool_mask]
+    B_full, _, _, _ = pca_regression.compute_SVD(
+        training_matrix, n_components=None,
+        scaling=reduction_parameters.pca_scaling)
+    B = B_full[:, :reduction_parameters.number_of_pca_regressors]
+    constant_offset = np.ones(ntime)
+
+    yx_pixel = test_pixel
+
+    # for idx, yx_pixel in enumerate(reduction_pix_indeces):
+    # Pixel data to fit
+    y = data[:, yx_pixel[0], yx_pixel[1]]
+    # Lightcurve model fitting planet at pixel
+    model_for_pixel = model[:, yx_pixel[0], yx_pixel[1]]
+
+    if reduction_parameters.number_of_pca_regressors != 0:
+        model_matrix = np.vstack((constant_offset, model_for_pixel))
+        A = np.hstack((B, model_matrix.T))
+    else:
+        model_matrix = np.vstack((constant_offset, model_for_pixel))
+        A = model_matrix.T
+
+    if reduction_parameters.include_noise:
+        if variance_reduction_area is not None:
+            variance_vector = variance_reduction_area[:, idx]
+            inverse_covariance_matrix = np.identity(len(y)) * (1. / variance_vector)
+        else:
+            inverse_covariance_matrix = np.identity(len(y)) * (1. / y)
+    else:
+        inverse_covariance_matrix = None
+
+    P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
+        design_matrix=A.T,
+        data=y,
+        inverse_covariance_matrix=inverse_covariance_matrix)
+
+    reconstructed_lightcurve = np.dot(A, P)
+    fitted_model[idx] = reconstructed_lightcurve
+
+    reduced_result[idx] = (P[-1], P_sigma_squared[-1])
 
     residuals = (data[:, reduction_mask].T - fitted_model)
 

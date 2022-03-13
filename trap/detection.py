@@ -2118,7 +2118,7 @@ class DetectionAnalysis(object):
 
     def template_matching_detection(
             self, template,
-            inner_mask_radius=5.,
+            inner_mask_radius=4.,
             detection_threshold=5.,
             file_paths=None,
             save=True):
@@ -2132,7 +2132,10 @@ class DetectionAnalysis(object):
             'float64')  # / detection1.reduction_parameters.contrast_curve_sigma
         yx_dim = [contrast_cube.shape[-2], contrast_cube.shape[-1]]
         yx_center_output = [yx_dim[0] // 2, yx_dim[1]]
-        reduced_positions_mask = np.isfinite(contrast_cube[0])
+
+        reduced_positions_mask = np.logical_and(
+            np.all(np.isfinite(contrast_cube), axis=0),
+            ~np.any(contrast_cube == 0., axis=0))
         self.reduction_parameters.annulus_width = 3
 
         center_mask = regressor_selection.make_signal_mask(
@@ -2161,6 +2164,9 @@ class DetectionAnalysis(object):
             # contrasts = contrasts[self.good_residual_mask].astype('float64')
             # uncertainties = np.sqrt(self.reduced_result[:, 1])
             uncertainties = uncertainty_cube[:, yx_pixel[0], yx_pixel[1]]
+            contrasts_mean = np.mean(contrasts)
+            contrasts_norm = contrasts / contrasts_mean
+            uncertainties_norm = uncertainties / contrasts_mean
 
             yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
             relative_coords = image_coordinates.absolute_yx_to_relative_yx(
@@ -2179,11 +2185,13 @@ class DetectionAnalysis(object):
                 psi_ij = self.empirical_correlation['matrices'][correlation_array_index]
                 # psi_ij = remove_channel_from_correlation_matrix(channel_mask, psi_ij)
                 cov_ij = uncertainties[:, None] * psi_ij * uncertainties[None, :]
-            # plot_scale(cov_ij)
-            # plt.show()
-            # inverse = inv(cov_ij)
-            variance_vector = uncertainties**2
-            inverse_covariance_matrix = np.identity(len(contrasts)) * (1. / variance_vector)
+                cov_ij_norm = uncertainties_norm[:, None] * psi_ij * uncertainties_norm[None, :]
+                # plot_scale(cov_ij)
+                # plt.show()
+                inv_cov_ij = np.linalg.inv(cov_ij)
+            else:
+                cov_ij = np.identity(len(contrasts)) * uncertainties**2
+                inv_cov_ij = np.identity(len(contrasts)) * (1. / uncertainties)
             # if show:
             # plot_scale(np.dot(inverse, cov_ij))
             # plt.show()
@@ -2223,10 +2231,21 @@ class DetectionAnalysis(object):
             else:
                 A = model_matrix.T
 
+            # ipsh()
             P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
                 design_matrix=A.T,
                 data=contrasts,
-                inverse_covariance_matrix=inverse_covariance_matrix)
+                inverse_covariance_matrix=inv_cov_ij)
+
+            # fit_parameters, err_fit_parameters, sigma_hat_sqr = pca_regression.ols(
+            #     design_matrix=A, data=contrasts_norm, covariance=cov_ij_norm)
+
+            # P, P_sigma, _ = pca_regression.ols(
+            #     design_matrix=A, data=contrasts, covariance=cov_ij)
+
+            # P = P * contrasts_mean
+            # P_sigma_squared = P_sigma**2  # * np.abs(contrasts_mean))**2
+            # fit_parameters[-1] * mean_data
             # reconstructed_lightcurve = np.dot(A, P)
 
             template_matched_image[0, yx_pixel[0], yx_pixel[1]] = P[-1]
@@ -2355,9 +2374,8 @@ class DetectionAnalysis(object):
             #     yx_fwhm_ratio_threshold=[1.1, 4.5])
 
             # mask = candidates['snr'] > detection_threshold
-            yx_known_companion_position = \
-                candidates_fit_template['snr_image'][[
-                    'y_relative', 'x_relative']].values  # [mask]
+            yx_known_companion_position = candidates_fit_template['snr_image'][[
+                'y_relative', 'x_relative']].values  # [mask]
             # yx_known_companion_position = np.unique(
             #     validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
 

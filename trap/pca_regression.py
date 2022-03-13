@@ -14,6 +14,11 @@ from astropy.stats import mad_std
 from numba import jit
 from sklearn import preprocessing
 
+from scipy.linalg import svd
+from scipy.linalg import solve_triangular
+from scipy.linalg import cholesky
+
+
 from . import regressor_selection
 from .embed_shell import ipsh
 
@@ -318,3 +323,114 @@ def remove_bad_frames(
             print('Iteration: {} Bad frames: {}'.format(i, bad_frame_indices_in_iteration))
 
     return data, bad_frame_indices
+
+
+def ols(design_matrix, data, covariance=None):
+    """
+    Ordinary least squares.
+
+    Parameters
+    ----------
+    design_matrix : 'numpy.ndarray'
+        The design or regression matrix used in the regression modeling
+    data : 'numpy.ndarray'
+        Vecor of data point to be modeled.
+    weights : 'numpy.ndarray', optional
+        Weights used in the regression. Typically the inverse of the
+        coveriance matrix. The default is None.
+
+    Returns
+    -------
+    fit_parameters : 'numpy.ndarray'
+        Linear regression parameters.
+    err_fit_parameters : 'numpy.ndarray'
+        Error estimate on the regression parameters.
+    sigma_hat_sqr : 'float'
+        Mean squared error.
+
+    Notes
+    -----
+    This routine solves the linear equation
+
+    .. math:: A x = y
+
+    by finding optimal solution :math:'\hat{x}' by minimizing
+
+    .. math::
+
+        || y - A*\hat{x} ||^2
+
+    For details on the implementation see [1]_, [2]_, [3]_, [4]_
+
+    References
+    ----------
+    .. [1] PHD thesis by Diana Maria SIMA, "Regularization techniques in
+           Model Fitting and Parameter estimation", KU Leuven 2006
+    .. [2] Hogg et al 2010, "Data analysis recipies: Fitting a model to data"
+    .. [3] Rust & O'Leaary, "Residual periodograms for choosing regularization
+           parameters for ill-posed porblems"
+    .. [4] Krakauer et al "Using generalized cross-validationto select
+           parameters in inversions for regional carbon fluxes"
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from cascade.cpm_model import solve_linear_equation
+    >>> A = np.array([[1, 0, -1], [0, 1, 0], [1, 0, 1], [1, 1, 0], [-1, 1, 0]])
+    >>> coef = np.array([4, 2, 7])
+    >>> b = np.dot(A, coef)
+    >>> b = b + np.random.normal(0.0, 0.01, size=b.size)
+    >>> results = solve_linear_equation(A, b)
+    >>> print(results)
+    """
+
+    if not isinstance(covariance, type(None)):
+        Gcovariance = cholesky(covariance, lower=True)
+        weighted_design_matrix = solve_triangular(Gcovariance, design_matrix,
+                                                  lower=True,
+                                                  check_finite=False)
+        data_weighted = solve_triangular(Gcovariance, data, lower=True,
+                                         check_finite=False)
+        scaling_matrix = np.diag(np.full(len(data_weighted),
+                                 1.0/np.mean(data_weighted)))
+        data_weighted = np.dot(scaling_matrix, data_weighted)
+        weighted_design_matrix = np.dot(scaling_matrix, weighted_design_matrix)
+    else:
+        weighted_design_matrix = design_matrix
+        data_weighted = data
+    dim_dm = weighted_design_matrix.shape
+    if dim_dm[0] - dim_dm[1] < 1:
+        AssertionError("Wrong dimensions of design matrix: \
+                                 more regressors as data; Aborting")
+
+    # First make SVD of design matrix A
+    U, sigma, VH = svd(weighted_design_matrix)
+
+    # residual_not_reg = (u[:,rnk:].dot(u[:,rnk:].T)).dot(y)
+    residual_not_reg = np.linalg.multi_dot([U[:, dim_dm[1]:],
+                                            U[:, dim_dm[1]:].T, data_weighted])
+
+    # calculate the filter factors
+    F = np.identity(sigma.shape[0])
+    Fsigma_inv = np.diag(1.0/sigma)
+
+    # Solution of the linear system
+    fit_parameters = np.linalg.multi_dot([VH.T, Fsigma_inv,
+                                          U.T[:dim_dm[1], :], data_weighted])
+
+    # calculate the general risidual vector (b-model), which can be caculated
+    # by using U1 (mxn) and U2 (mxm-n), with U=[U1,U2]
+    residual_reg = residual_not_reg + \
+        np.linalg.multi_dot([U[:, :dim_dm[1]], np.identity(dim_dm[1]) - F,
+                             U[:, :dim_dm[1]].T, data_weighted])
+
+    effective_degrees_of_freedom = (dim_dm[0] - dim_dm[1])
+    sigma_hat_sqr = np.dot(residual_reg.T, residual_reg) / \
+        effective_degrees_of_freedom
+
+    # calculate the errors on the fit parameters
+    err_fit_parameters = np.sqrt(sigma_hat_sqr *
+                                 np.diag(np.linalg.multi_dot([VH.T,
+                                                              Fsigma_inv**2,
+                                                              VH])))
+    return fit_parameters, err_fit_parameters, sigma_hat_sqr
