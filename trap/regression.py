@@ -173,6 +173,7 @@ class Result(object):
                                    sigma=3, clip_median=True, clip_std=False,
                                    clip_snr=False, clip_relative_deviation=False):
         mask = []
+        mask.append(~np.isfinite(self.reduced_result[:, 0]))
         if clip_median:  # Clip pixels based on time-domain median
             mask.append(
                 sigma_clip(np.median(self.residuals, axis=1),
@@ -1697,15 +1698,22 @@ def run_trap_with_model_temporal_optimized(
                 inverse_covariance_matrix = np.identity(len(y)) * (1. / y)
         else:
             inverse_covariance_matrix = None
+        try:
+            P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
+                design_matrix=A.T,
+                data=y,
+                inverse_covariance_matrix=inverse_covariance_matrix)
+        except np.linalg.LinAlgError:
+            P = np.nan
+            P_sigma_squared = np.nan
 
-        P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
-            design_matrix=A.T,
-            data=y,
-            inverse_covariance_matrix=inverse_covariance_matrix)
+        if P is not np.nan:
+            reconstructed_lightcurve = np.dot(A, P)
+        else:
+            reconstructed_lightcurve = np.empty(ntime)
+            reconstructed_lightcurve[:] = np.nan
 
-        reconstructed_lightcurve = np.dot(A, P)
         fitted_model[idx] = reconstructed_lightcurve
-
         reduced_result[idx] = (P[-1], P_sigma_squared[-1])
 
     residuals = (data[:, reduction_mask].T - fitted_model)
