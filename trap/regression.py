@@ -1704,10 +1704,12 @@ def run_trap_with_model_temporal_optimized(
                 data=y,
                 inverse_covariance_matrix=inverse_covariance_matrix)
         except np.linalg.LinAlgError:
-            P = np.nan
+            P = np.empty(A.shape[1])
+            P[:] = np.nan
+            P_sigma_squared = np.empty(A.shape[1])
             P_sigma_squared = np.nan
 
-        if P is not np.nan:
+        if P[0] is not np.nan:
             reconstructed_lightcurve = np.dot(A, P)
         else:
             reconstructed_lightcurve = np.empty(ntime)
