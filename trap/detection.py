@@ -900,7 +900,7 @@ def fit_2d_gaussian(
 
     # Check if model fit is close to data (this is not perfect in case the detection is on the edge)
     # May require special treatment or warning
-    mask = abs(cutout.data - model) / np.mean(
+    mask = abs(cutout.data - model) / np.nanmean(
         np.vstack([cutout.data[None, :], model[None, :]]), axis=0) < deviation_threshold  # Filter out
     if mask_deviating:
         g_init = models.Gaussian2D(
