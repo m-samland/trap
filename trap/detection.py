@@ -1763,7 +1763,7 @@ class DetectionAnalysis(object):
             temporal_components_fraction, variance_full=None, instrument=None,
             bad_frames=None, bad_pixel_mask_full=None, xy_image_centers=None,
             amplitude_modulation_full=None,
-            return_table=False,
+            return_table=False, return_all_results=False,
             verbose=False):
 
         if wavelength_indices is None:
@@ -1793,6 +1793,9 @@ class DetectionAnalysis(object):
             xy_image_centers=xy_image_centers,
             amplitude_modulation_full=amplitude_modulation_full,
             verbose=verbose)
+
+        if return_all_results:
+            return all_results
 
         # AUTOMATICALLY COLLECT ALL WAVELENGTHS FOR REDUCTION
         # NOTE: This should be generalized to allow automatically collect results from
