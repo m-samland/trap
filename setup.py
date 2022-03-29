@@ -26,5 +26,6 @@ setuptools.setup(
     python_requires='>=3.8',
     install_requires=['numpy', 'scipy', 'matplotlib', 'numba', 'pandas',
                       'scikit-learn', 'astropy', 'photutils', 'seaborn', 'tqdm',
-                      'ray', 'bottleneck', 'natsorted']
+                      'ray', 'bottleneck', 'natsort',
+                      'cython', 'species']
 )
