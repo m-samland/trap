@@ -1728,7 +1728,7 @@ def run_complete_reduction(
                 wavelength_results['{}'.format(wavelength_index)] = results
 
             else:
-                cross_validation = True
+                cross_validation = False
                 if cross_validation:
                     relative_coords = np.vstack([
                         # image_coordinates.rhophi_to_relative_yx(
