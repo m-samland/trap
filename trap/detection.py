@@ -1760,7 +1760,7 @@ class DetectionAnalysis(object):
 
     def rereduce_single_position(
             self, candidate_index, candidate_position, data_full, flux_psf_full, pa, wavelength_indices,
-            temporal_components_fraction, variance_full=None, instrument=None,
+            temporal_components_fraction, inverse_variance_full=None, instrument=None,
             bad_frames=None, bad_pixel_mask_full=None, xy_image_centers=None,
             amplitude_modulation_full=None,
             return_table=False, return_all_results=False,
@@ -1787,7 +1787,7 @@ class DetectionAnalysis(object):
             reduction_parameters=re_reduction_parameters,
             temporal_components_fraction=temporal_components_fraction,
             wavelength_indices=wavelength_indices,
-            variance_full=variance_full,
+            inverse_variance_full=inverse_variance_full,
             bad_frames=bad_frames,
             bad_pixel_mask_full=bad_pixel_mask_full,
             xy_image_centers=xy_image_centers,
@@ -1874,7 +1874,7 @@ class DetectionAnalysis(object):
             flux_psf_full, pa,
             candidate_positions=None,
             wavelength_indices=None,
-            variance_full=None, instrument=None,
+            inverse_variance_full=None, instrument=None,
             bad_frames=None, bad_pixel_mask_full=None,
             xy_image_centers=None,
             amplitude_modulation_full=None,
@@ -1896,7 +1896,7 @@ class DetectionAnalysis(object):
                 flux_psf_full=flux_psf_full, pa=pa,
                 temporal_components_fraction=temporal_components_fraction,
                 wavelength_indices=wavelength_indices,
-                variance_full=variance_full, instrument=instrument,
+                inverse_variance_full=inverse_variance_full, instrument=instrument,
                 bad_frames=bad_frames, bad_pixel_mask_full=bad_pixel_mask_full,
                 xy_image_centers=xy_image_centers,
                 amplitude_modulation_full=amplitude_modulation_full,
@@ -2194,7 +2194,7 @@ class DetectionAnalysis(object):
                 inv_cov_ij = np.linalg.inv(cov_ij)
             else:
                 cov_ij = np.identity(len(contrasts)) * uncertainties**2
-                inv_cov_ij = np.identity(len(contrasts)) * (1. / uncertainties)
+                inv_cov = 1. / uncertainties**2
             # if show:
             # plot_scale(np.dot(inverse, cov_ij))
             # plt.show()
@@ -2235,10 +2235,16 @@ class DetectionAnalysis(object):
                 A = model_matrix.T
 
             # ipsh()
-            P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
-                design_matrix=A.T,
-                data=contrasts,
-                inverse_covariance_matrix=inv_cov_ij)
+            if template.use_spectral_correlation:
+                P, P_sigma_squared = pca_regression.solve_linear_equation_with_correlation(
+                    design_matrix=A.T,
+                    data=contrasts,
+                    inverse_covariance_matrix=inv_cov_ij)
+            else:
+                P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
+                    design_matrix=A.T,
+                    data=contrasts,
+                    inverse_covariance=inv_cov)
 
             # fit_parameters, err_fit_parameters, sigma_hat_sqr = pca_regression.ols(
             #     design_matrix=A, data=contrasts_norm, covariance=cov_ij_norm)
@@ -2300,7 +2306,7 @@ class DetectionAnalysis(object):
                               instrument=None,
                               temporal_components_fraction=None,
                               wavelength_indices=None,
-                              variance_full=None,
+                              inverse_variance_full=None,
                               bad_frames=None,
                               bad_pixel_mask_full=None,
                               xy_image_centers=None,
@@ -2411,7 +2417,7 @@ class DetectionAnalysis(object):
                 flux_psf_full=flux_psf_full,
                 pa=pa,
                 wavelength_indices=None,
-                variance_full=variance_full,
+                inverse_variance_full=inverse_variance_full,
                 instrument=None,
                 bad_frames=bad_frames,
                 bad_pixel_mask_full=bad_pixel_mask_full,
@@ -2521,7 +2527,7 @@ class DetectionAnalysis(object):
                             instrument=None,
                             temporal_components_fraction=None,
                             wavelength_indices=None,
-                            variance_full=None,
+                            inverse_variance_full=None,
                             bad_frames=None,
                             bad_pixel_mask_full=None,
                             xy_image_centers=None,
@@ -2546,7 +2552,7 @@ class DetectionAnalysis(object):
                     instrument=instrument,
                     temporal_components_fraction=temporal_components_fraction,
                     wavelength_indices=wavelength_indices,
-                    variance_full=variance_full,
+                    inverse_variance_full=inverse_variance_full,
                     bad_frames=bad_frames,
                     bad_pixel_mask_full=bad_pixel_mask_full,
                     xy_image_centers=xy_image_centers,

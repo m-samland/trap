@@ -131,23 +131,35 @@ def compute_V_inverse(training_matrix, lambdas, variance, variance_prior_scaling
     return V_inverse
 
 
-def solve_linear_equation_simple(design_matrix, data, inverse_covariance_matrix=None):
-    # if data.dtype != 'float64':
-    #     data = data.astype('float64')
-    # if design_matrix.dtype != 'float64':
-    #     design_matrix = design_matrix.astype('float64')
-
+def solve_linear_equation_simple(design_matrix, data, inverse_covariance=None):
     A = design_matrix
-    if inverse_covariance_matrix is None:
+    if inverse_covariance is None:
         AVinvy = np.dot(A, data)
         AVinvAT = np.dot(A, A.T)
     else:
-        Vinv = inverse_covariance_matrix
-        AVinvy = np.linalg.multi_dot((A, Vinv, data))
-        AVinvAT = np.linalg.multi_dot((A, Vinv, A.T))
+        AVinvy = np.dot(A, inverse_covariance * data)
+        AVinvAT = np.dot(A, A.T * inverse_covariance[:, None])
+    try:
+        P = np.linalg.solve(AVinvAT, AVinvy)
+        P_sigma_squared = np.diag(np.linalg.inv(AVinvAT))
+    except np.linalg.LinAlgError:
+        if inverse_covariance is None:
+            inverse_covariance = np.ones_like(data)
+        P, _, _, _ = np.linalg.lstsq(
+            A.T * np.sqrt(inverse_covariance[:, None]),
+            data * np.sqrt(inverse_covariance),
+            rcond=None)
+        P_sigma_squared = np.diag(np.linalg.pinv(AVinvAT))
+    return P, P_sigma_squared
+
+
+def solve_linear_equation_with_correlation(design_matrix, data, inverse_covariance_matrix):
+    A = design_matrix
+    Vinv = inverse_covariance_matrix
+
+    AVinvy = np.linalg.multi_dot((A, Vinv, data))
+    AVinvAT = np.linalg.multi_dot((A, Vinv, A.T))
     P = np.linalg.solve(AVinvAT, AVinvy)
-    # Plstsq = np.linalg.lstsq(AVinvAT, AVinvy)
-    # ipsh()
     P_sigma_squared = np.diag(np.linalg.inv(AVinvAT))
 
     return P, P_sigma_squared

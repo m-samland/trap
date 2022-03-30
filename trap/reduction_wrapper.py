@@ -29,14 +29,16 @@ from trap.utils import (ProgressBar, crop_box_from_3D_cube,
                         round_up_to_odd, shuffle_and_equalize_relative_positions)
 
 
+# @ ray.remote
 def trap_one_position(guess_position, data, flux_psf, pa,
                       reduction_parameters, known_companion_mask,
-                      variance=None,
+                      inverse_variance=None,
                       bad_pixel_mask=None,
                       yx_center=None, yx_center_injection=None,
                       amplitude_modulation=None,
                       contrast_map=None,
-                      readnoise=0.):
+                      readnoise=0.,
+                      cross_validation=False):
     """Runs TRAP on individual position.
 
     Parameters
@@ -54,8 +56,8 @@ def trap_one_position(guess_position, data, flux_psf, pa,
         necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
-    variance : array_like
-        Cube containing variances for `data`.
+    inverse_variance : array_like
+        Cube containing inverse variances for `data`.
     bad_pixel_mask : array_like
         Bad pixel mask for `data`.
     yx_center : tuple
@@ -171,22 +173,23 @@ def trap_one_position(guess_position, data, flux_psf, pa,
         model = None
 
     if reduction_parameters.include_noise:
-        if variance is None:
+        if inverse_variance is None:
             # NOTE: Uses photon noise from data itself.
             # May not be valid based on pre-processing steps done
             if bad_pixel_mask is not None:
-                variance_reduction_area = np.abs(
-                    data_reduce[:, reduction_mask_wo_badpixels]) + readnoise**2
+                inverse_variance_reduction_area = 1. / (np.abs(
+                    data_reduce[:, reduction_mask_wo_badpixels]) + readnoise**2)
             else:
-                variance_reduction_area = np.abs(data_reduce[:, reduction_mask]) + readnoise**2
+                inverse_variance_reduction_area = 1. / \
+                    (np.abs(data_reduce[:, reduction_mask]) + readnoise**2)
 
         else:
             if bad_pixel_mask is not None:
-                variance_reduction_area = variance[:, reduction_mask_wo_badpixels]
+                inverse_variance_reduction_area = inverse_variance[:, reduction_mask_wo_badpixels]
             else:
-                variance_reduction_area = variance[:, reduction_mask]
+                inverse_variance_reduction_area = inverse_variance[:, reduction_mask]
     else:
-        variance_reduction_area = None
+        inverse_variance_reduction_area = None
 
     if bad_pixel_mask is not None:
         reduction_mask_used = reduction_mask_wo_badpixels.copy()
@@ -223,6 +226,18 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             right_handed=reduction_parameters.right_handed,
             pa=pa)
 
+        if cross_validation:
+            cv_result = regression.temporal_pca_cross_validation(
+                data=data_reduce,
+                model=model,
+                pa=pa,
+                reduction_parameters=reduction_parameters,
+                reduction_mask=reduction_mask_used,
+                regressor_pool_mask=regressor_pool_mask,
+                regressor_matrix=None,
+                inverse_variance_reduction_area=inverse_variance_reduction_area)
+            return cv_result
+
         if reduction_parameters.reduce_single_position:
             result = regression.run_trap_with_model_temporal(
                 data=data_reduce,
@@ -241,7 +256,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
                 bad_pixel_mask=bad_pixel_mask,
                 regressor_matrix=None,
                 true_contrast=true_contrast,
-                variance_reduction_area=variance_reduction_area,
+                inverse_variance_reduction_area=inverse_variance_reduction_area,
                 plot_all_diagnostics=reduction_parameters.plot_all_diagnostics,
                 return_input_data=reduction_parameters.return_input_data)
         else:
@@ -253,7 +268,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
                 reduction_mask=reduction_mask_used,
                 regressor_pool_mask=regressor_pool_mask,
                 regressor_matrix=None,
-                variance_reduction_area=variance_reduction_area)
+                inverse_variance_reduction_area=inverse_variance_reduction_area)
 
         # if result is not None:
         #     if reduction_parameters.fit_planet:
@@ -276,7 +291,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             reduction_mask=reduction_mask_used,
             yx_center=yx_center,
             yx_center_injection=yx_center_injection,
-            variance_reduction_area=variance_reduction_area,
+            inverse_variance_reduction_area=inverse_variance_reduction_area,
             true_contrast=true_contrast,
             training_data=None,
             return_input_data=False,
@@ -310,7 +325,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
                 regressor_pool_mask=regressor_pool_mask,
                 bad_pixel_mask=bad_pixel_mask,
                 regressor_matrix=None,
-                variance_reduction_area=variance_reduction_area,
+                inverse_variance_reduction_area=inverse_variance_reduction_area,
                 true_contrast=true_contrast,
                 plot_all_diagnostics=reduction_parameters.plot_all_diagnostics,
                 return_input_data=False,
@@ -337,9 +352,9 @@ def trap_one_position(guess_position, data, flux_psf, pa,
                 bad_pixel_mask = bad_residual_mask
             else:
                 bad_pixel_mask = np.logical_or(bad_pixel_mask, bad_residual_mask)
-            if variance_reduction_area is not None:
-                variance_reduction_area = variance_reduction_area[:,
-                                                                  ~bad_residual_mask[reduction_mask_used]]
+            if inverse_variance_reduction_area is not None:
+                inverse_variance_reduction_area = inverse_variance_reduction_area[:,
+                                                                                  ~bad_residual_mask[reduction_mask_used]]
             reduction_mask_used = np.logical_and(reduction_mask_used, ~bad_residual_mask)
 
         reduction_parameters_alternative = copy(reduction_parameters)
@@ -355,7 +370,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
             reduction_mask=reduction_mask_used,
             yx_center=yx_center,
             yx_center_injection=yx_center_injection,
-            variance_reduction_area=variance_reduction_area,
+            inverse_variance_reduction_area=inverse_variance_reduction_area,
             true_contrast=true_contrast,
             training_data=training_data,
             return_input_data=False,
@@ -374,7 +389,7 @@ def trap_one_position(guess_position, data, flux_psf, pa,
 
 def run_trap_search(data, flux_psf, pa, wavelength,
                     reduction_parameters, known_companion_mask,
-                    variance=None,
+                    inverse_variance=None,
                     bad_pixel_mask=None, result_name=None,
                     yx_center=None, yx_center_injection=None,
                     amplitude_modulation=None,
@@ -396,8 +411,8 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
-    variance : array_like
-        Cube containing variances for `data`.
+    inverse_variance : array_like
+        Cube containing inverse variances for `data`.
     bad_pixel_mask : array_like
         Bad pixel mask for `data`.
     result_name : str
@@ -436,8 +451,8 @@ def run_trap_search(data, flux_psf, pa, wavelength,
     flux_psf = flux_psf.astype('float64')
     pa = pa.astype('float64')
 
-    if variance is not None:
-        variance = variance.astype('float64')
+    if inverse_variance is not None:
+        inverse_variance = inverse_variance.astype('float64')
 
     oversampling = reduction_parameters.oversampling
     yx_dim = (data.shape[-2], data.shape[-1])
@@ -512,7 +527,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
 
         a = datetime.datetime.now()
         data_id = ray.put(data)
-        variance_id = ray.put(variance)
+        inverse_variance_id = ray.put(inverse_variance)
         flux_psf_id = ray.put(flux_psf)
         pa_id = ray.put(pa)
         known_companion_mask_id = ray.put(known_companion_mask)
@@ -522,7 +537,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         result_ids = []
         for region in relative_coords_regions:
             result_ids.append(trap_search_region.remote(
-                region, data=data_id, variance=variance_id, flux_psf=flux_psf_id, pa=pa_id,
+                region, data=data_id, inverse_variance=inverse_variance_id, flux_psf=flux_psf_id, pa=pa_id,
                 reduction_parameters=reduction_parameters,
                 known_companion_mask=known_companion_mask_id,
                 bad_pixel_mask=bad_pixel_mask_id,
@@ -535,21 +550,6 @@ def run_trap_search(data, flux_psf, pa, wavelength,
         results == list(range(num_ticks))
         num_ticks == ray.get(actor.get_counter.remote())
         results = [item for sublist in results for item in sublist]
-        # multiprocess_trap_region = partial(
-        #     trap_search_region, data=data, variance=variance, flux_psf=flux_psf, pa=pa,
-        #     reduction_parameters=reduction_parameters,
-        #     known_companion_mask=known_companion_mask,
-        #     bad_pixel_mask=bad_pixel_mask,
-        #     yx_center=yx_center, yx_center_injection=yx_center_injection,
-        #     amplitude_modulation=amplitude_modulation,
-        #     contrast_map=contrast_map,
-        #     readnoise=readnoise)
-        # result_ids = []
-        # pool = Pool(processes=reduction_parameters.ncpus)
-        # for idx, sub_region_results in enumerate(tqdm(pool.imap(multiprocess_trap_region, relative_coords_regions),
-        #                                               total=len(relative_coords_regions))):
-        #     result_ids.append(sub_region_results)
-        # results = [item for sublist in result_ids for item in sublist]
 
         for idx, result in enumerate(results):
             for key in detection_image:
@@ -602,7 +602,7 @@ def run_trap_search(data, flux_psf, pa, wavelength,
             #         coords, image_center_yx=yx_center)
 
             result = trap_one_position(
-                coords, data=data, variance=variance, flux_psf=flux_psf, pa=pa,
+                coords, data=data, inverse_variance=inverse_variance, flux_psf=flux_psf, pa=pa,
                 reduction_parameters=reduction_parameters,
                 known_companion_mask=known_companion_mask,
                 bad_pixel_mask=bad_pixel_mask,
@@ -659,15 +659,185 @@ def run_trap_search(data, flux_psf, pa, wavelength,
     return detection_image, detection_image_corr, correlation_matrix_binned
 
 
+def multi_position_cross_validation(relative_coords, data, flux_psf, pa,
+                                    reduction_parameters, known_companion_mask,
+                                    inverse_variance=None,
+                                    bad_pixel_mask=None, result_name=None,
+                                    yx_center=None, yx_center_injection=None,
+                                    amplitude_modulation=None,
+                                    contrast_map=None,
+                                    readnoise=0.):
+    """Iterates TRAP over grid of positions given by the boolean mask
+    `search_region` in the `reduction_parameters` object.
+
+    Parameters
+    ----------
+    data : array_like
+        Temporal image cube. First axis is time.
+    flux_psf : array_like
+        Image of unsaturated PSF.
+    pa : array_like
+        Vector containing the parallactic angles for each frame.
+    reduction_parameters : `~trap.parameters.Reduction_parameters`
+        A `~trap.parameters.Reduction_parameters` object all parameters
+        necessary for the TRAP pipeline.
+    known_companion_mask : array_like
+        Boolean mask of image size. True for pixels affected by companion flux.
+    inverse_variance : array_like
+        Cube containing inverse variances for `data`.
+    bad_pixel_mask : array_like
+        Bad pixel mask for `data`.
+    result_name : str
+        Name for output file.
+    yx_center : tuple
+        Average or median image center position to be used for regressor selection.
+    yx_center_injection : array_like
+        Array containing yx_center to be used for forward model position.
+    amplitude_modulation : array_like, optional
+        Array containing scaling factors for the companion PSF brightness for
+        each time (e.g. derived from satellite spots).
+    contrast_map : array_like, optional
+        Contrast detection map (derived using the same reduction parameters
+        and data) to be used for injection retrieval testing to determine
+        biases in reduction (see `inject_fake`, `read_injection_files`
+        and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
+    readnoise : scalar
+        The detector read noise (e rms/pix/readout).
+
+    Returns
+    -------
+    array_like
+        Detection map cube containing the following maps in order:
+            0) Measured contrast
+            1) Contrast uncertainty
+            2) SNR
+        If `inject_fake` in `reduction_parameters` is True,
+        additionally the following information is added:
+            3) True contrast
+            4) Measured contrast minus `true_contrast`
+            5) Relative deviation from `true_contrast`
+            6) Deviation from `true_contrast` in sigma
+    """
+
+    data = data.astype('float64')
+    flux_psf = flux_psf.astype('float64')
+    pa = pa.astype('float64')
+
+    if inverse_variance is not None:
+        inverse_variance = inverse_variance.astype('float64')
+
+    oversampling = reduction_parameters.oversampling
+    yx_dim = (data.shape[-2], data.shape[-1])
+    yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
+    if yx_center is None:
+        yx_center = (yx_dim[0] // 2, yx_dim[1] // 2)
+
+    if amplitude_modulation is None:
+        amplitude_modulation = np.ones(data.shape[0])
+
+    # detection_image = {}
+    # if reduction_parameters.temporal_model:
+    #     detection_image['temporal'] = np.zeros(
+    #         (detection_image_dim, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling)))
+
+    # search_region = reduction_parameters.search_region
+    # search_coordinates = np.argwhere(search_region) * oversampling
+    # # relative coordinates to output image center (i.e. position of star)
+    # relative_coords = np.array(list(map(
+    #     lambda x: image_coordinates.absolute_yx_to_relative_yx(x, yx_center_output),
+    #     search_coordinates.tolist())))
+
+    search_coordinates = np.array(list(map(
+        lambda x: image_coordinates.relative_yx_to_absolute_yx(x, yx_center_output),
+        relative_coords.tolist())))
+
+    print('Number of positions: {}'.format(len(relative_coords)))
+    if reduction_parameters.use_multiprocess:
+        if reduction_parameters.ncpus is None:
+            reduction_parameters.ncpus = multiprocessing.cpu_count()
+        num_ticks = len(relative_coords)
+        pb = ProgressBar(num_ticks)
+        actor = pb.actor
+
+        # Use more chunks than CPUs to prevent long idle time in case one job finishes quicker
+        # number_of_chunks = round(reduction_parameters.ncpus * 2)
+
+        # search_coordinates, relative_coords, relative_coords_regions, iteration, separation_equalized = shuffle_and_equalize_relative_positions(
+        #     search_coordinates, relative_coords, number_of_chunks,
+        #     max_separation_deviation=2, max_iterations=50, rng=None)
+        # print('Number of positions per chunk: {}'.format(len(relative_coords_regions[0])))
+
+        a = datetime.datetime.now()
+        data_id = ray.put(data)
+        inverse_variance_id = ray.put(inverse_variance)
+        flux_psf_id = ray.put(flux_psf)
+        pa_id = ray.put(pa)
+        known_companion_mask_id = ray.put(known_companion_mask)
+        amplitude_modulation_id = ray.put(amplitude_modulation)
+        bad_pixel_mask_id = ray.put(bad_pixel_mask)
+        contrast_map_id = ray.put(contrast_map)
+        result_ids = []
+
+        for coords in relative_coords:
+            result_ids.append(trap_search_region.remote(
+                coords, data=data_id, inverse_variance=inverse_variance_id, flux_psf=flux_psf_id, pa=pa_id,
+                reduction_parameters=reduction_parameters,
+                known_companion_mask=known_companion_mask_id,
+                bad_pixel_mask=bad_pixel_mask_id,
+                yx_center=yx_center, yx_center_injection=yx_center_injection,
+                amplitude_modulation=amplitude_modulation_id,
+                contrast_map=contrast_map_id,
+                readnoise=readnoise,
+                cross_validation=True,
+                pba=actor))
+
+        pb.print_until_done()
+        results = ray.get(result_ids)
+        results == list(range(num_ticks))
+        num_ticks == ray.get(actor.get_counter.remote())
+        results = [item for sublist in results for item in sublist]
+
+        b = datetime.datetime.now()
+    else:
+        a = datetime.datetime.now()
+
+        results = []
+        for idx, coords in enumerate(tqdm(relative_coords)):
+            # if reduction_parameters.inject_fake == True:
+            #         reduction_parameters.true_position = image_coordinates.absolute_yx_to_relative_yx(
+            #             coords, image_center_yx=yx_center)
+            #     reduction_parameters.guess_position = image_coordinates.absolute_yx_to_relative_yx(
+            #         coords, image_center_yx=yx_center)
+
+            result = trap_one_position(
+                coords, data=data, inverse_variance=inverse_variance, flux_psf=flux_psf, pa=pa,
+                reduction_parameters=reduction_parameters,
+                known_companion_mask=known_companion_mask,
+                bad_pixel_mask=bad_pixel_mask,
+                yx_center=yx_center, yx_center_injection=yx_center_injection,
+                amplitude_modulation=amplitude_modulation,
+                contrast_map=contrast_map,
+                readnoise=readnoise,
+                cross_validation=True)
+            results.append(result)
+        b = datetime.datetime.now()
+    c = b - a
+    print("Main reduction computation time:")
+    print(c)
+
+    return results
+
+
 @ ray.remote
 def trap_search_region(relative_coords, data, flux_psf, pa,
                        reduction_parameters, known_companion_mask,
-                       variance=None,
+                       inverse_variance=None,
                        bad_pixel_mask=None, result_name=None,
                        yx_center=None, yx_center_injection=None,
                        amplitude_modulation=None,
                        contrast_map=None,
                        readnoise=0.,
+                       cross_validation=False,
                        pba=None):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
@@ -685,8 +855,8 @@ def trap_search_region(relative_coords, data, flux_psf, pa,
         necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
-    variance : array_like
-        Cube containing variances for `data`.
+    inverse_variance : array_like
+        Cube containing inverse variances for `data`.
     bad_pixel_mask : array_like
         Bad pixel mask for `data`.
     result_name : str
@@ -724,14 +894,15 @@ def trap_search_region(relative_coords, data, flux_psf, pa,
     sub_region_results = []
     for idx, coords in enumerate(relative_coords):
         result = trap_one_position(
-            coords, data=data, variance=variance, flux_psf=flux_psf, pa=pa,
+            coords, data=data, inverse_variance=inverse_variance, flux_psf=flux_psf, pa=pa,
             reduction_parameters=reduction_parameters,
             known_companion_mask=known_companion_mask,
             bad_pixel_mask=bad_pixel_mask,
             yx_center=yx_center, yx_center_injection=yx_center_injection,
             amplitude_modulation=amplitude_modulation,
             contrast_map=contrast_map,
-            readnoise=readnoise)
+            readnoise=readnoise,
+            cross_validation=cross_validation)
         sub_region_results.append(result)
         if pba is not None:
             pba.update.remote(1)
@@ -740,7 +911,7 @@ def trap_search_region(relative_coords, data, flux_psf, pa,
 
 def run_trap_search_old(data, flux_psf, pa, wavelength,
                         reduction_parameters, known_companion_mask,
-                        variance=None,
+                        inverse_variance=None,
                         bad_pixel_mask=None, result_name=None,
                         yx_center=None, yx_center_injection=None,
                         amplitude_modulation=None,
@@ -762,8 +933,8 @@ def run_trap_search_old(data, flux_psf, pa, wavelength,
         necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
-    variance : array_like
-        Cube containing variances for `data`.
+    inverse_variance : array_like
+        Cube containing inverse variances for `data`.
     bad_pixel_mask : array_like
         Bad pixel mask for `data`.
     result_name : str
@@ -856,7 +1027,7 @@ def run_trap_search_old(data, flux_psf, pa, wavelength,
 
     if reduction_parameters.use_multiprocess:
         multiprocess_trap_position = partial(
-            trap_one_position, data=data, variance=variance, flux_psf=flux_psf, pa=pa,
+            trap_one_position, data=data, inverse_variance=inverse_variance, flux_psf=flux_psf, pa=pa,
             reduction_parameters=reduction_parameters,
             known_companion_mask=known_companion_mask,
             bad_pixel_mask=bad_pixel_mask,
@@ -917,7 +1088,7 @@ def run_trap_search_old(data, flux_psf, pa, wavelength,
             #         coords, image_center_yx=yx_center)
 
             result = trap_one_position(
-                coords, data=data, variance=variance, flux_psf=flux_psf, pa=pa,
+                coords, data=data, inverse_variance=inverse_variance, flux_psf=flux_psf, pa=pa,
                 reduction_parameters=reduction_parameters,
                 known_companion_mask=known_companion_mask,
                 bad_pixel_mask=bad_pixel_mask,
@@ -985,7 +1156,7 @@ def run_complete_reduction(
         reduction_parameters,
         temporal_components_fraction=[0.3],
         wavelength_indices=None,
-        variance_full=None,
+        inverse_variance_full=None,
         bad_frames=None,
         bad_pixel_mask_full=None,
         xy_image_centers=None,
@@ -1022,9 +1193,9 @@ def run_complete_reduction(
     wavelength_indices : array_like, optional
         Vector containing the indices of the wavelength slices that should
         be reduced.
-    variance_full : array_like, optional
+    inverse_variance_full : array_like, optional
         Data cube of the same shape as `data_full` that contains the
-        variance of each data point.
+        inverse variance of each data point.
     bad_frames : array_like, optional
         Vector containing the indices of bad frames to remove.
     bad_pixel_mask_full : array_like, optional
@@ -1068,8 +1239,8 @@ def run_complete_reduction(
         flux_psf_full = np.expand_dims(flux_psf_full, axis=0)
     if data_full.ndim < 4:
         data_full = np.expand_dims(data_full, axis=0)
-    if variance_full is not None and variance_full.ndim < 4:
-        variance_full = np.expand_dims(variance_full, axis=0)
+    if inverse_variance_full is not None and inverse_variance_full.ndim < 4:
+        inverse_variance_full = np.expand_dims(inverse_variance_full, axis=0)
 
     if reduction_parameters.highpass_filter is not None:
         raise NotImplementedError()
@@ -1118,8 +1289,8 @@ def run_complete_reduction(
     if bad_frames is not None:
         data_full = np.delete(data_full, bad_frames, axis=1)
         pa = np.delete(pa, bad_frames, axis=0)
-        if variance_full is not None:
-            variance_full = np.delete(variance_full, bad_frames, axis=1)
+        if inverse_variance_full is not None:
+            inverse_variance_full = np.delete(inverse_variance_full, bad_frames, axis=1)
 
         if xy_image_centers is not None:
             xy_image_centers = np.delete(xy_image_centers, bad_frames, axis=1)
@@ -1256,6 +1427,7 @@ def run_complete_reduction(
         all_results = OrderedDict()
 
     if reduction_parameters.use_multiprocess and not reduction_parameters.reduce_single_position:
+        os.environ["RAY_LOG_TO_STDERR"] = "1"
         ray.init(num_cpus=reduction_parameters.ncpus)
 
     # Loop over reductions for different numbers of components
@@ -1438,16 +1610,14 @@ def run_complete_reduction(
                         center_yx=np.round(yx_center_full[wavelength_index]))
                 else:
                     data = data_full[wavelength_index]
-            data = data.astype('float64')
 
-            if variance_full is not None:
-                variance = crop_box_from_3D_cube(
-                    variance_full[wavelength_index],
+            if inverse_variance_full is not None:
+                inverse_variance = crop_box_from_3D_cube(
+                    inverse_variance_full[wavelength_index],
                     data_crop_size,
                     center_yx=np.round(yx_center_full[wavelength_index])).copy()
-                variance = variance.astype('float64')
             else:
-                variance = None
+                inverse_variance = None
 
             flux_psf = psf_stamps[wavelength_index].astype('float64')
 
@@ -1544,7 +1714,7 @@ def run_complete_reduction(
                 results = trap_one_position(
                     reduction_parameters.guess_position,
                     data=data,
-                    variance=variance,
+                    inverse_variance=inverse_variance,
                     flux_psf=flux_psf,
                     pa=pa,
                     reduction_parameters=reduction_parameters,
@@ -1558,9 +1728,49 @@ def run_complete_reduction(
                 wavelength_results['{}'.format(wavelength_index)] = results
 
             else:
+                cross_validation = True
+                if cross_validation:
+                    relative_coords = np.vstack([
+                        # image_coordinates.rhophi_to_relative_yx(
+                        #     [[5, 0], [5, 90], [5, 180], [5, 270]]),
+                        image_coordinates.rhophi_to_relative_yx(
+                            [[10., 0.], [10., 90.], [10., 180.], [10., 270.]]),
+                        image_coordinates.rhophi_to_relative_yx(
+                            [[20., 0.], [20., 90.], [20., 180.], [20., 270.]]),
+                        # image_coordinates.rhophi_to_relative_yx(
+                        #     [[30., 0.], [30., 90.], [30., 180.], [30., 270.]]),
+                        image_coordinates.rhophi_to_relative_yx(
+                            [[40, 0], [40, 90], [40, 180], [40, 270]]),
+                        image_coordinates.rhophi_to_relative_yx(
+                            [[60, 0], [60, 90], [60, 180], [60, 270]]),
+
+                    ])
+
+                    cv_results = multi_position_cross_validation(
+                        relative_coords=relative_coords,
+                        data=data,
+                        inverse_variance=inverse_variance,
+                        flux_psf=flux_psf,
+                        pa=pa,
+                        reduction_parameters=reduction_parameters,
+                        known_companion_mask=known_companion_mask,
+                        bad_pixel_mask=bad_pixel_mask,
+                        yx_center=yx_center,
+                        yx_center_injection=yx_center_injection,
+                        amplitude_modulation=amplitude_modulation,
+                        contrast_map=contrast_map,
+                        readnoise=instrument.readnoise)
+                    ncomp_residuals = []
+                    for i in range(len(relative_coords)):
+                        ncomp_residuals.append(cv_results[i][0])
+                    # rel_pos, ncomp, pixels, residuals
+                    scores = mad_std(np.array(ncomp_residuals), axis=3)
+                    best_scores = np.argmin(scores, axis=1)
+                    median_best_scores = np.median(best_scores, axis=1)
+
                 detection_image, detection_image_corr, correlation_matrix_binned = run_trap_search(
-                    data=data.astype('float64'),
-                    variance=variance,
+                    data=data,
+                    inverse_variance=inverse_variance,
                     flux_psf=flux_psf,
                     pa=pa,
                     wavelength=wavelength,
@@ -1585,80 +1795,7 @@ def run_complete_reduction(
                                      correlation_matrix_binned[key], overwrite=True)
 
                 del detection_image
-                # pixel_scale_mas = (1 * u.pixel).to(u.mas, instrument.pixel_scale).value
-                #
-                # contrast_table = {}
-                # contrast_table_corr = {}
-                # for key in detection_image:
-                #     normalized_detection_image, contrast_table[key], contrast_image, median_contrast_image = detection.make_contrast_curve(
-                #         detection_image[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
-                #         companion_mask_radius=reduction_parameters.companion_mask_radius,
-                #         pixel_scale=pixel_scale_mas,
-                #         yx_known_companion_position=reduction_parameters.yx_known_companion_position)
-                #     fits.writeto(norm_detection_image_path[key],
-                #                  normalized_detection_image, overwrite=True)
-                #     fits.writeto(contrast_image_path[key], contrast_image, overwrite=True)
-                #     fits.writeto(median_contrast_image_path[key],
-                #                  median_contrast_image, overwrite=True)
-                #     contrast_table[key].write(contrast_table_path[key], overwrite=True)
-                #
-                #     if reduction_parameters.contrast_curve:
-                #         detection.plot_contrast_curve(
-                #             [contrast_table[key]],
-                #             instrument=instrument,
-                #             wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
-                #             colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
-                #             plot_vertical_lod=True, mirror_axis='mas',
-                #             convert_to_mag=False, yscale='log',
-                #             savefig=contrast_plot_path[key], show=False)
-                #
-                #     # NOTE: Temporarily added for correlation, complex outputs should be implemented as in separate class
-                #     # or dictionary to reduce code duplication
-                #     if reduction_parameters.compute_residual_correlation and reduction_parameters.use_residual_correlation:
-                #         normalized_detection_image_corr, contrast_table_corr[key], contrast_image_corr, median_contrast_image_corr = detection.make_contrast_curve(
-                #             detection_image_corr[key], radial_bounds=None, bin_width=reduction_parameters.normalization_width,
-                #             companion_mask_radius=reduction_parameters.companion_mask_radius,
-                #             pixel_scale=pixel_scale_mas,
-                #             yx_known_companion_position=reduction_parameters.yx_known_companion_position)
-                #         fits.writeto(norm_detection_image_corr_path[key],
-                #                      normalized_detection_image_corr, overwrite=True)
-                #         fits.writeto(contrast_image_corr_path[key],
-                #                      contrast_image_corr, overwrite=True)
-                #         fits.writeto(
-                #             median_contrast_image_corr_path[key], median_contrast_image_corr, overwrite=True)
-                #         contrast_table_corr[key].write(
-                #             contrast_table_corr_path[key], overwrite=True)
-                #
-                #         if reduction_parameters.contrast_curve:
-                #             detection.plot_contrast_curve(
-                #                 [contrast_table_corr[key]],
-                #                 instrument=instrument,
-                #                 wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1],
-                #                 colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
-                #                 plot_vertical_lod=True, mirror_axis='mas',
-                #                 convert_to_mag=False, yscale='log',
-                #                 savefig=contrast_plot_corr_path[key], show=False)
-                #
-                # if reduction_parameters.temporal_plus_spatial_model:
-                #     detection.plot_contrast_curve(
-                #         [
-                #             contrast_table['temporal'],
-                #             contrast_table['temporal_plus_spatial']
-                #         ],
-                #         instrument=instrument,
-                #         wavelengths=instrument.wavelengths[wavelength_index:wavelength_index + 1].repeat(
-                #             2),
-                #         curvelabels=['temporal', 'temporal + spatial'],
-                #         linestyles=['-', '--'],
-                #         colors=['#1b1cd5', '#de650a'],  # , '#ba174e'],
-                #         plot_vertical_lod=True, mirror_axis='mas',
-                #         convert_to_mag=False, yscale='log',
-                #         savefig=contrast_plot_comparison_path, show=False)
 
-                # del contrast_table
-                # del normalized_detection_image
-                # del contrast_image
-                # del median_contrast_image
         if reduction_parameters.reduce_single_position:
             all_results['{}'.format(temporal_components_fraction[comp_index])] = wavelength_results
 
