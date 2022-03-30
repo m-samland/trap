@@ -1714,7 +1714,7 @@ def run_trap_with_model_temporal_optimized(
 
         if reduction_parameters.include_noise:
             if inverse_variance_reduction_area is not None:
-                inverse_covariance = variance_reduction_area[:, idx]
+                inverse_covariance = inverse_variance_reduction_area[:, idx]
             else:
                 inverse_covariance = 1. / y
         else:
