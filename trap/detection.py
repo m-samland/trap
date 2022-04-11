@@ -1201,7 +1201,7 @@ class DetectionAnalysis(object):
         if save:
             if file_paths is None:
                 contrast_table_file_name = os.path.splitext(
-                    file_paths['contrast_table_path'])[0]+'.csv'
+                    self.file_paths['contrast_table_path'])[0]+'.csv'
                 file_paths = self.file_paths
             else:
                 contrast_table_file_name = file_paths['contrast_table_path']
@@ -1864,7 +1864,7 @@ class DetectionAnalysis(object):
             'original_unc': uncertainty_for_table,
             'norm_factor': norm_factor_for_table}
 
-        candidate_spectrum = pd.DataFrame(candidate_spectrum)
+        candidate_spectrum = pd.DataFrame(candidate_spectrum).sort_values('wavelength')
 
         return candidate_spectrum
 
@@ -2559,5 +2559,121 @@ class DetectionAnalysis(object):
                     amplitude_modulation_full=amplitude_modulation_full,
                     file_paths=file_paths,
                     save=save)
+
+    def detection_and_characterization(
+            self,
+            detection_products=None,
+            data_full=None, flux_psf_full=None, pa=None,
+            temporal_components_fraction=None,
+            inverse_variance_full=None,
+            bad_frames=None, bad_pixel_mask_full=None,
+            xy_image_centers=None,
+            amplitude_modulation_full=None,
+            candidate_threshold=4.5,
+            detection_threshold=5.,
+            search_radius=5,
+            good_fraction_threshold=0.05,
+            theta_deviation_threshold=25,
+            yx_fwhm_ratio_threshold=[1.1, 4.5]):
+
+        print('Identifying and fitting potential candidates.')
+        candidates, candidates_fit = self.complete_candidate_table(
+            wavelength_indices=None, detection_threshold=detection_threshold,
+            candidate_threshold=candidate_threshold, search_radius=search_radius,
+            detection_products=detection_products)
+
+        if candidates is None:
+            validated_companion_table = None
+            plot_companions = False
+        else:
+            plot_companions = True
+            print('Extracting candidate spectra.')
+            candidate_spectra = self.extract_candidate_spectra(
+                candidate_positions=candidates_fit['snr_image'][[
+                    'y_relative', 'x_relative']].values,
+                temporal_components_fraction=temporal_components_fraction,
+                data_full=data_full,
+                flux_psf_full=flux_psf_full, pa=pa,
+                wavelength_indices=None,
+                inverse_variance_full=inverse_variance_full, instrument=None,
+                bad_frames=bad_frames, bad_pixel_mask_full=bad_pixel_mask_full,
+                xy_image_centers=xy_image_centers,
+                amplitude_modulation_full=amplitude_modulation_full,
+                return_spectra=True)
+
+            # companion_table, validated_companion_table = self.detection_summary(
+            #     candidates_fit, candidate_spectra,
+            #     snr_threshold=detection_threshold,
+            #     good_fraction_threshold=good_fraction_threshold,
+            #     theta_deviation_threshold=theta_deviation_threshold,
+            #     yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold)
+
+            companion_table, validated_companion_table = self.detection_summary(
+                candidates=candidates,
+                candidates_fit=candidates_fit,
+                candidate_spectra=candidate_spectra,
+                use_spectra=True,
+                template_name=None,
+                snr_threshold_spectrum=False,
+                snr_threshold=detection_threshold,
+                good_fraction_threshold=good_fraction_threshold,
+                theta_deviation_threshold=theta_deviation_threshold,
+                yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold)
+
+            yx_known_companion_position = np.unique(
+                validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
+
+            self.reduction_parameters.yx_known_companion_position = yx_known_companion_position
+
+            companion_table.to_csv(
+                os.path.join(self.reduction_parameters.result_folder, 'companion_table.csv'),
+                index=False)
+
+            validated_companion_table.to_csv(
+                os.path.join(self.reduction_parameters.result_folder,
+                             'validated_companion_table.csv'),
+                index=False)
+
+            validated_companion_table_short = validated_companion_table[
+                ['candidate_id', 'x', 'y', 'x_relative',
+                 'y_relative', 'separation', 'separation_sigma',
+                 'position_angle', 'position_angle_sigma',
+                 # 'channels_above_threshold',
+                 'norm_snr_fit_free',
+                 'peak_pixel_snr',
+                 'wavelength_index', 'wavelength',
+                 'contrast', 'uncertainty']]
+
+            validated_companion_table_short.to_csv(
+                os.path.join(self.reduction_parameters.result_folder,
+                             'validated_companion_table_short.csv'),
+                index=False)
+
+            plt.close()
+            candidate_indices = np.unique(validated_companion_table['candidate_id'])
+            for candidate_index in candidate_indices:
+                temp_table = validated_companion_table[validated_companion_table['candidate_id']
+                                                       == candidate_index]
+                plt.errorbar(
+                    x=temp_table['wavelength'],
+                    y=temp_table['contrast'],
+                    yerr=temp_table['uncertainty'],
+                    fmt='o',
+                    label='candidate {}'.format(candidate_index))
+            plt.axhline(y=0, color='k', linestyle='--', alpha=0.5)
+            plt.xlabel('wavelength')
+            plt.ylabel('contrast')
+            plt.legend()
+            plt.savefig(os.path.join(self.reduction_parameters.result_folder, 'companion_spectra.pdf'))
+            plt.close()
+
+        self.contrast_table_and_normalization(save=True)
+        _ = self.contrast_plot(
+            savefig=True, plot_companions=plot_companions,
+            companion_table=validated_companion_table, show=False)
+
+        self.validated_companion_table_short = validated_companion_table_short
+        self.validated_companion_table = validated_companion_table
+        self.companion_table = companion_table
 
     # def run_characterization(self, ):
