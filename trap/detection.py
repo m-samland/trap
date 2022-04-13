@@ -2590,7 +2590,9 @@ class DetectionAnalysis(object):
             detection_products=detection_products)
 
         if candidates is None:
+            companion_table = None
             validated_companion_table = None
+            validated_companion_table_short = None
             plot_companions = False
         else:
             plot_companions = True
