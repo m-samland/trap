@@ -1,4 +1,5 @@
 import copy
+import os
 
 import numpy as np
 from astropy import units as u
@@ -16,7 +17,8 @@ class SpectralTemplate(object):
             fit_offset=False,
             fit_slope=False,
             number_of_pca_regressors=0,
-            use_spectral_correlation=True):
+            use_spectral_correlation=True,
+            species_database_directory=None):
 
         # Check if necessary information is available
         if instrument.instrument_type == 'ifu' and \
@@ -34,6 +36,7 @@ class SpectralTemplate(object):
         self.fit_slope = fit_slope
         self.number_of_pca_regressors = number_of_pca_regressors
         self.use_spectral_correlation = use_spectral_correlation
+        self.species_database_directory = species_database_directory
 
         self.companion_modelbox = copy.deepcopy(companion_modelbox)
 
@@ -132,7 +135,7 @@ class SpectralTemplate(object):
         self.normalized_contrast_modelbox = copy.deepcopy(self.contrast_modelbox)
         self.normalized_contrast_modelbox.flux = self.contrast_modelbox.flux / self.mean_normalized_contrast_value
 
-    def plot_template(self, output_path=None, plot_normalized=True):
+    def plot_template(self, species_database_directory=None, output_path=None, plot_normalized=True):
         if plot_normalized:
             modelbox = self.normalized_contrast_modelbox
         else:
@@ -140,6 +143,7 @@ class SpectralTemplate(object):
 
         if self.instrument.instrument_type == 'photometry':
             filters = self.instrument.filters
+            os.chdir(self.species_database_directory)
             xlim = None
             ylim = None
         else:
@@ -147,6 +151,7 @@ class SpectralTemplate(object):
             ylim = (np.min(modelbox.flux), np.max(modelbox.flux))
             filters = None
 
+        print(filters)
         species.plot_spectrum(
             boxes=[modelbox],
             filters=filters,

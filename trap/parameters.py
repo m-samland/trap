@@ -67,7 +67,12 @@ class Instrument(object):
         self.readnoise = readnoise
 
         self.instrument_type = instrument_type
-        self.wavelengths = wavelengths
+        if wavelengths is not None:
+            self.wavelengths = np.zeros(wavelengths.shape)
+            self.wavelengths[:] = wavelengths
+        else:
+            self.wavelengths = None
+
         self.spectral_resolution = spectral_resolution
         self.filters = filters
         self.transmission = transmission
