@@ -69,7 +69,8 @@ class Instrument(object):
         self.instrument_type = instrument_type
         if wavelengths is not None:
             self.wavelengths = np.zeros(wavelengths.shape)
-            self.wavelengths[:] = wavelengths
+            self.wavelengths[:] = wavelengths.value
+            self.wavelengths = self.wavelengths * wavelengths.unit
         else:
             self.wavelengths = None
 
