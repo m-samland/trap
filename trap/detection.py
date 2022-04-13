@@ -1854,10 +1854,13 @@ class DetectionAnalysis(object):
         uncertainty_for_table[wavelength_indices] = uncertainty
         norm_factor_for_table[wavelength_indices] = normalization_factors
 
+        wavelengths = np.zeros(self.instrument.wavelengths.shape)
+        wavelengths[:] = self.instrument.wavelengths.value
+
         candidate_spectrum = {
             'candidate_id': id.astype('int'),
             'wavelength_index': np.arange(len(self.instrument.wavelengths)),
-            'wavelength': self.instrument.wavelengths.value,
+            'wavelength': wavelengths,
             'contrast': contrast_for_table,
             'uncertainty': normalized_uncertainty_for_table,
             'snr': snr_for_table,
@@ -2065,7 +2068,8 @@ class DetectionAnalysis(object):
                 fit_offset=False,
                 fit_slope=False,
                 number_of_pca_regressors=0,
-                use_spectral_correlation=use_spectral_correlation)
+                use_spectral_correlation=use_spectral_correlation,
+                species_database_directory=species_database_directory)
 
         # self.templates['L-type + offset'] = \
         #     SpectralTemplate(
@@ -2104,7 +2108,8 @@ class DetectionAnalysis(object):
                 fit_offset=True,
                 fit_slope=t_type_slope_fit,
                 number_of_pca_regressors=0,
-                use_spectral_correlation=use_spectral_correlation)
+                use_spectral_correlation=use_spectral_correlation,
+                species_database_directory=species_database_directory)
 
         self.templates['flat'] = \
             SpectralTemplate(
@@ -2117,7 +2122,8 @@ class DetectionAnalysis(object):
                 fit_offset=False,
                 fit_slope=False,
                 number_of_pca_regressors=0,
-                use_spectral_correlation=use_spectral_correlation)
+                use_spectral_correlation=use_spectral_correlation,
+                species_database_directory=species_database_directory)
 
     def template_matching_detection(
             self, template,
@@ -2128,7 +2134,8 @@ class DetectionAnalysis(object):
 
         template_name = template.name
 
-        wavelengths = self.instrument.wavelengths[self.wavelength_indices]
+        wavelengths = np.zeros(self.instrument.wavelengths.shape)
+        wavelengths[:] = self.instrument.wavelengths[self.wavelength_indices]
 
         contrast_cube = self.detection_cube[:, 0].astype('float64')
         uncertainty_cube = self.detection_products['uncertainty_cube'].astype(
