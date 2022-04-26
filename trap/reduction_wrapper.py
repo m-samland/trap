@@ -1428,7 +1428,7 @@ def run_complete_reduction(
 
     if reduction_parameters.use_multiprocess and not reduction_parameters.reduce_single_position:
         os.environ["RAY_LOG_TO_STDERR"] = "1"
-        ray.shutdown()git
+        ray.shutdown()
         ray.init(num_cpus=reduction_parameters.ncpus)
 
     # Loop over reductions for different numbers of components
