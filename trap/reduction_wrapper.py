@@ -1427,7 +1427,7 @@ def run_complete_reduction(
         all_results = OrderedDict()
 
     if reduction_parameters.use_multiprocess and not reduction_parameters.reduce_single_position:
-        os.environ["RAY_LOG_TO_STDERR"] = 1
+        os.environ["RAY_LOG_TO_STDERR"] = "1"
         ray.shutdown()
         ray.init(num_cpus=reduction_parameters.ncpus)
 
