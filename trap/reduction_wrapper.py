@@ -1423,12 +1423,12 @@ def run_complete_reduction(
         "Different number of wavelengths in data: Flux {} Data {} Wave {}".format(
             flux_psf_full.shape[0], data_full.shape[0], len(instrument.wavelengths))
 
-    if reduction_parameters.reduce_single_position is True:
+    if reduction_parameters.reduce_single_pgiosition is True:
         all_results = OrderedDict()
 
     if reduction_parameters.use_multiprocess and not reduction_parameters.reduce_single_position:
         os.environ["RAY_LOG_TO_STDERR"] = "1"
-        ray.shutdown()
+        ray.shutdown()git
         ray.init(num_cpus=reduction_parameters.ncpus)
 
     # Loop over reductions for different numbers of components
