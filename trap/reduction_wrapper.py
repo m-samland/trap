@@ -1417,7 +1417,7 @@ def run_complete_reduction(
         with open(os.path.join(result_folder, "instrument.obj"), 'wb') as handle:
             pickle.dump(instrument, handle, protocol=4)
         with open(os.path.join(result_folder, "reduction_parameters.obj"), 'wb') as handle:
-            pickle.dump(reduction_parameters, t handle, protocol=4)
+            pickle.dump(reduction_parameters, handle, protocol=4)
 
     assert flux_psf_full.shape[0] == data_full.shape[0] == len(instrument.wavelengths), \
         "Different number of wavelengths in data: Flux {} Data {} Wave {}".format(
