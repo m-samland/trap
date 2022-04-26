@@ -2134,8 +2134,8 @@ class DetectionAnalysis(object):
 
         template_name = template.name
 
-        wavelengths = np.zeros(self.instrument.wavelengths.shape)
-        wavelengths[:] = self.instrument.wavelengths[self.wavelength_indices]
+        # wavelengths = np.zeros(self.instrument.wavelengths.shape)
+        wavelengths = self.instrument.wavelengths[self.wavelength_indices]
 
         contrast_cube = self.detection_cube[:, 0].astype('float64')
         uncertainty_cube = self.detection_products['uncertainty_cube'].astype(
