@@ -1339,6 +1339,9 @@ def run_complete_reduction(
             reduction_parameters.data_crop_size))
         yx_dim = (reduction_parameters.data_crop_size,
                   reduction_parameters.data_crop_size)
+        if reduction_parameters.data_crop_size > data_full.shape[-1]:
+            raise ValueError(
+                f"Data crop size {reduction_parameters.data_crop_size} is smaller than input image size: {data_full.shape[-1]}")
         print("Auto crop size cropped data to: {}".format(reduction_parameters.data_crop_size))
     else:
         if reduction_parameters.search_region is None:
