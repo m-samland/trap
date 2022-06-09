@@ -10,7 +10,7 @@ For a detailed description please refer to `Samland et al. 2021 <https://ui.adsa
 TRAP can currently only be installed from source and requires at least Python 3.5 or higher. We recommend using the "pip install" or "pip install -e ." command (if you want to make changes to the code base) in the directory containing the "setup.py" file.
 TRAP is using Ray for multiprocessing, we recommend installing it via 'pip install -U "ray[default]"' to get access to the dashboard for monitoring utilities.
 
-The package has been tested only on Linux/iOS with the packages provided in any recent version of Conda.
+The package has been tested on Linux/iOS/Windows with the packages provided in any recent version of Conda.
 Please provide feedback if there are issues installing the package on your system.
 
 A detailed documentation website is not available at the moment. Please refer to the in-code documentation and the tutorial notebook containing a simple example based on the test data included in the package.
@@ -20,8 +20,8 @@ Dependencies
 TRAP requires the following packages in a reasonably up-to-date version
 to function:
 
-- 'numpy', 'scipy', 'matplotlib', 'scikit-learn', 'numba', 'seaborn', 'tqdm', 'bottleneck', 'ray', 'natsorted'
-- 'astropy', 'photutils'
+- 'numpy', 'scipy', 'cython', 'matplotlib', 'scikit-learn', 'numba', 'seaborn', 'tqdm', 'bottleneck', 'ray', 'natsort',
+- 'astropy', 'photutils', 'species'
 
 
 Contributing
