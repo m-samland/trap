@@ -13,6 +13,8 @@ import copy
 from collections import OrderedDict
 from glob import glob
 
+import warnings
+
 import bottleneck as bn
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,7 +50,7 @@ import species
 
 # rcParams['font.size'] = 12
 # rc('font', **{'family': "DejaVu Sans", 'size': "12"})
-rc('legend', **{'fontsize': "11"})
+# rc('legend', **{'fontsize': "11"})
 
 # rc('text', usetex=True)
 # rc('font', **{'family': "sans-serif"})
@@ -367,12 +369,13 @@ def plot_contrast_curve(
         plot_iwa=False,
         title=None,
         cmap=plt.cm.viridis,
+        figsize=(8, 6),
         show=False):
 
     try:
         wavelengths = wavelengths.to(u.micron)
     except:
-        raise TypeError("Wavelengths must be a quantity array.")
+        warnings.warn("Provided wavelength could not be converted with astropy units.")
 
     if savefig is not None:
         result_folder = os.path.dirname(savefig)
@@ -381,7 +384,7 @@ def plot_contrast_curve(
         pdf = PdfPages(contrast_plot_path_pdf)
 
     plt.close()
-    fig = plt.figure(figsize=(8, 6))
+    fig = plt.figure(figsize=figsize)
     grid = plt.GridSpec(1, 1)
     ax0 = fig.add_subplot(grid[0, 0])
 
@@ -488,7 +491,7 @@ def plot_contrast_curve(
         y_text_pos = ymin
 
     if plot_vertical_lod:
-        fwhm = instrument.fwhm[0]
+        fwhm = np.mean(instrument.fwhm)
         xposition = (np.array([1, 2, 3, 5, 10]) * fwhm).value
         mask = np.logical_and(xposition > xmin, xposition < xmax)
         xposition = xposition[mask]
@@ -597,7 +600,7 @@ def plot_contrast_curve(
     if convert_to_mag:
         plt.gca().invert_yaxis()
     if savefig is not None:
-        plt.savefig(savefig, dpi=300)
+        plt.savefig(savefig, dpi=300, bbox_inches="tight")
         try:
             pdf.savefig(bbox_inches='tight')
         except RuntimeError:
@@ -1241,7 +1244,9 @@ class DetectionAnalysis(object):
                       linestyles=None, colors=None,
                       plot_vertical_lod=True,
                       file_paths=None,
-                      savefig=True, show=False):
+                      savefig=True,
+                      figsize=(8, 6),
+                      show=False):
 
         if detection_products is None:
             detection_products = self.detection_products
@@ -1287,7 +1292,8 @@ class DetectionAnalysis(object):
             plot_vertical_lod=plot_vertical_lod,
             mirror_axis='mas',
             convert_to_mag=False, yscale='log',
-            savefig=figure_path,  # contrast_plot_path[key],
+            savefig=figure_path,
+            figsize=figsize,  # contrast_plot_path[key],
             show=show)
 
         return fig
@@ -2003,25 +2009,28 @@ class DetectionAnalysis(object):
         if instrument is None:
             instrument = self.instrument
         try:
-            cool_planet_read_model = species.ReadModel(
-                model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
+            # Causes ValueError if model doesn't exists
+            _ = species.ReadModel(
+                model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6)).open_database()
         except:
             print("First time running cool planet template: adding 'petit-cool-cloudy' models to database.")
             database.add_model(model='petitcode-cool-cloudy', teff_range=(700., 800.))
-            cool_planet_read_model = species.ReadModel(
-                model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
+
+        cool_planet_read_model = species.ReadModel(
+            model='petitcode-cool-cloudy', wavel_range=(0.85, 3.6))
 
         cool_planet_model_param = {'teff': 760., 'logg': 4.26,
                                    'feh': 1.0, 'fsed': 1.26, 'radius': 1.1,
                                    'distance': 30.}
         try:
-            hot_planet_read_model = species.ReadModel(
-                model='drift-phoenix', wavel_range=(0.85, 3.6))
+            # Cause ValueError if model doesn't exists
+            _ = species.ReadModel(
+                model='drift-phoenix', wavel_range=(0.85, 3.6)).open_database()
         except:
             print("First time running hot planet template: adding 'drift-phoenix' models to database.")
             database.add_model(model='drift-phoenix', teff_range=(1400., 1600.))
-            hot_planet_read_model = species.ReadModel(
-                model='drift-phoenix', wavel_range=(0.85, 3.6))
+        hot_planet_read_model = species.ReadModel(
+            model='drift-phoenix', wavel_range=(0.85, 3.6))
 
         hot_planet_model_param = {'teff': 1500., 'logg': 4.,
                                   'feh': 0., 'radius': 1.1,
@@ -2040,14 +2049,14 @@ class DetectionAnalysis(object):
                 stellar_modelbox = copy.deepcopy(flat_model)
             else:
                 try:
-                    star_read_model = species.ReadModel(
-                        model='bt-nextgen', wavel_range=(0.85, 3.6))
+                    _ = species.ReadModel(
+                        model='bt-nextgen', wavel_range=(0.85, 3.6)).open_database()
                 except:
                     print("First time running stellar template: adding 'bt-nextgen' models to database.")
                     database.add_model(model='bt-nextgen',
                                        teff_range=(3000., 30000.))
-                    star_read_model = species.ReadModel(
-                        model='bt-nextgen', wavel_range=(0.85, 3.6))
+                star_read_model = species.ReadModel(
+                    model='bt-nextgen', wavel_range=(0.85, 3.6))
 
                 stellar_modelbox = star_read_model.get_model(
                     model_param=stellar_parameters)
