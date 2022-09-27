@@ -77,7 +77,7 @@ class SpectralTemplate(object):
                 #     trans = flux_amplitude_median / star_modelbox_lowres.flux
                 #     trans = trans / np.max(trans)
                 #
-                #     trans_func = interp1d(wavelengths, trans, kind='linear', fill_value='extrapolate')
+                #     trans_func = interp1d(wavelengths, trans, kind='cubic', fill_value='extrapolate')
                 #     wavelengths_interp = np.linspace(wavelengths[0], wavelengths[-1], 300)
                 #
                 #     plt.scatter(wavelengths, trans, label='overall transmission')

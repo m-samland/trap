@@ -16,7 +16,6 @@ from numba import njit
 from numpy.random import default_rng
 from ray.actor import ActorHandle
 from scipy.ndimage.interpolation import spline_filter
-from scipy.signal import medfilt
 from tqdm import tqdm
 from trap import regressor_selection
 from trap.embed_shell import ipsh
@@ -150,16 +149,6 @@ def shuffle_and_equalize_relative_positions(
         if np.all(np.abs(np.mean(avg_separations) - avg_separations)) < max_separation_deviation:
             separation_equalized = True
     return absolute_coordinates, relative_coordinates, relative_coords_regions, iteration, separation_equalized
-
-
-def gen_bad_pix_mask(image, filsize=5, threshold=5.0, return_smoothed_image=False):
-    """
-    """
-    image_sm = medfilt(image, filsize)
-    res = image - image_sm
-    sigma = np.std(res)
-    goodpix = np.abs(res) / sigma < threshold
-    return (goodpix, image_sm) if return_smoothed_image else goodpix
 
 
 def round_up_to_odd(f):

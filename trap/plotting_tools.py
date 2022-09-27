@@ -51,7 +51,7 @@ def plot_scale(
         scale='zscale', point_size2=1, plot_star_not_circle=False,
         relative_to_center=False,
         output_path=None, normalization=None, show=False,
-        cb_label=None, show_cb=True):
+        cb_label=None, show_cb=True, figsize=(3, 3)):
 
     plt.close()
     # plt.style.use("paper")
@@ -94,7 +94,7 @@ def plot_scale(
     else:
         norm = normalization
 
-    fig = plt.figure(figsize=(3, 3))
+    fig = plt.figure(figsize=figsize)
     grid = plt.GridSpec(1, 1)
     ax = fig.add_subplot(grid[0, 0])
 

@@ -12,20 +12,17 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type="text/x-rst",
     url="https://github.com/m-samland/trap",
-    packages=setuptools.find_packages(),
-    # data_files=[('test_data', ['test_data/science_cube.fits',
-    #                            'test_data/psf_model.fits',
-    #                            'test_data/parallactic_angles.fits'])],
-    include_package_data=True,
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
         "Intended Audience :: Science/Research",
     ],
+    packages=setuptools.find_packages(),
+    package_data={"": ["test_data/*.fits"]},
+    include_package_data=True,
     python_requires='>=3.8',
     install_requires=['numpy', 'scipy', 'matplotlib', 'numba', 'pandas',
                       'scikit-learn', 'astropy', 'photutils', 'seaborn', 'tqdm',
-                      'ray', 'bottleneck', 'natsort',
-                      'cython', 'species']
+                      'ray', 'bottleneck', 'natsort', 'species']
 )

@@ -20,14 +20,11 @@ Dependencies
 TRAP requires the following packages in a reasonably up-to-date version
 to function:
 
-- 'numpy', 'scipy', 'cython', 'matplotlib', 'scikit-learn', 'numba', 'seaborn', 'tqdm', 'bottleneck', 'ray', 'natsort',
+- 'numpy', 'scipy', 'cython', 'matplotlib', 'scikit-learn', 'numba', 'seaborn', 'tqdm', 'bottleneck', 'ray', 'natsort'
 - 'astropy', 'photutils', 'species'
-
 
 Contributing
 ------------
-
-This is the first (hopefully stable) release, but there is plenty to do! As the code grew over a lengthy development period and is mostly written by a single author, it still has many rough edges that could and should be refactored to be easier to understand and maintain. Please excuse if it still lacks elegance. It should be very easy to use however!
 
 Please open a new issue or new pull request for bugs, feedback, or new features you would like to see.   If there is an issue you would like to work on, please leave a comment and we will be happy to assist.   New contributions and contributors are very welcome!
 
