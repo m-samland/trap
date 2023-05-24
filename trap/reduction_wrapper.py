@@ -2139,6 +2139,7 @@ def run_complete_reduction(
             if bad_pixel_mask_full is None:
                 bad_pixel_mask = None
             else:
+                bad_pixel_mask_full = bad_pixel_mask_full.astype("bool")
                 try:
                     if bad_pixel_mask_full.ndim == 3:
                         bad_pixel_mask = bad_pixel_mask_full[wavelength_index]
