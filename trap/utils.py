@@ -15,8 +15,9 @@ import ray
 from numba import njit
 from numpy.random import default_rng
 from ray.actor import ActorHandle
-from scipy.ndimage.interpolation import spline_filter
+from scipy.ndimage import spline_filter
 from tqdm import tqdm
+
 from trap import regressor_selection
 from trap.embed_shell import ipsh
 

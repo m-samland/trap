@@ -4,17 +4,19 @@ Routines used in TRAP
 @author: Matthias Samland
          MPIA Heidelberg
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import numpy as np
 from photutils import CircularAnnulus
-from scipy.ndimage.morphology import binary_dilation
+from scipy.ndimage import binary_dilation
 
 from .embed_shell import ipsh
-from .image_coordinates import (absolute_yx_to_relative_yx,
-                                relative_yx_to_absolute_yx,
-                                relative_yx_to_rhophi, rhophi_to_relative_yx)
+from .image_coordinates import (
+    absolute_yx_to_relative_yx,
+    relative_yx_to_absolute_yx,
+    relative_yx_to_rhophi,
+    rhophi_to_relative_yx,
+)
 from .makesource import inject_model_into_data
 from .plotting_tools import plot_scale
 

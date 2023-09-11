@@ -3,8 +3,7 @@ Routines used in TRAP
 
 @author: Tim Brandt, Matthias Samland
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,10 +13,10 @@ from astropy.table import Table
 from numba import jit, njit
 from numba.types import float64, int64
 from numpy.random import poisson
-from photutils.datasets import (make_gaussian_sources_image,
-                                make_random_gaussians_table)
+from photutils.datasets import make_gaussian_sources_image, make_random_gaussians_table
 from scipy import ndimage
-from scipy.ndimage.interpolation import shift, spline_filter
+from scipy.ndimage import shift, spline_filter
+
 from trap.embed_shell import ipsh
 
 # @jit(float64[:](float64[:], int64, float64[:]), nopython=True)
