@@ -5,9 +5,12 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import os
+
+os.environ["RAY_LOG_TO_STDERR"] = "1"
+
 import datetime
 import multiprocessing
-import os
 import pickle
 from collections import OrderedDict
 from copy import copy
@@ -452,12 +455,10 @@ def run_trap_search(
     data,
     flux_psf,
     pa,
-    wavelength,
     reduction_parameters,
     known_companion_mask,
     inverse_variance=None,
     bad_pixel_mask=None,
-    result_name=None,
     yx_center=None,
     yx_center_injection=None,
     amplitude_modulation=None,
@@ -484,8 +485,6 @@ def run_trap_search(
         Cube containing inverse variances for `data`.
     bad_pixel_mask : array_like
         Bad pixel mask for `data`.
-    result_name : str
-        Name for output file.
     yx_center : tuple
         Average or median image center position to be used for regressor selection.
     yx_center_injection : array_like
@@ -1813,9 +1812,8 @@ def run_complete_reduction(
         reduction_parameters.use_multiprocess
         and not reduction_parameters.reduce_single_position
     ):
-        os.environ["RAY_LOG_TO_STDERR"] = "1"
         ray.shutdown()
-        ray.init(num_cpus=reduction_parameters.ncpus)
+        ray.init(num_cpus=reduction_parameters.ncpus, log_to_driver=False)
 
     # Loop over reductions for different numbers of components
     for comp_index, ncomp in enumerate(number_of_components):
@@ -2341,7 +2339,6 @@ def run_complete_reduction(
                     inverse_variance=inverse_variance,
                     flux_psf=flux_psf,
                     pa=pa,
-                    wavelength=wavelength,
                     reduction_parameters=reduction_parameters,
                     known_companion_mask=known_companion_mask,
                     bad_pixel_mask=bad_pixel_mask,
