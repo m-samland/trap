@@ -29,7 +29,7 @@ from astropy.table import Table
 from matplotlib import rc, rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 from natsort import natsorted
-from photutils import CircularAnnulus
+from photutils.aperture import CircularAnnulus
 from scipy import linalg, stats
 from scipy.interpolate import interp1d
 from tqdm import tqdm

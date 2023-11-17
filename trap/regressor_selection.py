@@ -7,7 +7,7 @@ Routines used in TRAP
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import numpy as np
-from photutils import CircularAnnulus
+from photutils.aperture import CircularAnnulus
 from scipy.ndimage import binary_dilation
 
 from .embed_shell import ipsh
