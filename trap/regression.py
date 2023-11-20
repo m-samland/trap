@@ -4,8 +4,7 @@ Routines used in TRAP
 @author: Matthias Samland
          MPIA Heidelberg
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import os
 
@@ -13,21 +12,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-
-from tqdm import tqdm
+from astropy.stats import mad_std, sigma_clip
 from scipy import spatial
 from scipy.linalg import inv, pinv
 from scipy.optimize import curve_fit
-
-from astropy.stats import mad_std, sigma_clip
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
-from trap.utils import (compute_empirical_correlation_matrix,
-                        det_max_ncomp_specific, exponential_kernel,
-                        matern32_kernel, matern52_kernel)
+from trap.utils import (
+    compute_empirical_correlation_matrix,
+    det_max_ncomp_specific,
+    exponential_kernel,
+    matern32_kernel,
+    matern52_kernel,
+)
 
-from . import (image_coordinates, pca_regression, plotting_tools,
-               regressor_selection)
+from . import image_coordinates, pca_regression, plotting_tools, regressor_selection
 from .embed_shell import ipsh
 
 
@@ -70,7 +70,7 @@ class Result(object):
             Description of parameter `residuals`.
         reduction_mask : array_like, optional
             Boolean mask of data included in the reduction
-            (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+            (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
         data : array_like, optional
             Image cube used as input for the reduction.
             Not neccessary other than for diagnostics.
@@ -513,7 +513,7 @@ def run_trap_with_model_temporal(
         or `yx_center_injection` if provided.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
-        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+        (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     yx_center : array_like, optional
         The center position of the image as used in reduction.
     yx_center_injection : array_like
@@ -886,7 +886,7 @@ def run_trap_with_model_temporal(
                             'data_for_pixel_long_test.jpg'), dpi=300)
 
                 plt.close()
-                plt.style.use("paper")
+                # plt.style.use("paper")
                 fig = plt.figure()
                 ax = plt.subplot(111)
                 alpha = 0.7
@@ -910,44 +910,45 @@ def run_trap_with_model_temporal(
                 plt.tight_layout()
                 plt.savefig(os.path.join(diagnostic_image_folder, 'residuals_test.jpg'), dpi=300)
 
-                plt.close()
-                number_of_comp_plotted = 10
-                fig = plt.figure()
-                ax = plt.subplot(111)
-                for i in range(number_of_comp_plotted):
-                    # ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)[-1] + 1 * i, label=i)  # + 1 * i, label=i)
-                    ax.plot(B[:, i] + 1 * i, label=i)  # + 1 * i, label=i)
+                if number_of_pca_regressors != 0:
+                    plt.close()
+                    number_of_comp_plotted = 10
+                    fig = plt.figure()
+                    ax = plt.subplot(111)
+                    for i in range(number_of_comp_plotted):
+                        # ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)[-1] + 1 * i, label=i)  # + 1 * i, label=i)
+                        ax.plot(B[:, i] + 1 * i, label=i)  # + 1 * i, label=i)
 
-                ax.plot(model_for_pixel / np.max(model_for_pixel) +
-                        number_of_comp_plotted, color='black', label='model')
-                handles, labels = ax.get_legend_handles_labels()
-                ax.legend(handles[::-1], labels[::-1], loc='upper right')
-                plt.title('Principal component lightcurves')
-                # plt.ylim(-1, 5)
-                # plt.xlim(0, 300)
-                # plt.show()
-                plt.savefig(os.path.join(diagnostic_image_folder,
-                            'principal_component_lightcurves_normalized_to_overall_variance.png'), dpi=300)
+                    ax.plot(model_for_pixel / np.max(model_for_pixel) +
+                            number_of_comp_plotted, color='black', label='model')
+                    handles, labels = ax.get_legend_handles_labels()
+                    ax.legend(handles[::-1], labels[::-1], loc='upper right')
+                    plt.title('Principal component lightcurves')
+                    # plt.ylim(-1, 5)
+                    # plt.xlim(0, 300)
+                    # plt.show()
+                    plt.savefig(os.path.join(diagnostic_image_folder,
+                                'principal_component_lightcurves_normalized_to_overall_variance.png'), dpi=300)
 
-                plt.close()
-                number_of_comp_plotted = 10
-                fig = plt.figure()
-                ax = plt.subplot(111)
-                for i in range(number_of_comp_plotted):
-                    ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)
-                            [-1] + 1 * i, label=i)  # + 1 * i, label=i)
-                    # ax.plot(B[:, i] + 1 * i, label=i)  # + 1 * i, label=i)
+                    plt.close()
+                    number_of_comp_plotted = 10
+                    fig = plt.figure()
+                    ax = plt.subplot(111)
+                    for i in range(number_of_comp_plotted):
+                        ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)
+                                [-1] + 1 * i, label=i)  # + 1 * i, label=i)
+                        # ax.plot(B[:, i] + 1 * i, label=i)  # + 1 * i, label=i)
 
-                ax.plot(model_for_pixel / np.max(model_for_pixel) +
-                        number_of_comp_plotted, color='black', label='model')
-                handles, labels = ax.get_legend_handles_labels()
-                ax.legend(handles[::-1], labels[::-1], loc='upper right')
-                plt.title('Principal component lightcurves')
-                # plt.ylim(-1, 5)
-                # plt.xlim(0, 300)
-                # plt.show()
-                plt.savefig(os.path.join(diagnostic_image_folder,
-                            'principal_component_lightcurves.png'), dpi=300)
+                    ax.plot(model_for_pixel / np.max(model_for_pixel) +
+                            number_of_comp_plotted, color='black', label='model')
+                    handles, labels = ax.get_legend_handles_labels()
+                    ax.legend(handles[::-1], labels[::-1], loc='upper right')
+                    plt.title('Principal component lightcurves')
+                    # plt.ylim(-1, 5)
+                    # plt.xlim(0, 300)
+                    # plt.show()
+                    plt.savefig(os.path.join(diagnostic_image_folder,
+                                'principal_component_lightcurves.png'), dpi=300)
 
         if model is not None:
             diagnostic_image[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]] = (
@@ -1020,7 +1021,7 @@ def run_trap_with_model_spatial(
         or `yx_center_injection` if provided.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
-        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+        (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     yx_center : array_like, optional
         The center position of the image as used in reduction.
     yx_center_injection : array_like
@@ -1281,7 +1282,7 @@ def run_trap_with_model_wavelength(
         or `yx_center_injection` if provided.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
-        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+        (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     yx_center : array_like, optional
         The center position of the image as used in reduction.
     yx_center_injection : array_like
@@ -1555,7 +1556,7 @@ def run_trap_with_model_wavelength(
                 plt.savefig('diagnostic_plots/data_for_pixel_long_test.jpg', dpi=300)
 
                 plt.close()
-                plt.style.use("paper")
+                # plt.style.use("paper")
                 fig = plt.figure()
                 ax = plt.subplot(111)
                 alpha = 0.7
@@ -1661,7 +1662,7 @@ def run_trap_with_model_temporal_optimized(
         necessary for the TRAP pipeline.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
-        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+        (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     inverse_variance_reduction_area : array_like, optional
         Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
         in `reduction_parameters` is True.
@@ -1797,7 +1798,7 @@ def temporal_pca_cross_validation(
         necessary for the TRAP pipeline.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
-        (\mathcal{P}_\mathcal{Y} in Samland et al. 2020)
+        (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     inverse_variance_reduction_area : array_like, optional
         Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
         in `reduction_parameters` is True.
