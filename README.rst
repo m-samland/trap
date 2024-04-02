@@ -1,13 +1,22 @@
 trap
 ====
+
+|Pythonv| |License|
+
+.. |Pythonv| image:: https://img.shields.io/badge/Python-3.9%2C%203.10%2C%203.11-brightgreen.svg
+            :target: https://github.com/m-samland/trap
+.. |License| image:: https://img.shields.io/badge/license-MIT-blue.svg?style=flat
+            :target: https://github.com/m-samland/trap/blob/main/LICENSE
+
+
 Detection of exoplanets in direct imaging data by causal regression of temporal systematics
 -------------------------------------------------------------------------------------------
 
-TRAP is novel algorithm used to detect exoplanets in high-contrast imaging data, which is based on building a causal temporal systematic noise model to remove the stellar contamination obscuring a faint planet signal. Traditionally this has been done using image-based approaches instead of working
+TRAP (Temporal Reference Analysis for Planets) is novel algorithm used to detect exoplanets in high-contrast imaging data, which is based on building a causal temporal systematic noise model to remove the stellar contamination obscuring a faint planet signal. Traditionally this has been done using image-based approaches instead of working
 in the time-domain. The main benefit of this new approach is that it works significantly better for companion signals very close to the central star.
 For a detailed description please refer to `Samland et al. 2021 <https://ui.adsabs.harvard.edu/abs/2021A%26A...646A..24S/abstract>`_.
 
-TRAP requires at least Python 3.8 or higher (3.12 will be supported soon). The latest version can be installed using "pip install git+https://github.com/m-samland/trap/".
+TRAP requires at least Python 3.9 or higher (3.12 will be supported soon). The latest version can be installed using "pip install git+https://github.com/m-samland/trap/".
 If the user wishes to contribute or change the code, we recommend cloning the repository and using the "pip install -e ." command.
 
 TRAP is using Ray for multiprocessing. If you are using a cluster, please make sure that Ray is installed on the cluster as well.
