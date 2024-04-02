@@ -579,7 +579,7 @@ def plot_contrast_curve(
 
     if set_xlim is not None:
         ax0.set_xlim(set_xlim)
-
+   
     if set_ylim is not None:
         ax0.set_ylim(set_ylim)
 

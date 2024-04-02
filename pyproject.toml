@@ -1,3 +1,85 @@
+[project]
+name = "trap"
+authors = [{name = "Matthias Samland", email = "m.samland@mailbox.org"}]
+description = "Detection of exoplanets in direct imaging data by causal regression of temporal systematics"
+readme = "README.rst"
+license = { file = 'LICENSE' }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy", 
+    "scipy",
+    "matplotlib",
+    "numba",
+    "pandas",
+    "scikit-learn",
+    "astropy",
+    "photutils",
+    "seaborn",
+    "tqdm",
+    "ray[default]",
+    "bottleneck",
+    "natsort",
+    "species" 
+]
+dynamic = ['version']
+
+[project.optional-dependencies]
+docs = [
+    "sphinx",
+    "sphinx-automodapi",
+    "numpydoc",
+]
+test = [
+    "pytest",
+    "pytest-doctestplus",
+    "flake8",
+    "flake8-pyproject",
+    "codecov",
+    "pytest-cov",
+]
+all = [
+    "ipython",
+    "notebook",
+    "ipywidgets"
+]
+
+[project.urls]
+"Bug Tracker" = "https://github.com/m-samland/trap/issues"
+"Source Code" = "https://github.com/m-samland/trap"
+
+
 [build-system]
-requires = ["setuptools>=42", "wheel", "cython"]
+requires = [
+    "setuptools>=60",
+    "setuptools_scm>=8.0",
+    "wheel",
+    "cython"
+]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "src/trap/_version.py"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.flake8]
+max-line-length = 130
+exclude = [
+    'docs',
+    '.tox',
+    '.eggs',
+    'build',
+    '*_version.py',
+]
+
+[tool.coverage.run]
+omit = [
+    "_version.py",
+]
