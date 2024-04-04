@@ -25,7 +25,7 @@ dependencies = [
     "ray[default]",
     "bottleneck",
     "natsort",
-    "species" 
+    "species@git+https://github.com/tomasstolker/species", 
 ]
 dynamic = ['version']
 

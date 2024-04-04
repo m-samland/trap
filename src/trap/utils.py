@@ -15,6 +15,7 @@ import ray
 from numba import njit
 from numpy.random import default_rng
 from ray.actor import ActorHandle
+from scipy import ndimage
 from scipy.ndimage import spline_filter
 from tqdm import tqdm
 
@@ -207,9 +208,8 @@ def resize_arr(arr, newdim):
     if newdim % 2 == 0:
         return arr[dy1 - dy2:dy1 + dy2,
                    dx1 - dx2:dx1 + dx2]
-    else:
-        return arr[dy1 - dy2:dy1 + dy2 + 1,
-                   dx1 - dx2:dx1 + dx2 + 1]
+    return arr[dy1 - dy2:dy1 + dy2 + 1,
+                dx1 - dx2:dx1 + dx2 + 1]
 
 
 def crop_box_from_4D_cube(flux_arr, boxsize, center_yx=None):
@@ -226,10 +226,9 @@ def crop_box_from_4D_cube(flux_arr, boxsize, center_yx=None):
 
     if boxsize % 2 == 0:
         return flux_arr[:, :, int(dy1 - dy2):int(dy1 + dy2),
-                        int(dx1 - dx2):int(dx1 + dx2)]
-    else:
-        return flux_arr[:, :, int(dy1 - dy2):int(dy1 + dy2 + 1),
-                        int(dx1 - dx2):int(dx1 + dx2 + 1)]
+                        int(dx1 - dx2):int(dx1 + dx2)]   
+    return flux_arr[:, :, int(dy1 - dy2):int(dy1 + dy2 + 1),
+                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
 
 
 def crop_box_from_3D_cube(flux_arr, boxsize, center_yx=None):
@@ -247,9 +246,8 @@ def crop_box_from_3D_cube(flux_arr, boxsize, center_yx=None):
     if boxsize % 2 == 0:
         return flux_arr[:, int(dy1 - dy2):int(dy1 + dy2),
                         int(dx1 - dx2):int(dx1 + dx2)]
-    else:
-        return flux_arr[:, int(dy1 - dy2):int(dy1 + dy2 + 1),
-                        int(dx1 - dx2):int(dx1 + dx2 + 1)]
+    return flux_arr[:, int(dy1 - dy2):int(dy1 + dy2 + 1),
+                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
 
 
 def crop_box_from_image(flux_arr, boxsize, center_yx=None):
@@ -267,9 +265,8 @@ def crop_box_from_image(flux_arr, boxsize, center_yx=None):
     if boxsize % 2 == 0:
         return flux_arr[int(dy1 - dy2):int(dy1 + dy2),
                         int(dx1 - dx2):int(dx1 + dx2)]
-    else:
-        return flux_arr[int(dy1 - dy2):int(dy1 + dy2 + 1),
-                        int(dx1 - dx2):int(dx1 + dx2 + 1)]
+    return flux_arr[int(dy1 - dy2):int(dy1 + dy2 + 1),
+                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
 
 
 def resize_image_cube(arr, new_dim):
