@@ -1677,7 +1677,7 @@ def run_complete_reduction(
         )
         if reduction_parameters.data_crop_size > data_full.shape[-1]:
             raise ValueError(
-                f"Data crop size {reduction_parameters.data_crop_size} is smaller than input image size: {data_full.shape[-1]}"
+                f"Data crop size {reduction_parameters.data_crop_size} is larger than input image size: {data_full.shape[-1]}"
             )
         print(
             "Auto crop size cropped data to: {}".format(
