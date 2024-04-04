@@ -7,7 +7,8 @@ from trap.embed_shell import ipsh
 
 import species
 from species.read.read_filter import ReadFilter
-
+from species.phot.syn_phot import SyntheticPhotometry
+from species.plot.plot_spectrum import plot_spectrum
 
 class SpectralTemplate(object):
     def __init__(
@@ -115,7 +116,7 @@ class SpectralTemplate(object):
                 contrasts = []
                 wavelengths = []
                 for filter_name in filters:
-                    synphot = species.SyntheticPhotometry(filter_name)
+                    synphot = SyntheticPhotometry(filter_name)
                     wavelengths.append(
                         ReadFilter(filter_name).mean_wavelength())
                     star_phot, _ = synphot.spectrum_to_flux(
@@ -152,7 +153,7 @@ class SpectralTemplate(object):
             filters = None
 
         print(filters)
-        species.plot_spectrum(
+        plot_spectrum(
             boxes=[modelbox],
             filters=filters,
             offset=(-0.08, -0.04),

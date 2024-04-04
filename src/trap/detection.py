@@ -17,21 +17,21 @@ import bottleneck as bn
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import species
 from astropy import units as u
 from astropy.io import fits
 from astropy.modeling import fitting, models
 from astropy.nddata import Cutout2D
 from astropy.stats import mad_std
 from astropy.table import Table
-
-# import seaborn as sns
 from matplotlib import rc, rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 from natsort import natsorted
 from photutils.aperture import CircularAnnulus
 from scipy import linalg, stats
 from scipy.interpolate import interp1d
+from species import SpeciesInit
+from species.data.database import Database
+from species.read.read_model import ReadModel
 from tqdm import tqdm
 
 from trap import image_coordinates, pca_regression, regressor_selection
@@ -1037,7 +1037,8 @@ def plot_distribution(
     if plot_type == "qqplot":
         res = stats.probplot(detection_image[mask], dist="norm", plot=plt)
     elif plot_type == "distplot":
-        sns.distplot(detection_image[mask], label="TRAP")
+        import seaborn as sns
+        sns.histplot(detection_image[mask], label="TRAP", kde=True, stat="density", linewidth=0)
     plt.legend()
     plt.show()
 
@@ -1097,6 +1098,7 @@ def fit_2d_gaussian(
     fitter = fitting.LevMarLSQFitter()
     par = fitter(g_init, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask])
     model = par(xx, yy)
+    
     if plot:
         plt.imshow(cutout.data, origin="lower")
         plt.show()
@@ -1820,7 +1822,7 @@ class DetectionAnalysis(object):
         )
 
         # Exclude "detections" very close to the IWA of the reduction
-        mask_too_close = candidates["separation"] < smallest_separation_in_pixel + 2
+        mask_too_close = candidates["separation"] < smallest_separation_in_pixel + 1
         candidates = candidates[~mask_too_close]
 
         # if len(candidates) > 0:
@@ -1869,6 +1871,7 @@ class DetectionAnalysis(object):
         x_stddev=1.43,
         y_stddev=2.63,
         box_size=11,
+        mask_deviating=False,
         deviation_threshold=0.1,
         plot=False,
     ):
@@ -1946,7 +1949,7 @@ class DetectionAnalysis(object):
                 x_stddev=x_stddev,
                 y_stddev=y_stddev,
                 box_size=box_size,
-                mask_deviating=False,
+                mask_deviating=mask_deviating,
                 deviation_threshold=deviation_threshold,
                 fix_width=True,
                 fix_orientation=True,
@@ -1968,7 +1971,7 @@ class DetectionAnalysis(object):
                 x_stddev=x_stddev,
                 y_stddev=y_stddev,
                 box_size=box_size,
-                mask_deviating=False,
+                mask_deviating=mask_deviating,
                 deviation_threshold=deviation_threshold,
                 fix_width=False,
                 fix_orientation=False,
@@ -2108,6 +2111,7 @@ class DetectionAnalysis(object):
         detection_threshold=5.0,
         candidate_threshold=4.0,
         search_radius=5,
+        mask_deviating=False,
     ):
         if detection_cube is None:
             detection_cube = self.detection_cube
@@ -2654,28 +2658,40 @@ class DetectionAnalysis(object):
         correct_transmission=False,
         use_spectral_correlation=True,
     ):
+        
+        if species_database_directory is None:
+            ValueError("Need to specify species database directory.")
+        
+        if not os.path.exists(species_database_directory):
+            os.makedirs(species_database_directory)
+            os.chdir(species_database_directory)
+            SpeciesInit()
+
         os.chdir(species_database_directory)
+        
         try:
-            database = species.Database()
+            database = Database()
         except:
-            FileNotFoundError(
+            print(
                 f"No initialized species database found in: {species_database_directory}"
             )
+            SpeciesInit()
+            database = Database()
 
         if instrument is None:
             instrument = self.instrument
-        try:
-            # Causes ValueError if model doesn't exists
-            _ = species.ReadModel(
-                model="petitcode-cool-cloudy", wavel_range=(0.85, 3.6)
-            ).open_database()
-        except:
-            print(
-                "First time running cool planet template: adding 'petit-cool-cloudy' models to database."
-            )
-            database.add_model(model="petitcode-cool-cloudy", teff_range=(700.0, 800.0))
+        # try:
+        #     # Causes ValueError if model doesn't exists
+        #     _ = ReadModel(
+        #         model="petitcode-cool-cloudy", wavel_range=(0.85, 3.6)
+        #     ).open_database()
+        # except:
+        #     print(
+        #         "First time running cool planet template: adding 'petit-cool-cloudy' models to database."
+        #     )
+        database.add_model(model="petitcode-cool-cloudy", teff_range=(700.0, 800.0))
 
-        cool_planet_read_model = species.ReadModel(
+        cool_planet_read_model = ReadModel(
             model="petitcode-cool-cloudy", wavel_range=(0.85, 3.6)
         )
 
@@ -2687,17 +2703,18 @@ class DetectionAnalysis(object):
             "radius": 1.1,
             "distance": 30.0,
         }
-        try:
-            # Cause ValueError if model doesn't exists
-            _ = species.ReadModel(
-                model="drift-phoenix", wavel_range=(0.85, 3.6)
-            ).open_database()
-        except:
-            print(
-                "First time running hot planet template: adding 'drift-phoenix' models to database."
-            )
-            database.add_model(model="drift-phoenix", teff_range=(1400.0, 1600.0))
-        hot_planet_read_model = species.ReadModel(
+        # try:
+        #     # Cause ValueError if model doesn't exists
+        #     _ = ReadModel(
+        #         model="drift-phoenix", wavel_range=(0.85, 3.6)
+        #     ).open_database()
+        # except:
+        #     print(
+        #         "First time running hot planet template: adding 'drift-phoenix' models to database."
+        #     )
+        database.add_model(model="drift-phoenix", teff_range=(1400.0, 1600.0))
+        
+        hot_planet_read_model = ReadModel(
             model="drift-phoenix", wavel_range=(0.85, 3.6)
         )
 
@@ -2723,16 +2740,16 @@ class DetectionAnalysis(object):
             if stellar_parameters is None:
                 stellar_modelbox = copy.deepcopy(flat_model)
             else:
-                try:
-                    _ = species.ReadModel(
-                        model="bt-nextgen", wavel_range=(0.85, 3.6)
-                    ).open_database()
-                except:
-                    print(
-                        "First time running stellar template: adding 'bt-nextgen' models to database."
-                    )
-                    database.add_model(model="bt-nextgen", teff_range=(3000.0, 30000.0))
-                star_read_model = species.ReadModel(
+                # try:
+                #     _ = ReadModel(
+                #         model="bt-nextgen", wavel_range=(0.85, 3.6)
+                #     ).open_database()
+                # except:
+                #     print(
+                #         "First time running stellar template: adding 'bt-nextgen' models to database."
+                #     )
+                database.add_model(model="bt-nextgen", teff_range=(3000.0, 30000.0))
+                star_read_model = ReadModel(
                     model="bt-nextgen", wavel_range=(0.85, 3.6)
                 )
 
@@ -3027,6 +3044,7 @@ class DetectionAnalysis(object):
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
+        mask_deviating=False,
         data_full=None,
         flux_psf_full=None,
         pa=None,
@@ -3103,6 +3121,7 @@ class DetectionAnalysis(object):
             detection_threshold=detection_threshold,
             candidate_threshold=candidate_threshold,
             search_radius=search_radius,
+            mask_deviating=mask_deviating,
         )
 
         # fig = analysis.contrast_plot(detection_products=detection_products_matched,
@@ -3156,6 +3175,7 @@ class DetectionAnalysis(object):
                 detection_threshold=detection_threshold,
                 candidate_threshold=candidate_threshold,
                 search_radius=search_radius,
+                mask_deviating=mask_deviating,
             )
 
             print("Extracting candidate spectra.")
