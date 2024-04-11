@@ -46,7 +46,8 @@ test = [
 all = [
     "ipython",
     "notebook",
-    "ipywidgets"
+    "ipywidgets",
+    "ipympl",
 ]
 
 [project.urls]
