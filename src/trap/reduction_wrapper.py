@@ -5,6 +5,7 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import logging
 import os
 
 os.environ["RAY_LOG_TO_STDERR"] = "1"
@@ -1813,7 +1814,10 @@ def run_complete_reduction(
         and not reduction_parameters.reduce_single_position
     ):
         ray.shutdown()
-        ray.init(num_cpus=min(reduction_parameters.ncpus, multiprocessing.cpu_count()), log_to_driver=False)
+        ray.init(
+            num_cpus=min(reduction_parameters.ncpus, multiprocessing.cpu_count()),
+            log_to_driver=False,
+            logging_level=logging.ERROR)
 
     # Loop over reductions for different numbers of components
     for comp_index, ncomp in enumerate(number_of_components):
