@@ -4,7 +4,6 @@ Routines used in TRAP
 @author: Matthias Samland
          MPIA Heidelberg
 """
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 import copy
 import os
@@ -23,7 +22,6 @@ from astropy.modeling import fitting, models
 from astropy.nddata import Cutout2D
 from astropy.stats import mad_std
 from astropy.table import Table
-from matplotlib import rc, rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 from natsort import natsorted
 from photutils.aperture import CircularAnnulus
@@ -35,7 +33,6 @@ from species.read.read_model import ReadModel
 from tqdm import tqdm
 
 from trap import image_coordinates, pca_regression, regressor_selection
-from trap.embed_shell import ipsh
 from trap.image_coordinates import absolute_yx_to_relative_yx, relative_yx_to_rhophi
 from trap.reduction_wrapper import run_complete_reduction
 from trap.template import SpectralTemplate
@@ -67,6 +64,22 @@ def make_radial_profile(
     yx_center=None,
     known_companion_mask=None,
 ):
+    """
+    Compute the radial profile of a 2D data array.
+
+    Parameters:
+    - data (ndarray): The 2D data array.
+    - radial_bounds (list, optional): The radial bounds of the profile. If not provided, the bounds are determined based on the size of the data array.
+    - bin_width (float, optional): The width of each radial bin.
+    - operation (str, optional): The operation to be applied to the data within each bin. Options are "mad_std", "median", "mean", "min", "std", and "percentiles".
+    - yx_center (tuple, optional): The center coordinates of the data array. If not provided, the center is assumed to be the center of the data array.
+    - known_companion_mask (ndarray, optional): A mask indicating the positions of known companions to be excluded from the profile.
+
+    Returns:
+    - profile (ndarray): The computed radial profile.
+    - values (ndarray): The values used to compute the profile for each radial bin.
+    """
+    
     profile = np.empty_like(data)
     profile[:] = np.nan
     values = []
@@ -103,7 +116,7 @@ def make_radial_profile(
     if non_zero_separation > radial_bounds[0] + 13:
         non_zero_separation = 0
 
-    for idx, separation in enumerate(range(radial_bounds[0], radial_bounds[1])):
+    for _, separation in enumerate(range(radial_bounds[0], radial_bounds[1])):
         if separation < non_zero_separation:
             if operation == "percentiles":
                 values.append(np.ones(7) * np.nan)
@@ -254,20 +267,20 @@ def make_contrast_curve(
     else:
         local_detection_image = detection_image
 
-    median_flux_profile, percentile_flux_values = make_radial_profile(
-        local_detection_image[0],
-        (radial_bounds[0], radial_bounds[1]),
-        bin_width=bin_width,
-        operation="percentiles",
-        known_companion_mask=detected_signal_mask,
-    )
-    stddev_flux_profile, stddev_flux_values = make_radial_profile(
-        local_detection_image[0],
-        (radial_bounds[0], radial_bounds[1]),
-        bin_width=bin_width,
-        operation="mad_std",
-        known_companion_mask=detected_signal_mask,
-    )
+    # median_flux_profile, percentile_flux_values = make_radial_profile(
+    #     local_detection_image[0],
+    #     (radial_bounds[0], radial_bounds[1]),
+    #     bin_width=bin_width,
+    #     operation="percentiles",
+    #     known_companion_mask=detected_signal_mask,
+    # )
+    # stddev_flux_profile, stddev_flux_values = make_radial_profile(
+    #     local_detection_image[0],
+    #     (radial_bounds[0], radial_bounds[1]),
+    #     bin_width=bin_width,
+    #     operation="mad_std",
+    #     known_companion_mask=detected_signal_mask,
+    # )
     median_uncertainty_profile, percentile_uncertainty_values = make_radial_profile(
         local_detection_image[1],
         (radial_bounds[0], radial_bounds[1]),
@@ -275,7 +288,7 @@ def make_contrast_curve(
         operation="percentiles",
         known_companion_mask=detected_signal_mask,
     )
-    min_uncertainty_profile, min_uncertainty_values = make_radial_profile(
+    _, min_uncertainty_values = make_radial_profile(
         local_detection_image[1],
         (radial_bounds[0], radial_bounds[1]),
         bin_width=bin_width,
@@ -1035,7 +1048,7 @@ def plot_distribution(
     )
     mask = np.logical_and(annulus_mask, ~detected_signal_mask)
     if plot_type == "qqplot":
-        res = stats.probplot(detection_image[mask], dist="norm", plot=plt)
+        _ = stats.probplot(detection_image[mask], dist="norm", plot=plt)
     elif plot_type == "distplot":
         import seaborn as sns
         sns.histplot(detection_image[mask], label="TRAP", kde=True, stat="density", linewidth=0)
@@ -1322,6 +1335,7 @@ class DetectionAnalysis(object):
         self.reduction_parameters = reduction_parameters
         self.detected_signal_mask = None
         self.templates = OrderedDict()
+        self.empirical_correlation = None
 
         if instrument is not None:
             self.instrument.compute_fwhm()
@@ -1367,8 +1381,8 @@ class DetectionAnalysis(object):
         glob_pattern = os.path.join(
             self.result_folder,
             detection_image_name
-            + "*frac{:.2f}_{}.fits".format(component_fraction, reduction_type),
-        )
+            + f"*frac{component_fraction:.2f}_{reduction_type}.fits")
+
         detection_file_paths = natsorted(glob(glob_pattern))
 
         assert len(detection_file_paths) > 0, "No output files found for:\n{}.".format(
@@ -1704,7 +1718,7 @@ class DetectionAnalysis(object):
 
         separations = np.arange(radial_bounds[0], radial_bounds[1])
 
-        for idx, separation in enumerate(separations):
+        for _, separation in enumerate(separations):
             # annulus_data = annulus_mask[0].multiply(data)
             # mask = annulus_mask[0].to_image(data.shape) > 0
             r_in = separation - bin_width / 2.0
@@ -2108,7 +2122,6 @@ class DetectionAnalysis(object):
         detection_cube=None,
         detection_products=None,
         wavelength_indices=None,
-        detection_threshold=5.0,
         candidate_threshold=4.0,
         search_radius=5,
         mask_deviating=False,
@@ -2329,7 +2342,7 @@ class DetectionAnalysis(object):
     def rereduce_single_position(
         self,
         candidate_index,
-        candidate_position,
+        yx_candidate_position,
         data_full,
         flux_psf_full,
         pa,
@@ -2350,7 +2363,7 @@ class DetectionAnalysis(object):
 
         re_reduction_parameters = copy.copy(self.reduction_parameters)
 
-        re_reduction_parameters.guess_position = candidate_position
+        re_reduction_parameters.guess_position = yx_candidate_position
         re_reduction_parameters.reduce_single_position = True
         re_reduction_parameters.data_auto_crop = True
         re_reduction_parameters.yx_known_companion_position = None
@@ -2382,6 +2395,11 @@ class DetectionAnalysis(object):
         # using various component fractions
         contrast = []
         uncertainty = []
+        try:
+            some_object_iterator = iter(temporal_components_fraction)
+        except TypeError:
+            temporal_components_fraction = [temporal_components_fraction]
+
         component_key = str(temporal_components_fraction[0])
         for key in all_results[component_key]:
             contrast.append(
@@ -2436,7 +2454,7 @@ class DetectionAnalysis(object):
                     )
                 )
             else:
-                separation = np.sqrt(candidate_position[0] ** 2 + candidate_position[1] ** 2)
+                separation = np.sqrt(yx_candidate_position[0] ** 2 + yx_candidate_position[1] ** 2)
                 normalization_factors.append(
                     norm_factor_function(
                         separation
@@ -2448,16 +2466,16 @@ class DetectionAnalysis(object):
         snr = contrast / normalized_uncertainty
 
         # Table entries
-        id = np.ones(len(self.instrument.wavelengths)) * candidate_index
-        contrast_for_table = np.empty_like(id)
+        candidate_id = np.ones(len(self.instrument.wavelengths)) * candidate_index
+        contrast_for_table = np.empty_like(candidate_id)
         contrast_for_table[:] = np.nan
-        normalized_uncertainty_for_table = np.empty_like(id)
+        normalized_uncertainty_for_table = np.empty_like(candidate_id)
         normalized_uncertainty_for_table[:] = np.nan
-        snr_for_table = np.empty_like(id)
+        snr_for_table = np.empty_like(candidate_id)
         snr_for_table[:] = np.nan
-        uncertainty_for_table = np.empty_like(id)
+        uncertainty_for_table = np.empty_like(candidate_id)
         uncertainty_for_table[:] = np.nan
-        norm_factor_for_table = np.empty_like(id)
+        norm_factor_for_table = np.empty_like(candidate_id)
         norm_factor_for_table[:] = np.nan
 
         contrast_for_table[wavelength_indices] = contrast
@@ -2490,7 +2508,7 @@ class DetectionAnalysis(object):
             data_full,
             flux_psf_full,
             pa,
-            candidate_positions=None,
+            yx_candidate_positions=None,
             wavelength_indices=None,
             inverse_variance_full=None,
             instrument=None,
@@ -2500,64 +2518,64 @@ class DetectionAnalysis(object):
             amplitude_modulation_full=None,
             return_spectra=False,
         ):
-            """
-            Extracts candidate spectra from the given data.
+        """
+        Extracts candidate spectra from the given data.
 
-            Parameters:
-            - temporal_components_fraction (float): Fraction of temporal components to use.
-            - data_full (array-like): Full data array.
-            - flux_psf_full (array-like): Full flux PSF array.
-            - pa (float): Position angle.
-            - candidate_positions (array-like, optional): Positions of the candidates. If not provided, uses the positions from self.candidates_fit.
-            - wavelength_indices (array-like, optional): Indices of the wavelengths to consider.
-            - inverse_variance_full (array-like, optional): Full inverse variance array.
-            - instrument (str, optional): Instrument name.
-            - bad_frames (array-like, optional): Indices of bad frames.
-            - bad_pixel_mask_full (array-like, optional): Full bad pixel mask array.
-            - xy_image_centers (array-like, optional): XY image centers.
-            - amplitude_modulation_full (array-like, optional): Full amplitude modulation array.
-            - return_spectra (bool, optional): Whether to return the extracted spectra.
+        Parameters:
+        - temporal_components_fraction (float): Fraction of temporal components to use.
+        - data_full (array-like): Full data array.
+        - flux_psf_full (array-like): Full flux PSF array.
+        - pa (float): Position angle.
+        - yx_candidate_positions (array-like, optional): Positions of the candidates. If not provided, uses the positions from self.candidates_fit.
+        - wavelength_indices (array-like, optional): Indices of the wavelengths to consider.
+        - inverse_variance_full (array-like, optional): Full inverse variance array.
+        - instrument (str, optional): Instrument name.
+        - bad_frames (array-like, optional): Indices of bad frames.
+        - bad_pixel_mask_full (array-like, optional): Full bad pixel mask array.
+        - xy_image_centers (array-like, optional): XY image centers.
+        - amplitude_modulation_full (array-like, optional): Full amplitude modulation array.
+        - return_spectra (bool, optional): Whether to return the extracted spectra.
 
-            Returns:
-            - candidate_spectra (DataFrame): Extracted candidate spectra.
+        Returns:
+        - candidate_spectra (DataFrame): Extracted candidate spectra.
 
-            """
-            candidate_spectra = []
+        """
+        candidate_spectra = []
 
-            if candidate_positions is None:
-                candidate_positions = self.candidates_fit["snr_image"][
-                    ["y_relative", "x_relative"]
-                ].values
-            else:
-                candidate_positions = np.array(candidate_positions)
+        if yx_candidate_positions is None:
+            yx_candidate_positions = self.candidates_fit["snr_image"][
+                ["y_relative", "x_relative"]
+            ].values
+        else:
+            yx_candidate_positions = np.array(yx_candidate_positions)
 
-            if len(candidate_positions) == 0 or candidate_positions is None:
-                return None
+        if len(yx_candidate_positions) == 0 or yx_candidate_positions is None:
+            return None
 
-            for candidate_index, candidate_position in tqdm(enumerate(candidate_positions)):
-                candidate_spectrum = self.rereduce_single_position(
-                    candidate_index=candidate_index,
-                    candidate_position=candidate_position,
-                    data_full=data_full,
-                    flux_psf_full=flux_psf_full,
-                    pa=pa,
-                    temporal_components_fraction=temporal_components_fraction,
-                    wavelength_indices=wavelength_indices,
-                    inverse_variance_full=inverse_variance_full,
-                    instrument=instrument,
-                    bad_frames=bad_frames,
-                    bad_pixel_mask_full=bad_pixel_mask_full,
-                    xy_image_centers=xy_image_centers,
-                    amplitude_modulation_full=amplitude_modulation_full,
-                    verbose=False,
-                )
-                candidate_spectra.append(candidate_spectrum)
+        for candidate_index, yx_candidate_position in tqdm(enumerate(yx_candidate_positions)):
+            candidate_spectrum = self.rereduce_single_position(
+                candidate_index=candidate_index,
+                yx_candidate_position=yx_candidate_position,
+                data_full=data_full,
+                flux_psf_full=flux_psf_full,
+                pa=pa,
+                temporal_components_fraction=temporal_components_fraction,
+                wavelength_indices=wavelength_indices,
+                inverse_variance_full=inverse_variance_full,
+                instrument=instrument,
+                bad_frames=bad_frames,
+                bad_pixel_mask_full=bad_pixel_mask_full,
+                xy_image_centers=xy_image_centers,
+                amplitude_modulation_full=amplitude_modulation_full,
+                verbose=False,
+            )
+            candidate_spectra.append(candidate_spectrum)
 
-            candidate_spectra = pd.concat(candidate_spectra, axis=0, ignore_index=False)
-            self.candidate_spectra = candidate_spectra
+        candidate_spectra = pd.concat(candidate_spectra, axis=0, ignore_index=False)
+        self.candidate_spectra = candidate_spectra
 
-            if return_spectra:
-                return candidate_spectra
+        if return_spectra:
+            return candidate_spectra
 
     def detection_summary(
         self,
@@ -2880,7 +2898,7 @@ class DetectionAnalysis(object):
         wavelength_indices = self.wavelength_indices
         self.make_spectral_correlation_matrices()
 
-        for idx, yx_pixel in tqdm(enumerate(position_indices)):
+        for _, yx_pixel in tqdm(enumerate(position_indices)):
             # wavelength indices are not applicable to contrast cube when not all wavelengths are reduced
             # contrasts = contrast_cube[wavelength_indices, yx_pixel[0], yx_pixel[1]]
             contrasts = contrast_cube[:, yx_pixel[0], yx_pixel[1]]
@@ -2957,7 +2975,7 @@ class DetectionAnalysis(object):
                 B_full, _, _, _ = pca_regression.compute_SVD(
                     training_matrix, n_components=None, scaling=None
                 )  # 'temp-median')
-                B = B_full[:, :number_of_pca_regressors]
+                B = B_full[:, :template.number_of_pca_regressors]
                 A = np.hstack((B, model_matrix.T))
             # A = np.ones(len(uncertainties))[:, None]
             else:
@@ -3119,7 +3137,6 @@ class DetectionAnalysis(object):
             detection_cube=detection_cube,
             detection_products=detection_products,
             wavelength_indices=[0],
-            detection_threshold=detection_threshold,
             candidate_threshold=candidate_threshold,
             search_radius=search_radius,
             mask_deviating=mask_deviating,
@@ -3173,7 +3190,6 @@ class DetectionAnalysis(object):
                 detection_cube=detection_cube,
                 detection_products=detection_products_matched,
                 wavelength_indices=[0],
-                detection_threshold=detection_threshold,
                 candidate_threshold=candidate_threshold,
                 search_radius=search_radius,
                 mask_deviating=mask_deviating,
@@ -3181,7 +3197,7 @@ class DetectionAnalysis(object):
 
             print("Extracting candidate spectra.")
             candidate_spectra = self.extract_candidate_spectra(
-                candidate_positions=candidates_fit_template["snr_image"][
+                yx_candidate_positions=candidates_fit_template["snr_image"][
                     ["y_relative", "x_relative"]
                 ].values,
                 temporal_components_fraction=temporal_components_fraction,
@@ -3576,7 +3592,7 @@ class DetectionAnalysis(object):
         bad_pixel_mask_full=None,
         xy_image_centers=None,
         amplitude_modulation_full=None,
-        candidate_threshold=4.5,
+        candidate_threshold=4.75,
         detection_threshold=5.0,
         search_radius=5,
         good_fraction_threshold=0.05,
@@ -3586,7 +3602,6 @@ class DetectionAnalysis(object):
         print("Identifying and fitting potential candidates.")
         candidates, candidates_fit = self.complete_candidate_table(
             wavelength_indices=None,
-            detection_threshold=detection_threshold,
             candidate_threshold=candidate_threshold,
             search_radius=search_radius,
             detection_products=detection_products,
@@ -3601,7 +3616,7 @@ class DetectionAnalysis(object):
             plot_companions = True
             print("Extracting candidate spectra.")
             candidate_spectra = self.extract_candidate_spectra(
-                candidate_positions=candidates_fit["snr_image"][
+                yx_candidate_positions=candidates_fit["snr_image"][
                     ["y_relative", "x_relative"]
                 ].values,
                 temporal_components_fraction=temporal_components_fraction,
@@ -3727,5 +3742,73 @@ class DetectionAnalysis(object):
         self.companion_table = companion_table
 
 
+    def detection_and_characterization_with_template_matching(
+        self, reduction_parameters, instrument, species_database_directory, stellar_parameters, data_full, flux_psf_full,
+        pa, temporal_components_fraction, wavelength_indices, xy_image_centers=None, 
+        inverse_variance_full=None, bad_frames=None, bad_pixel_mask_full=None, 
+        amplitude_modulation_full=None, 
+        detection_threshold=5., candidate_threshold=4.75,
+        use_spectral_correlation=False,
+        inner_mask_radius=4, search_radius=5, good_fraction_threshold=0.05,
+        theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5]):
 
+        self.reduction_parameters.yx_known_companion_position = None
+
+        self.contrast_table_and_normalization(
+            save=True, mask_above_sigma=detection_threshold, file_paths=self.file_paths
+        )
+
+        self.add_default_templates(
+            stellar_modelbox=None,
+            stellar_parameters=stellar_parameters,
+            species_database_directory=species_database_directory,
+            instrument=instrument,
+            correct_transmission=False,
+            use_spectral_correlation=use_spectral_correlation,
+        )
+
+        self.match_all_templates(
+            detection_threshold=detection_threshold,
+            candidate_threshold=candidate_threshold,
+            inner_mask_radius=inner_mask_radius,
+            search_radius=search_radius,
+            good_fraction_threshold=good_fraction_threshold,
+            theta_deviation_threshold=theta_deviation_threshold,
+            yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
+            data_full=data_full,
+            flux_psf_full=flux_psf_full,
+            pa=pa,
+            instrument=None,
+            temporal_components_fraction=temporal_components_fraction,
+            wavelength_indices=wavelength_indices,
+            inverse_variance_full=inverse_variance_full,
+            bad_frames=bad_frames,
+            bad_pixel_mask_full=bad_pixel_mask_full,
+            xy_image_centers=xy_image_centers,
+            amplitude_modulation_full=amplitude_modulation_full,
+            file_paths=None,
+            save=True,
+        )
+
+        self.plot_template_matched_contrasts()
+        self.combine_template_matched_companion_tables(validated_only=True)
+        self.combine_template_matched_companion_tables(validated_only=False)
+
+        # spectrum = self.extract_candidate_spectra(
+        #     temporal_components_fraction=temporal_components_fraction,
+        #     data_full=data_full,
+        #     flux_psf_full=flux_psf_full,
+        #     pa=pa,
+        #     yx_candidate_positions=[[5.90801, 50.190368]],
+        #     wavelength_indices=None,
+        #     inverse_variance_full=None,
+        #     instrument=None,
+        #     bad_frames=None,
+        #     bad_pixel_mask_full=None,
+        #     xy_image_centers=None,
+        #     amplitude_modulation_full=None,
+        #     return_spectra=True
+        # )
+        
+        # spectrum.to_csv("manual_extraction.csv")
     # def run_characterization(self, ):

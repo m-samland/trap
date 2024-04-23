@@ -20,7 +20,6 @@ from scipy.ndimage import spline_filter
 from tqdm import tqdm
 
 from trap import regressor_selection
-from trap.embed_shell import ipsh
 
 
 @ray.remote
@@ -161,7 +160,7 @@ def determine_psf_stampsizes(fwhm, size_in_lamda_over_d=2.2):
     return round_up_to_odd(fwhm * size_in_lamda_over_d * 2.)
 
 
-def prepare_psf(psf_cube, psf_size, filter=True):
+def prepare_psf(psf_cube, psf_size, filter_psf=True):
     psf_list = []
     for idx, psf_image in enumerate(psf_cube):
         psf_image = resize_image_cube(psf_image, int(psf_size[idx]))
@@ -173,7 +172,7 @@ def prepare_psf(psf_cube, psf_size, filter=True):
         mask = np.logical_or(mask_negative, ~mask_psf)
         psf_image[mask] = 0.
         psf_image = np.pad(psf_image, pad_width=[(1,), (1,)], mode='constant', constant_values=0.)
-        if filter:
+        if filter_psf:
             psf_image = spline_filter(psf_image.astype('float64'))
         psf_list.append(psf_image)
     return psf_list

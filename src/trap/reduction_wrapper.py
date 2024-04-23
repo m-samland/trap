@@ -1778,6 +1778,7 @@ def run_complete_reduction(
             )
 
     # Configure number of principal components
+
     number_of_components = np.round(
         data_full.shape[1] * np.array(temporal_components_fraction)
     ).astype("int")
@@ -1817,9 +1818,16 @@ def run_complete_reduction(
         ray.init(
             num_cpus=min(reduction_parameters.ncpus, multiprocessing.cpu_count()),
             log_to_driver=False,
-            logging_level=logging.ERROR)
+            logging_level=logging.WARNING)
 
     # Loop over reductions for different numbers of components
+    # Check if number of components is iterable, if not make it iterable
+    try:
+        some_object_iterator = iter(number_of_components)
+    except TypeError as te:
+        number_of_components = [number_of_components]
+        temporal_components_fraction = [temporal_components_fraction]
+    
     for comp_index, ncomp in enumerate(number_of_components):
         reduction_parameters.number_of_pca_regressors = ncomp
         reduction_parameters.temporal_components_fraction = (
