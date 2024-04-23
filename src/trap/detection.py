@@ -2488,7 +2488,7 @@ class DetectionAnalysis(object):
         wavelengths[:] = self.instrument.wavelengths.value
 
         candidate_spectrum = {
-            "candidate_id": id.astype("int"),
+            "candidate_id": candidate_id.astype("int"),
             "wavelength_index": np.arange(len(self.instrument.wavelengths)),
             "wavelength": wavelengths,
             "contrast": contrast_for_table,
