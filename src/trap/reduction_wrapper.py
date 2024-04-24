@@ -23,6 +23,7 @@ import numpy as np
 import ray
 from astropy import units as u
 from astropy.io import fits
+from astropy.stats import mad_std
 from tqdm import tqdm
 
 from trap import (
@@ -1473,7 +1474,9 @@ def run_complete_reduction(
     bad_pixel_mask_full=None,
     xy_image_centers=None,
     amplitude_modulation_full=None,
+    cross_validation=False,
     verbose=False,
+    overwrite=False,
 ):
     """Runs complete TRAP reduction on data and produces contrast and
     normalized detection maps as well as contrast curves. This is the most
@@ -1523,6 +1526,14 @@ def run_complete_reduction(
         Array containing scaling factors for the companion PSF brightness for
         each wavelength (axis=0) and time (axis=1) (e.g. derived from satellite
         spots).
+    cross_validation : bool, optional
+        If True, the reduction is performed in cross-validation mode, i.e.
+        for the given list of component fractions signals are injected to determine
+        the best number of components. Default is False. Returns the scores.
+    verbose : bool, optional
+        If True, print out additional information. Default is False.
+    overwrite : bool, optional
+        If True, overwrite existing files. Default is False.
 
     Returns
     -------
@@ -1810,24 +1821,23 @@ def run_complete_reduction(
     if reduction_parameters.reduce_single_position is True:
         all_results = OrderedDict()
 
-    if (
-        reduction_parameters.use_multiprocess
-        and not reduction_parameters.reduce_single_position
-    ):
-        ray.shutdown()
-        ray.init(
-            num_cpus=min(reduction_parameters.ncpus, multiprocessing.cpu_count()),
-            log_to_driver=False,
-            logging_level=logging.WARNING)
-
     # Loop over reductions for different numbers of components
     # Check if number of components is iterable, if not make it iterable
     try:
         some_object_iterator = iter(number_of_components)
-    except TypeError as te:
+    except TypeError:
         number_of_components = [number_of_components]
         temporal_components_fraction = [temporal_components_fraction]
-    
+
+    if (
+        reduction_parameters.use_multiprocess
+        and not reduction_parameters.reduce_single_position
+    ):
+        ray.init(
+            num_cpus=min(reduction_parameters.ncpus, multiprocessing.cpu_count()),
+            log_to_driver=False,
+            logging_level=logging.WARNING)
+        
     for comp_index, ncomp in enumerate(number_of_components):
         reduction_parameters.number_of_pca_regressors = ncomp
         reduction_parameters.temporal_components_fraction = (
@@ -1937,10 +1947,18 @@ def run_complete_reduction(
                 contrast_plot_corr_path = {}
                 correlation_matrix_binned_path = {}
 
+            # Having all the different reductions in the output makes it easier to compare but also more complex to refactor
+            # Since individual outputs cannot be checked for existence
             for key in ["temporal", "temporal_plus_spatial", "spatial"]:
                 detection_image_path[key] = os.path.join(
                     result_folder, "detection_" + basename[key] + "_" + key + ".fits"
                 )
+                                # If output file with basename already exists, skip reduction
+                if not overwrite:
+                    if os.path.exists(detection_image_path[key]):
+                        print(f"Reduction already exists for {detection_image_path[key]} - skipping.")
+                        return None   
+                    
                 norm_detection_image_path[key] = os.path.join(
                     result_folder,
                     "norm_detection_" + basename[key] + "_" + key + ".fits",
@@ -2286,7 +2304,6 @@ def run_complete_reduction(
                 wavelength_results["{}".format(wavelength_index)] = results
 
             else:
-                cross_validation = False
                 if cross_validation:
                     relative_coords = np.vstack(
                         [
@@ -2341,7 +2358,10 @@ def run_complete_reduction(
                     scores = mad_std(np.array(ncomp_residuals), axis=3)
                     best_scores = np.argmin(scores, axis=1)
                     median_best_scores = np.median(best_scores, axis=1)
-
+                    ray.shutdown()
+                    
+                    return ncomp_residuals, scores, best_scores, median_best_scores
+                    
                 (
                     detection_image,
                     detection_image_corr,

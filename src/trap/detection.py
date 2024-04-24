@@ -3799,16 +3799,15 @@ class DetectionAnalysis(object):
         #     data_full=data_full,
         #     flux_psf_full=flux_psf_full,
         #     pa=pa,
-        #     yx_candidate_positions=[[5.90801, 50.190368]],
-        #     wavelength_indices=None,
+        #     yx_candidate_positions=[[-48.733759, -23.876381]], #[[5.90801, 50.190368]], #  
+        #     wavelength_indices=wavelength_indices,
         #     inverse_variance_full=None,
         #     instrument=None,
-        #     bad_frames=None,
-        #     bad_pixel_mask_full=None,
-        #     xy_image_centers=None,
-        #     amplitude_modulation_full=None,
+        #     bad_frames=bad_frames,
+        #     bad_pixel_mask_full=bad_pixel_mask_full,
+        #     xy_image_centers=xy_image_centers,
+        #     amplitude_modulation_full=amplitude_modulation_full,
         #     return_spectra=True
         # )
         
-        # spectrum.to_csv("manual_extraction.csv")
-    # def run_characterization(self, ):
+        # spectrum.to_csv("manual_extraction")
