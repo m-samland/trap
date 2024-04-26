@@ -1749,7 +1749,7 @@ class DetectionAnalysis(object):
         self.empirical_correlation = empirical_correlation
 
     def find_approximate_candidate_positions(
-        self, snr_image, candidate_threshold=4.75, mask_radius=6.0
+        self, snr_image, candidate_threshold=4.75, mask_radius=9
     ):
         snr_image = np.ma.masked_array(snr_image)
 
@@ -1805,9 +1805,8 @@ class DetectionAnalysis(object):
     def find_candidates(
         self,
         detection_product_index=0,
-        detection_threshold=5.0,
         candidate_threshold=3.5,
-        mask_radius=6,
+        mask_radius=9,
         detection_products=None,
     ):
         if detection_products is None:
@@ -1836,7 +1835,7 @@ class DetectionAnalysis(object):
         )
 
         # Exclude "detections" very close to the IWA of the reduction
-        mask_too_close = candidates["separation"] < smallest_separation_in_pixel + 1
+        mask_too_close = candidates["separation"] < smallest_separation_in_pixel
         candidates = candidates[~mask_too_close]
 
         # if len(candidates) > 0:
@@ -2856,7 +2855,7 @@ class DetectionAnalysis(object):
     def template_matching_detection(
         self,
         template,
-        inner_mask_radius=4.0,
+        inner_mask_radius=3.0,
         detection_threshold=5.0,
         file_paths=None,
         save=True,
@@ -3165,12 +3164,10 @@ class DetectionAnalysis(object):
             # yx_known_companion_position = np.unique(
             #     validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
 
-            self.reduction_parameters.companion_mask_radius = 11.0
-
             # Masking out detections
             detection_products_matched = self.contrast_table_and_normalization(
                 detection_cube=detection_cube,
-                cube_indices=[0],
+                cube_indices=[0], # only collapsed wavelength after template matching
                 yx_known_companion_position=yx_known_companion_position,
                 inplace=False,
                 save=save,
@@ -3181,7 +3178,7 @@ class DetectionAnalysis(object):
             candidates = self.find_candidates_all_wavelengths(
                 detection_cube=detection_cube,
                 detection_products=detection_products_matched,
-                wavelength_indices=[0],
+                wavelength_indices=[0], # only collapsed wavelength after template matching
                 candidate_threshold=candidate_threshold,
             )
 
@@ -3189,7 +3186,7 @@ class DetectionAnalysis(object):
                 candidates=candidates,
                 detection_cube=detection_cube,
                 detection_products=detection_products_matched,
-                wavelength_indices=[0],
+                wavelength_indices=[0], # only collapsed wavelength after template matching
                 candidate_threshold=candidate_threshold,
                 search_radius=search_radius,
                 mask_deviating=mask_deviating,
