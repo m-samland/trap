@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from astropy.stats import mad_std, sigma_clip
+from numpy.random import default_rng
 from scipy import spatial
 from scipy.linalg import inv, pinv
 from scipy.optimize import curve_fit
@@ -1776,7 +1777,7 @@ def temporal_pca_cross_validation(
         reduction_mask,
         test_size=0.2,
         split_iterations=250,
-        number_of_components_to_test=np.arange(1, 60),
+        number_of_components_to_test=np.arange(1, 40),
         number_of_pixels_to_test=15,
         inverse_variance_reduction_area=None,
         regressor_matrix=None,
@@ -1840,14 +1841,13 @@ def temporal_pca_cross_validation(
     inverse_variance[:, reduction_mask] = inverse_variance_reduction_area
     # for idx, yx_pixel in enumerate(reduction_pix_indeces):
     # Pixel data to fit
-    from numpy.random import default_rng
+
     rng = default_rng(12345)
     p = rng.permutation(len(reduction_pix_indeces))
     # ipsh()
     random_pixel_indices = reduction_pix_indeces[p][:number_of_pixels_to_test]
     pixel_indices = np.vstack((test_pixel, random_pixel_indices))
 
-    number_of_components_to_test = np.arange(1, 50)
     ncomp_pca_residuals = []
     ncomp_deviation = []
     for n_comp in tqdm(number_of_components_to_test):
