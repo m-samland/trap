@@ -8,6 +8,7 @@ Routines used in TRAP
 from asyncio import Event
 from typing import Tuple
 
+import dill
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.fft as fft
@@ -605,3 +606,39 @@ def subtract_angles(lhs, rhs):
     """
 
     return np.fmod((lhs - rhs) + 180. * 3, 2 * 180.) - 180.
+
+
+def save_object(obj, filename):
+    """
+    Save an object to a pickle file using dill.
+
+    Parameters
+    ----------
+    obj : object
+        The object to be saved.
+    filename : str
+        The name of the file where the object will be saved.
+    """
+
+    with open(filename, 'wb') as f:
+        dill.dump(obj, f)
+
+
+def load_object(filename):
+    """
+    Load an object from a pickle file using dill.
+
+    Parameters
+    ----------
+    filename : str
+        The name of the file from which the object will be loaded.
+
+    Returns
+    -------
+    obj : object
+        The object that was loaded from the file.
+    """
+
+    with open(filename, 'rb') as f:
+        obj = dill.load(f)
+    return obj
