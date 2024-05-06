@@ -508,8 +508,8 @@ def plot_contrast_curve(
         colors = colors = cmap(np.linspace(0, 1, len(contrast_table)))
 
         if wavelengths[0] is not None:
-            wavelength_range = np.max(wavelengths - np.min(wavelengths))
-            scaled_values = (wavelengths - np.min(wavelengths)) / wavelength_range
+            wavelength_range = np.nanmax(wavelengths - np.nanmin(wavelengths))
+            scaled_values = (wavelengths - np.nanmin(wavelengths)) / wavelength_range
             colors = cmap(scaled_values)
         else:
             colors = cmap(np.linspace(0, 1, len(contrast_table)))
@@ -1002,7 +1002,7 @@ def prepare_andromeda_output(andromeda_contrast, andromeda_norm_stddev, andromed
         known_companion_mask=None,
     )
     corrupt_separation = (
-        radial_bounds_test[0] + np.max(np.argwhere(np.isnan(andro_radial_test))) + 1
+        radial_bounds_test[0] + np.nanmax(np.argwhere(np.isnan(andro_radial_test))) + 1
     )
     assert (
         corrupt_separation != radial_bounds_test[-1]
@@ -1699,7 +1699,7 @@ class DetectionAnalysis(object):
         try:
             non_zero_separation = (
                 radial_bounds[0]
-                + np.max(
+                + np.nanmax(
                     np.argwhere(
                         np.isnan(
                             self.detection_cube[0, 0][
@@ -1772,10 +1772,10 @@ class DetectionAnalysis(object):
         candidate_index = 0
         while not np.all(snr_image.mask):
             # candidates['candidate_index'].append(candidate_index)
-            candidates["snr"].append(np.max(snr_image))
+            candidates["snr"].append(np.nanmax(snr_image))
 
             highest_value_position = np.unravel_index(
-                snr_image.argmax(), snr_image.shape
+                snr_image.nanargmax(), snr_image.shape
             )
             candidates["x"].append(highest_value_position[1])
             candidates["y"].append(highest_value_position[0])
@@ -1814,7 +1814,7 @@ class DetectionAnalysis(object):
 
         wavelength_index = self.wavelength_indices[detection_product_index]
 
-        smallest_non_nan_separation_idx = np.min(
+        smallest_non_nan_separation_idx = np.nanmin(
             np.argwhere(
                 np.isfinite(
                     detection_products["contrast_tables"][detection_product_index][
@@ -2247,7 +2247,7 @@ class DetectionAnalysis(object):
                     )
 
                     # Get candidate id of channel with highest SNR
-                    temp_idx = np.argmax(
+                    temp_idx = np.nanargmax(
                         candidates_fit["norm_snr_image"][mask]["amplitude"]
                     )
                     candidate_index = int(
@@ -2670,7 +2670,7 @@ class DetectionAnalysis(object):
         if snr_threshold_spectrum and use_spectra:
             snr = companion_table["snr"]
         else:
-            snr = np.max(
+            snr = np.nanmax(
                 [
                     companion_table["norm_snr_fit_free"],
                     companion_table["peak_pixel_snr"],
