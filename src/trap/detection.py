@@ -1756,7 +1756,10 @@ class DetectionAnalysis(object):
         yx_dim = snr_image.shape
         yx_center = (yx_dim[0] // 2.0, yx_dim[1] // 2.0)
 
-        significant_pixel_mask = snr_image.data > candidate_threshold
+        significant_pixel_mask = np.logical_and(
+            snr_image.data > candidate_threshold,
+            np.isfinite(snr_image.data))
+        
         snr_image.mask = ~significant_pixel_mask
 
         candidates = {
@@ -1772,10 +1775,10 @@ class DetectionAnalysis(object):
         candidate_index = 0
         while not np.all(snr_image.mask):
             # candidates['candidate_index'].append(candidate_index)
-            candidates["snr"].append(np.nanmax(snr_image))
+            candidates["snr"].append(snr_image.max())
 
             highest_value_position = np.unravel_index(
-                snr_image.nanargmax(), snr_image.shape
+                snr_image.argmax(), snr_image.shape
             )
             candidates["x"].append(highest_value_position[1])
             candidates["y"].append(highest_value_position[0])
