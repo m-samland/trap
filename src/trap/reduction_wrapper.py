@@ -995,7 +995,7 @@ def multi_position_cross_validation(
         a = datetime.datetime.now()
 
         results = []
-        for idx, coords in enumerate(tqdm(relative_coords)):
+        for _, coords in enumerate(tqdm(relative_coords)):
             # if reduction_parameters.inject_fake == True:
             #         reduction_parameters.true_position = image_coordinates.absolute_yx_to_relative_yx(
             #             coords, image_center_yx=yx_center)
@@ -1467,7 +1467,7 @@ def run_complete_reduction(
     pa,
     instrument,
     reduction_parameters,
-    temporal_components_fraction=[0.3],
+    temporal_components_fraction=[0.2],
     wavelength_indices=None,
     inverse_variance_full=None,
     bad_frames=None,
@@ -1954,7 +1954,7 @@ def run_complete_reduction(
                     result_folder, "detection_" + basename[key] + "_" + key + ".fits"
                 )
                                 # If output file with basename already exists, skip reduction
-                if not overwrite:
+                if not overwrite and not reduction_parameters.reduce_single_position:
                     if os.path.exists(detection_image_path[key]):
                         print(f"Reduction already exists for {detection_image_path[key]} - skipping.")
                         return None   

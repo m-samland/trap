@@ -2366,6 +2366,7 @@ class DetectionAnalysis(object):
         re_reduction_parameters = copy.copy(self.reduction_parameters)
 
         re_reduction_parameters.guess_position = yx_candidate_position
+        re_reduction_parameters.use_multiprocess = False
         re_reduction_parameters.reduce_single_position = True
         re_reduction_parameters.data_auto_crop = True
         re_reduction_parameters.yx_known_companion_position = None
