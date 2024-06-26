@@ -1836,7 +1836,7 @@ def run_complete_reduction(
         ray.init(
             num_cpus=min(reduction_parameters.ncpus, multiprocessing.cpu_count()),
             log_to_driver=False,
-            logging_level=logging.WARNING)
+            logging_level=logging.FATAL)
         
     for comp_index, ncomp in enumerate(number_of_components):
         reduction_parameters.number_of_pca_regressors = ncomp
@@ -1953,7 +1953,7 @@ def run_complete_reduction(
                 detection_image_path[key] = os.path.join(
                     result_folder, "detection_" + basename[key] + "_" + key + ".fits"
                 )
-                                # If output file with basename already exists, skip reduction
+                # If output file with basename already exists, skip reduction
                 if not overwrite and not reduction_parameters.reduce_single_position:
                     if os.path.exists(detection_image_path[key]):
                         print(f"Reduction already exists for {detection_image_path[key]} - skipping.")
