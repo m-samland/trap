@@ -2855,7 +2855,6 @@ class DetectionAnalysis(object):
         template,
         inner_mask_radius=3.0,
         detection_threshold=5.0,
-        center_
         file_paths=None,
         save=True,
     ):
@@ -2900,7 +2899,6 @@ class DetectionAnalysis(object):
             # contrasts = contrast_cube[wavelength_indices, yx_pixel[0], yx_pixel[1]]
             contrasts = contrast_cube[:, yx_pixel[0], yx_pixel[1]]
             # contrasts = contrasts[self.good_residual_mask].astype('float64')
-            # uncertainties = np.sqrt(self.reduced_result[:, 1])
             uncertainties = uncertainty_cube[:, yx_pixel[0], yx_pixel[1]]
 
             # contrasts_mean = np.mean(contrasts)
