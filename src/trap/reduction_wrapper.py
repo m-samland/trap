@@ -541,29 +541,32 @@ def run_trap_search(
 
     detection_image = {}
     if reduction_parameters.temporal_model:
-        detection_image["temporal"] = np.zeros(
+        detection_image["temporal"] = np.empty(
             (
                 detection_image_dim,
                 int(yx_dim[0] * oversampling),
                 int(yx_dim[1] * oversampling),
             )
         )
+        detection_image["temporal"][:] = np.nan
         if reduction_parameters.temporal_plus_spatial_model:
-            detection_image["temporal_plus_spatial"] = np.zeros(
+            detection_image["temporal_plus_spatial"] = np.empty(
                 (
                     detection_image_dim,
                     int(yx_dim[0] * oversampling),
                     int(yx_dim[1] * oversampling),
                 )
             )
+            detection_image["temporal_plus_spatial"][:] = np.nan
     if reduction_parameters.spatial_model:
-        detection_image["spatial"] = np.zeros(
+        detection_image["spatial"] = np.empty(
             (
                 detection_image_dim,
                 int(yx_dim[0] * oversampling),
                 int(yx_dim[1] * oversampling),
             )
         )
+        detection_image["spatial"][:] = np.nan
 
     # EDIT: ADDED FOR QUICK CORRELATION TESTS
     detection_image_corr = {}
@@ -996,7 +999,7 @@ def multi_position_cross_validation(
 
         results = []
         for _, coords in enumerate(tqdm(relative_coords)):
-            # if reduction_parameters.inject_fake == True:
+            # if reduction_parameters.inject_fake:
             #         reduction_parameters.true_position = image_coordinates.absolute_yx_to_relative_yx(
             #             coords, image_center_yx=yx_center)
             #     reduction_parameters.guess_position = image_coordinates.absolute_yx_to_relative_yx(
@@ -2384,7 +2387,9 @@ def run_complete_reduction(
                 # NOTE: Moved out from run_trap_search
                 for key in detection_image:
                     fits.writeto(
-                        detection_image_path[key], detection_image[key], overwrite=True
+                        detection_image_path[key],
+                        detection_image[key],
+                        overwrite=True
                     )
                     # NOTE: Temporarily added for correlation, complex outputs should be implemented as in separate class
                     # or dictionary to reduce code duplication
