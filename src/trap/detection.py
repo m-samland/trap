@@ -39,6 +39,7 @@ from trap.template import SpectralTemplate
 from trap.utils import (
     compute_empirical_correlation_matrix,
     find_nearest,
+    load_object,
     remove_channel_from_correlation_matrix,
     save_object,
     subtract_angles,
@@ -1361,13 +1362,8 @@ class DetectionAnalysis(object):
         self.reduction_type = reduction_type
 
         if read_parameters:
-            with open(
-                os.path.join(result_folder, "reduction_parameters.obj"), "rb"
-            ) as handle:
-                self.reduction_parameters = pickle.load(handle)
-
-            with open(os.path.join(result_folder, "instrument.obj"), "rb") as handle:
-                self.instrument = pickle.load(handle)
+            self.reduction_parameters = load_object(os.path.join(result_folder, "reduction_parameters.obj"))
+            self.instrument = load_object(os.path.join(result_folder, "instrument.obj"))
         else:
             if reduction_parameters is not None and instrument is not None:
                 self.reduction_parameters = reduction_parameters
@@ -1395,6 +1391,8 @@ class DetectionAnalysis(object):
         for file in detection_file_paths:
             detection_cube.append(fits.getdata(file))
         self.detection_cube = np.array(detection_cube)
+
+        self.detection_cube[self.detection_cube == 0.] = np.nan
 
         # Determine indices reduced
         filenames = [os.path.basename(file_path) for file_path in detection_file_paths]
@@ -1689,26 +1687,26 @@ class DetectionAnalysis(object):
         xy_center = yx_center[::-1]
 
         # Determine first non-zero separation, to prevent results below IWA
-        inner_bound_index = int(yx_center[0] + radial_bounds[0])
-        try:
-            non_zero_separation = (
-                radial_bounds[0]
-                + np.nanmax(
-                    np.argwhere(
-                        np.isnan(
-                            self.detection_cube[0, 0][
-                                inner_bound_index : inner_bound_index + 15,
-                                int(yx_center[1]),
-                            ]
-                        )
-                    )
-                )
-                + 1
-            )
-        except ValueError:
-            non_zero_separation = 0
-        if non_zero_separation > radial_bounds[0] + 13:
-            non_zero_separation = 0
+        # inner_bound_index = int(yx_center[0] + radial_bounds[0])
+        # try:
+        #     non_zero_separation = (
+        #         radial_bounds[0]
+        #         + np.nanmax(
+        #             np.argwhere(
+        #                 np.isnan(
+        #                     self.detection_cube[0, 0][
+        #                         inner_bound_index : inner_bound_index + 15,
+        #                         int(yx_center[1]),
+        #                     ]
+        #                 )
+        #             )
+        #         )
+        #         + 1
+        #     )
+        # except ValueError:
+        #     non_zero_separation = 0
+        # if non_zero_separation > radial_bounds[0] + 13:
+        #     non_zero_separation = 0
 
         separations = np.arange(radial_bounds[0], radial_bounds[1])
 
@@ -2853,7 +2851,7 @@ class DetectionAnalysis(object):
     def template_matching_detection(
         self,
         template,
-        inner_mask_radius=3.0,
+        inner_mask_radius=1.0,
         detection_threshold=5.0,
         file_paths=None,
         save=True,
@@ -2867,6 +2865,10 @@ class DetectionAnalysis(object):
         uncertainty_cube = self.detection_products["uncertainty_cube"].astype(
             "float64"
         )  # / detection1.reduction_parameters.contrast_curve_sigma
+        
+        contrast_cube[contrast_cube == 0.0] = np.nan
+        uncertainty_cube[uncertainty_cube == 0.0] = np.nan
+        
         yx_dim = [contrast_cube.shape[-2], contrast_cube.shape[-1]]
         yx_center_output = [yx_dim[0] // 2, yx_dim[1]]
 
@@ -3054,7 +3056,7 @@ class DetectionAnalysis(object):
         template,
         detection_threshold=5.0,
         candidate_threshold=4.75,
-        inner_mask_radius=4,
+        inner_mask_radius=1,
         search_radius=5,
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
@@ -3335,7 +3337,7 @@ class DetectionAnalysis(object):
         self,
         detection_threshold=5.0,
         candidate_threshold=4.75,
-        inner_mask_radius=4,
+        inner_mask_radius=1,
         search_radius=5,
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
@@ -3381,6 +3383,7 @@ class DetectionAnalysis(object):
                 )
 
     def plot_template_matched_contrasts(self):
+
         combined_detection_products = {}
         contrast_tables = []
         combined_validated_companion_table = []
@@ -3744,10 +3747,15 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None, 
         detection_threshold=5., candidate_threshold=4.75,
         use_spectral_correlation=False,
-        inner_mask_radius=4, search_radius=5, good_fraction_threshold=0.05,
+        inner_mask_radius=1, search_radius=5, good_fraction_threshold=0.05,
         theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5]):
 
+        if reduction_parameters is not None and instrument is not None:
+            self.reduction_parameters = reduction_parameters
+
         self.reduction_parameters.yx_known_companion_position = None
+
+        self.detection_cube[self.detection_cube == 0.] = np.nan
 
         self.contrast_table_and_normalization(
             save=True, mask_above_sigma=detection_threshold, file_paths=self.file_paths
