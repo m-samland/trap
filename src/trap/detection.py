@@ -40,6 +40,7 @@ from trap.utils import (
     compute_empirical_correlation_matrix,
     find_nearest,
     remove_channel_from_correlation_matrix,
+    save_object,
     subtract_angles,
 )
 
@@ -1523,12 +1524,7 @@ class DetectionAnalysis(object):
 
         if save:
             if file_paths is None:
-                contrast_table_file_name = (
-                    os.path.splitext(self.file_paths["contrast_table_path"])[0] + ".csv"
-                )
                 file_paths = self.file_paths
-            else:
-                contrast_table_file_name = file_paths["contrast_table_path"]
 
             fits.writeto(
                 file_paths["norm_detection_image_path"],
@@ -1545,12 +1541,10 @@ class DetectionAnalysis(object):
                 detection_products["median_uncertainty_cube"],
                 overwrite=overwrite,
             )
-            contrast_table.to_csv(contrast_table_file_name, index=False)
+            contrast_table.to_csv(os.path.splitext(file_paths["contrast_table_path"])[0] + ".csv", index=False)
 
-            with open(
-                os.path.splitext(file_paths["contrast_table_path"])[0] + ".obj", "wb"
-            ) as handle:
-                pickle.dump(detection_products["contrast_tables"], handle, protocol=4)
+
+            save_object(detection_products["contrast_tables"], os.path.splitext(file_paths["contrast_table_path"])[0] + ".obj")
 
         if inplace:
             self.detection_products = detection_products
@@ -2351,12 +2345,10 @@ class DetectionAnalysis(object):
         wavelength_indices,
         temporal_components_fraction,
         inverse_variance_full=None,
-        instrument=None,
         bad_frames=None,
         bad_pixel_mask_full=None,
         xy_image_centers=None,
         amplitude_modulation_full=None,
-        return_table=False,
         return_all_results=False,
         verbose=False,
     ):
@@ -2364,6 +2356,7 @@ class DetectionAnalysis(object):
             wavelength_indices = self.wavelength_indices
 
         re_reduction_parameters = copy.copy(self.reduction_parameters)
+        detection_products_orig = copy.copy(self.detection_products)
 
         re_reduction_parameters.guess_position = yx_candidate_position
         re_reduction_parameters.use_multiprocess = False
@@ -2417,7 +2410,7 @@ class DetectionAnalysis(object):
         contrast = np.array(contrast)
         uncertainty = np.array(uncertainty)
 
-        # REDO NORMALIZATION
+        # REDO NORMALIZATION WITHOUT CANDIDATES
         if hasattr(self, 'candidates'):
             self.reduction_parameters.yx_known_companion_position = np.vstack(
                 [
@@ -2503,6 +2496,8 @@ class DetectionAnalysis(object):
 
         candidate_spectrum = pd.DataFrame(candidate_spectrum).sort_values("wavelength")
 
+        self.detection_products = detection_products_orig
+
         return candidate_spectrum
 
     def extract_candidate_spectra(
@@ -2565,7 +2560,6 @@ class DetectionAnalysis(object):
                 temporal_components_fraction=temporal_components_fraction,
                 wavelength_indices=wavelength_indices,
                 inverse_variance_full=inverse_variance_full,
-                instrument=instrument,
                 bad_frames=bad_frames,
                 bad_pixel_mask_full=bad_pixel_mask_full,
                 xy_image_centers=xy_image_centers,
@@ -2861,6 +2855,7 @@ class DetectionAnalysis(object):
         template,
         inner_mask_radius=3.0,
         detection_threshold=5.0,
+        center_
         file_paths=None,
         save=True,
     ):
@@ -2892,8 +2887,7 @@ class DetectionAnalysis(object):
 
         template_matched_image = np.zeros((3, yx_dim[0], yx_dim[1]))
 
-        median_contrast = bn.nanmedian(contrast_cube, axis=0)
-
+        # median_contrast = bn.nanmedian(contrast_cube, axis=0)
         # regressors_centered = contrast_cube - median_contrast
 
         # position_indices = [[32, 77]]
@@ -2908,9 +2902,10 @@ class DetectionAnalysis(object):
             # contrasts = contrasts[self.good_residual_mask].astype('float64')
             # uncertainties = np.sqrt(self.reduced_result[:, 1])
             uncertainties = uncertainty_cube[:, yx_pixel[0], yx_pixel[1]]
-            contrasts_mean = np.mean(contrasts)
-            contrasts_norm = contrasts / contrasts_mean
-            uncertainties_norm = uncertainties / contrasts_mean
+
+            # contrasts_mean = np.mean(contrasts)
+            # contrasts_norm = contrasts / contrasts_mean
+            # uncertainties_norm = uncertainties / contrasts_mean
 
             yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
             relative_coords = image_coordinates.absolute_yx_to_relative_yx(
@@ -2929,9 +2924,9 @@ class DetectionAnalysis(object):
                 psi_ij = self.empirical_correlation["matrices"][correlation_array_index]
                 # psi_ij = remove_channel_from_correlation_matrix(channel_mask, psi_ij)
                 cov_ij = uncertainties[:, None] * psi_ij * uncertainties[None, :]
-                cov_ij_norm = (
-                    uncertainties_norm[:, None] * psi_ij * uncertainties_norm[None, :]
-                )
+                # cov_ij_norm = (
+                #     uncertainties_norm[:, None] * psi_ij * uncertainties_norm[None, :]
+                # )
                 # plot_scale(cov_ij)
                 # plt.show()
                 inv_cov_ij = np.linalg.inv(cov_ij)
@@ -3600,6 +3595,7 @@ class DetectionAnalysis(object):
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
     ):
+        
         print("Identifying and fitting potential candidates.")
         candidates, candidates_fit = self.complete_candidate_table(
             wavelength_indices=None,

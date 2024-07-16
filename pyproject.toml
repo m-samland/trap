@@ -12,7 +12,7 @@ classifiers = [
 ]
 requires-python = ">=3.9, <3.12"
 dependencies = [
-    "numpy", 
+    "numpy>=1.22,<2.0", 
     "scipy",
     "matplotlib",
     "numba",
