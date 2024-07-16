@@ -338,11 +338,12 @@ class Result(object):
             mask = self.good_residual_mask
         else:
             mask = np.ones(self.residuals.shape[0], dtype=bool)
-        self.measured_contrast = np.average(
-            contrast[mask],
-            weights=np.ones_like(contrast[mask]) / variance[mask])
 
         weight_for_variance = np.ones_like(contrast[mask]) / variance[mask]
+        self.measured_contrast = np.average(
+            contrast[mask],
+            weights=weight_for_variance)
+
         self.contrast_uncertainty = np.sqrt(1 / np.sum(weight_for_variance))
         self.snr = self.measured_contrast / self.contrast_uncertainty
         self.relative_uncertainty = 1. / self.snr
@@ -1757,7 +1758,7 @@ def run_trap_with_model_temporal_optimized(
         use_residual_correlation=reduction_parameters.use_residual_correlation)
 
     result.compute_contrast_weighted_average(mask_outliers=True)
-    # Get rid of arrays for to save memory when accomulating results for many models
+    # Get rid of arrays to save memory when accomulating results for many models
     result.residuals = None
     result.reduced_result = None
     return result
