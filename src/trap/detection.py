@@ -7,7 +7,6 @@ Routines used in TRAP
 
 import copy
 import os
-import pickle
 import warnings
 from collections import OrderedDict
 from glob import glob
@@ -24,9 +23,9 @@ from astropy.stats import mad_std
 from astropy.table import Table
 from matplotlib.backends.backend_pdf import PdfPages
 from natsort import natsorted
+from numpy import interp
 from photutils.aperture import CircularAnnulus
 from scipy import linalg, stats
-from scipy.interpolate import interp1d
 from species import SpeciesInit
 from species.data.database import Database
 from species.read.read_model import ReadModel
@@ -2437,22 +2436,18 @@ class DetectionAnalysis(object):
                 contrast_table_index
             ]["snr_normalization"][mask]
 
-            norm_factor_function = interp1d(
-                separation, norm_factors, fill_value="extrapolate"
-            )
-
             if hasattr(self, 'candidates_fit'):
                 normalization_factors.append(
-                    norm_factor_function(
-                        self.candidates_fit["snr_image"]["separation"][candidate_index]
-                    )
+                    interp(x=self.candidates_fit["snr_image"]["separation"][candidate_index],
+                           xp=separation,
+                           fp=norm_factors)
                 )
             else:
-                separation = np.sqrt(yx_candidate_position[0] ** 2 + yx_candidate_position[1] ** 2)
+                separation_candidate = np.sqrt(yx_candidate_position[0] ** 2 + yx_candidate_position[1] ** 2)
                 normalization_factors.append(
-                    norm_factor_function(
-                        separation
-                    )
+                    interp(x=separation_candidate,
+                           xp=separation,
+                           fp=norm_factors)
                 )
 
         normalization_factors = np.array(normalization_factors)
@@ -3595,8 +3590,17 @@ class DetectionAnalysis(object):
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
+        save_initial_detection_products=False,
     ):
-        
+
+        self.detection_cube[self.detection_cube == 0.] = np.nan
+
+        self.contrast_table_and_normalization(
+            save=save_initial_detection_products,
+            mask_above_sigma=detection_threshold,
+            file_paths=self.file_paths
+        )
+
         print("Identifying and fitting potential candidates.")
         candidates, candidates_fit = self.complete_candidate_table(
             wavelength_indices=None,
@@ -3748,7 +3752,8 @@ class DetectionAnalysis(object):
         detection_threshold=5., candidate_threshold=4.75,
         use_spectral_correlation=False,
         inner_mask_radius=1, search_radius=5, good_fraction_threshold=0.05,
-        theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5]):
+        theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5],
+        save_initial_detection_products=False):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = reduction_parameters
@@ -3758,7 +3763,9 @@ class DetectionAnalysis(object):
         self.detection_cube[self.detection_cube == 0.] = np.nan
 
         self.contrast_table_and_normalization(
-            save=True, mask_above_sigma=detection_threshold, file_paths=self.file_paths
+            save=save_initial_detection_products,
+            mask_above_sigma=detection_threshold,
+            file_paths=self.file_paths
         )
 
         self.add_default_templates(
