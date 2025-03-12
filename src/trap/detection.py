@@ -2544,6 +2544,7 @@ class DetectionAnalysis(object):
             return None
 
         for candidate_index, yx_candidate_position in tqdm(enumerate(yx_candidate_positions)):
+            print("Running TRAP at candidate position: ", yx_candidate_position)
             candidate_spectrum = self.rereduce_single_position(
                 candidate_index=candidate_index,
                 yx_candidate_position=yx_candidate_position,
