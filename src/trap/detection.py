@@ -3591,7 +3591,7 @@ class DetectionAnalysis(object):
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
-        save_initial_detection_products=False,
+        save_initial_detection_products=True,
     ):
 
         self.detection_cube[self.detection_cube == 0.] = np.nan
