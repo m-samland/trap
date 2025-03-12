@@ -3591,7 +3591,7 @@ class DetectionAnalysis(object):
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
-        save_initial_detection_products=True,
+        save_initial_detection_products=False,
     ):
 
         self.detection_cube[self.detection_cube == 0.] = np.nan
@@ -3754,7 +3754,7 @@ class DetectionAnalysis(object):
         use_spectral_correlation=False,
         inner_mask_radius=1, search_radius=5, good_fraction_threshold=0.05,
         theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5],
-        save_initial_detection_products=False):
+        save_initial_detection_products=True):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = reduction_parameters
