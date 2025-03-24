@@ -18,7 +18,7 @@ dependencies = [
     "numba",
     "pandas",
     "scikit-learn",
-    "astropy",
+    "astropy<1.7",
     "photutils",
     "seaborn",
     "tqdm",
