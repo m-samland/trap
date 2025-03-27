@@ -8,20 +8,15 @@ Routines used in TRAP
 import logging
 import os
 
-os.environ["RAY_LOG_TO_STDERR"] = "1"
-
 import datetime
 import multiprocessing
 import pickle
 from collections import OrderedDict
 from copy import copy
 from functools import partial
-from glob import glob
 
-# from multiprocessing import Pool
 import numpy as np
 import ray
-from astropy import units as u
 from astropy.io import fits
 from astropy.stats import mad_std
 from tqdm import tqdm
@@ -32,7 +27,6 @@ from trap import (
     regression,
     regressor_selection,
 )
-from trap.embed_shell import ipsh
 from trap.utils import (
     ProgressBar,
     crop_box_from_3D_cube,
@@ -43,6 +37,7 @@ from trap.utils import (
     shuffle_and_equalize_relative_positions,
 )
 
+logging.getLogger("ray").setLevel(logging.WARNING)
 
 # @ ray.remote
 def trap_one_position(
@@ -1827,7 +1822,7 @@ def run_complete_reduction(
     # Loop over reductions for different numbers of components
     # Check if number of components is iterable, if not make it iterable
     try:
-        some_object_iterator = iter(number_of_components)
+        _ = iter(number_of_components)
     except TypeError:
         number_of_components = [number_of_components]
         temporal_components_fraction = [temporal_components_fraction]
@@ -1838,8 +1833,8 @@ def run_complete_reduction(
     ):
         ray.init(
             num_cpus=min(reduction_parameters.ncpus, multiprocessing.cpu_count()),
-            log_to_driver=False,
-            logging_level=logging.FATAL)
+            # log_to_driver=False,
+            logging_level=logging.WARNING)
         
     for comp_index, ncomp in enumerate(number_of_components):
         reduction_parameters.number_of_pca_regressors = ncomp
