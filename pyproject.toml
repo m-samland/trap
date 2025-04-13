@@ -99,6 +99,11 @@ max-complexity = 10
 quote-style = "double"  # to match Black formatting
 indent-style = "space"
 
+[tool.ruff]
+exclude = [
+    "examples/tutorial.ipynb",
+]
+
 [tool.coverage.run]
 omit = [
     "_version.py",
