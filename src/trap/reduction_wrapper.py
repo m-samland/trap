@@ -5,15 +5,13 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
-import logging
-import os
-
 import datetime
+import logging
 import multiprocessing
+import os
 import pickle
 from collections import OrderedDict
 from copy import copy
-from functools import partial
 
 import numpy as np
 import ray
@@ -902,9 +900,9 @@ def multi_position_cross_validation(
     if inverse_variance is not None:
         inverse_variance = inverse_variance.astype("float64")
 
-    oversampling = reduction_parameters.oversampling
+    # oversampling = reduction_parameters.oversampling
     yx_dim = (data.shape[-2], data.shape[-1])
-    yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
+    # yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
     if yx_center is None:
         yx_center = (yx_dim[0] // 2, yx_dim[1] // 2)
 
@@ -923,16 +921,16 @@ def multi_position_cross_validation(
     #     lambda x: image_coordinates.absolute_yx_to_relative_yx(x, yx_center_output),
     #     search_coordinates.tolist())))
 
-    search_coordinates = np.array(
-        list(
-            map(
-                lambda x: image_coordinates.relative_yx_to_absolute_yx(
-                    x, yx_center_output
-                ),
-                relative_coords.tolist(),
-            )
-        )
-    )
+    # search_coordinates = np.array(
+    #     list(
+    #         map(
+    #             lambda x: image_coordinates.relative_yx_to_absolute_yx(
+    #                 x, yx_center_output
+    #             ),
+    #             relative_coords.tolist(),
+    #         )
+    #     )
+    # )
 
     print("Number of positions: {}".format(len(relative_coords)))
     if reduction_parameters.use_multiprocess:
@@ -1118,333 +1116,6 @@ def trap_search_region(
         if pba is not None:
             pba.update.remote(1)
     return sub_region_results
-
-
-def run_trap_search_old(
-    data,
-    flux_psf,
-    pa,
-    wavelength,
-    reduction_parameters,
-    known_companion_mask,
-    inverse_variance=None,
-    bad_pixel_mask=None,
-    result_name=None,
-    yx_center=None,
-    yx_center_injection=None,
-    amplitude_modulation=None,
-    contrast_map=None,
-    readnoise=0.0,
-):
-    """Iterates TRAP over grid of positions given by the boolean mask
-    `search_region` in the `reduction_parameters` object.
-
-    Parameters
-    ----------
-    data : array_like
-        Temporal image cube. First axis is time.
-    flux_psf : array_like
-        Image of unsaturated PSF.
-    pa : array_like
-        Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
-    known_companion_mask : array_like
-        Boolean mask of image size. True for pixels affected by companion flux.
-    inverse_variance : array_like
-        Cube containing inverse variances for `data`.
-    bad_pixel_mask : array_like
-        Bad pixel mask for `data`.
-    result_name : str
-        Name for output file.
-    yx_center : tuple
-        Average or median image center position to be used for regressor selection.
-    yx_center_injection : array_like
-        Array containing yx_center to be used for forward model position.
-    amplitude_modulation : array_like, optional
-        Array containing scaling factors for the companion PSF brightness for
-        each time (e.g. derived from satellite spots).
-    contrast_map : array_like, optional
-        Contrast detection map (derived using the same reduction parameters
-        and data) to be used for injection retrieval testing to determine
-        biases in reduction (see `inject_fake`, `read_injection_files`
-        and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
-    readnoise : scalar
-        The detector read noise (e rms/pix/readout).
-
-    Returns
-    -------
-    array_like
-        Detection map cube containing the following maps in order:
-            0) Measured contrast
-            1) Contrast uncertainty
-            2) SNR
-        If `inject_fake` in `reduction_parameters` is True,
-        additionally the following information is added:
-            3) True contrast
-            4) Measured contrast minus `true_contrast`
-            5) Relative deviation from `true_contrast`
-            6) Deviation from `true_contrast` in sigma
-    """
-
-    oversampling = reduction_parameters.oversampling
-    yx_dim = (data.shape[-2], data.shape[-1])
-    yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
-    if yx_center is None:
-        yx_center = (yx_dim[0] // 2, yx_dim[1] // 2)
-
-    if amplitude_modulation is None:
-        amplitude_modulation = np.ones(data.shape[0])
-
-    if reduction_parameters.inject_fake:
-        detection_image_dim = 7  # Include info about injected signal
-    else:
-        # EDIT: REMEMBER TO CHANGE BACK detection_image_dim to 3
-        detection_image_dim = 3  # Only contrast, noise, snr
-
-    detection_image = {}
-    if reduction_parameters.temporal_model:
-        detection_image["temporal"] = np.zeros(
-            (
-                detection_image_dim,
-                int(yx_dim[0] * oversampling),
-                int(yx_dim[1] * oversampling),
-            )
-        )
-        if reduction_parameters.temporal_plus_spatial_model:
-            detection_image["temporal_plus_spatial"] = np.zeros(
-                (
-                    detection_image_dim,
-                    int(yx_dim[0] * oversampling),
-                    int(yx_dim[1] * oversampling),
-                )
-            )
-    if reduction_parameters.spatial_model:
-        detection_image["spatial"] = np.zeros(
-            (
-                detection_image_dim,
-                int(yx_dim[0] * oversampling),
-                int(yx_dim[1] * oversampling),
-            )
-        )
-
-    # EDIT: ADDED FOR QUICK CORRELATION TESTS
-    detection_image_corr = {}
-    if reduction_parameters.temporal_model:
-        detection_image_corr["temporal"] = np.zeros(
-            (6, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
-        )
-        if reduction_parameters.temporal_plus_spatial_model:
-            detection_image_corr["temporal_plus_spatial"] = np.zeros(
-                (6, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
-            )
-    if reduction_parameters.spatial_model:
-        detection_image_corr["spatial"] = np.zeros(
-            (6, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
-        )
-
-    correlation_matrix_binned = {}
-    if reduction_parameters.temporal_model:
-        correlation_matrix_binned["temporal"] = np.zeros(
-            (43, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
-        )
-        if reduction_parameters.temporal_plus_spatial_model:
-            correlation_matrix_binned["temporal_plus_spatial"] = np.zeros(
-                (43, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
-            )
-    if reduction_parameters.spatial_model:
-        correlation_matrix_binned["spatial"] = np.zeros(
-            (43, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
-        )
-
-    search_region = reduction_parameters.search_region
-    search_coordinates = np.argwhere(search_region) * oversampling
-    # relative coordinates to output image center (i.e. position of star)
-    relative_coords = np.array(
-        list(
-            map(
-                lambda x: image_coordinates.absolute_yx_to_relative_yx(
-                    x, yx_center_output
-                ),
-                search_coordinates.tolist(),
-            )
-        )
-    )
-
-    if reduction_parameters.use_multiprocess:
-        multiprocess_trap_position = partial(
-            trap_one_position,
-            data=data,
-            inverse_variance=inverse_variance,
-            flux_psf=flux_psf,
-            pa=pa,
-            reduction_parameters=reduction_parameters,
-            known_companion_mask=known_companion_mask,
-            bad_pixel_mask=bad_pixel_mask,
-            yx_center=yx_center,
-            yx_center_injection=yx_center_injection,
-            amplitude_modulation=amplitude_modulation,
-            contrast_map=contrast_map,
-            readnoise=readnoise,
-        )
-
-        if reduction_parameters.ncpus is None:
-            reduction_parameters.ncpus = multiprocessing.cpu_count()
-        pool = Pool(processes=reduction_parameters.ncpus)
-        for idx, result in enumerate(
-            tqdm(
-                pool.imap(multiprocess_trap_position, relative_coords),
-                total=len(relative_coords),
-            )
-        ):
-            for key in detection_image:
-                if result[key] is not None:
-                    detection_image[key][0][
-                        search_coordinates[idx][0], search_coordinates[idx][1]
-                    ] = result[key].measured_contrast
-                    detection_image[key][1][
-                        search_coordinates[idx][0], search_coordinates[idx][1]
-                    ] = result[key].contrast_uncertainty
-                    detection_image[key][2][
-                        search_coordinates[idx][0], search_coordinates[idx][1]
-                    ] = result[key].snr
-                    if reduction_parameters.inject_fake:
-                        detection_image[key][3][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].true_contrast
-                        detection_image[key][4][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = (result[key].measured_contrast - result[key].true_contrast)
-                        detection_image[key][5][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].relative_deviation_from_true
-                        detection_image[key][6][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].wrong_in_sigma
-
-                    # NOTE: Should be include in results class or dictionary to avoid code duplication
-                    if (
-                        reduction_parameters.compute_residual_correlation
-                        and reduction_parameters.use_residual_correlation
-                    ):
-                        detection_image_corr[key][0][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].measured_contrast_with_corr
-                        detection_image_corr[key][1][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].contrast_uncertainty_with_corr
-                        detection_image_corr[key][2][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].snr_with_corr
-                        detection_image_corr[key][3][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].correlation_info["corr_length_exponential"]
-                        detection_image_corr[key][4][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].correlation_info["corr_length_matern32"]
-                        detection_image_corr[key][5][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].correlation_info["corr_length_matern52"]
-
-                        correlation_matrix_binned[key][
-                            :, search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = (
-                            result[key]
-                            .correlation_info["summary_dataframe"]
-                            .empirical_correlation.values
-                        )
-
-            del result
-        del pool
-    else:
-        for idx, coords in enumerate(tqdm(relative_coords)):
-            # if reduction_parameters.inject_fake == True:
-            #         reduction_parameters.true_position = image_coordinates.absolute_yx_to_relative_yx(
-            #             coords, image_center_yx=yx_center)
-            #     reduction_parameters.guess_position = image_coordinates.absolute_yx_to_relative_yx(
-            #         coords, image_center_yx=yx_center)
-
-            result = trap_one_position(
-                coords,
-                data=data,
-                inverse_variance=inverse_variance,
-                flux_psf=flux_psf,
-                pa=pa,
-                reduction_parameters=reduction_parameters,
-                known_companion_mask=known_companion_mask,
-                bad_pixel_mask=bad_pixel_mask,
-                yx_center=yx_center,
-                yx_center_injection=yx_center_injection,
-                amplitude_modulation=amplitude_modulation,
-                contrast_map=contrast_map,
-                readnoise=readnoise,
-            )
-            for key in detection_image:
-                if result[key] is not None:
-                    detection_image[key][0][
-                        search_coordinates[idx][0], search_coordinates[idx][1]
-                    ] = result[key].measured_contrast
-                    detection_image[key][1][
-                        search_coordinates[idx][0], search_coordinates[idx][1]
-                    ] = result[key].contrast_uncertainty
-                    detection_image[key][2][
-                        search_coordinates[idx][0], search_coordinates[idx][1]
-                    ] = result[key].snr
-                    if reduction_parameters.inject_fake:
-                        detection_image[key][3][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].true_contrast
-                        detection_image[key][4][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = (result[key].measured_contrast - result[key].true_contrast)
-                        detection_image[key][5][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].relative_deviation_from_true
-                        detection_image[key][6][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].wrong_in_sigma
-                    # NOTE: Should be include in results class or dictionary to avoid code duplication
-                    if (
-                        reduction_parameters.compute_residual_correlation
-                        and reduction_parameters.use_residual_correlation
-                    ):
-                        detection_image_corr[key][0][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].measured_contrast_with_corr
-                        detection_image_corr[key][1][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].contrast_uncertainty_with_corr
-                        detection_image_corr[key][2][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].snr_with_corr
-                        detection_image_corr[key][3][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].correlation_info["corr_length_exponential"]
-                        detection_image_corr[key][4][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].correlation_info["corr_length_matern32"]
-                        detection_image_corr[key][5][
-                            search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = result[key].correlation_info["corr_length_matern52"]
-                        # ipsh()
-                        correlation_matrix_binned[key][
-                            :, search_coordinates[idx][0], search_coordinates[idx][1]
-                        ] = (
-                            result[key]
-                            .correlation_info["summary_dataframe"]
-                            .empirical_correlation.values
-                        )
-
-            del result
-    if (
-        not reduction_parameters.compute_residual_correlation
-        and not reduction_parameters.use_residual_correlation
-    ):
-        detection_image_corr = None
-        correlation_matrix_binned = None
-
-    return detection_image, detection_image_corr, correlation_matrix_binned
 
 
 def make_reduction_header(
@@ -2055,15 +1726,15 @@ def run_complete_reduction(
                         ),
                     )
 
-            if reduction_parameters.temporal_plus_spatial_model:
-                contrast_plot_comparison_path = os.path.join(
-                    result_folder,
-                    "contrast_comparison_plot_"
-                    + basename["temporal_plus_spatial"]
-                    + "_sigma{:.2f}.jpg".format(
-                        reduction_parameters.contrast_curve_sigma
-                    ),
-                )
+            # if reduction_parameters.temporal_plus_spatial_model:
+            #     contrast_plot_comparison_path = os.path.join(
+            #         result_folder,
+            #         "contrast_comparison_plot_"
+            #         + basename["temporal_plus_spatial"]
+            #         + "_sigma{:.2f}.jpg".format(
+            #             reduction_parameters.contrast_curve_sigma
+            #         ),
+            #     )
 
             # if reduction_parameters.autosize_masks_in_lambda_over_d:
             reduction_parameters.reduction_mask_psf_size = int(
@@ -2420,58 +2091,3 @@ def run_complete_reduction(
         return all_results
     else:
         return None
-
-
-# def make_contrast_from_output(
-#         result_folder,
-#         instrument,
-#         glob_pattern='detection*fits',
-#         yx_known_companion_position=None,
-#         sigma=5,
-#         radial_bounds=None,
-#         bin_width=3.,
-#         companion_mask_radius=11):
-#
-#     detection_files = glob(os.path.join(result_folder, glob_pattern))
-#     assert len(detection_files) > 0, "No output files found."
-#
-#     # Loop over reductions for different numbers of components
-#     for idx, detection_file in tqdm(enumerate(detection_files)):
-#         # TODO: Add sigma to output filename
-#         basename = os.path.basename(detection_file)
-#         norm_detection_image_path = os.path.join(
-#             result_folder, basename.replace('detection', 'norm_detection'))
-#         contrast_table_path = os.path.join(
-#             result_folder, basename.replace('detection', 'contrast_table'))
-#         contrast_image_path = os.path.join(
-#             result_folder, basename.replace('detection', 'contrast_image'))
-#         median_contrast_image_path = os.path.join(
-#             result_folder, basename.replace('detection', 'median_contrast_image'))
-#         contrast_plot_path = os.path.join(
-#             result_folder, os.path.splitext(basename)[0].replace('detection', 'contrast_plot') + '.jpg')
-#
-#         string_index = basename.find('lam') + 3
-#         # string_index = basename.find('lam_') + 4
-#         wavelength_index = int(basename[string_index:string_index + 2])
-#
-#         detection_image = fits.getdata(detection_file)
-#         pixel_scale_mas = (1 * u.pixel).to(u.mas, instrument.pixel_scale).value
-#         normalized_detection_image, contrast_table, contrast_image, median_contrast_image = detection.make_contrast_curve(
-#             detection_image, radial_bounds=radial_bounds,
-#             bin_width=bin_width,
-#             companion_mask_radius=companion_mask_radius,
-#             pixel_scale=pixel_scale_mas,
-#             yx_known_companion_position=yx_known_companion_position)
-#         fits.writeto(norm_detection_image_path, normalized_detection_image, overwrite=True)
-#         fits.writeto(contrast_image_path, contrast_image, overwrite=True)
-#         fits.writeto(median_contrast_image_path, median_contrast_image, overwrite=True)
-#         contrast_table.write(contrast_table_path, overwrite=True)
-#
-#         detection.plot_contrast_curve(
-#             [contrast_table],
-#             instrument=instrument,
-#             wavelengths=wavelengths[wavelength_index:wavelength_index + 1],
-#             colors=['#1b1cd5'],  # '#de650a', '#ba174e'],
-#             plot_vertical_lod=True, mirror_axis='mas',
-#             convert_to_mag=False, yscale='log',
-#             savefig=contrast_plot_path, show=False)
