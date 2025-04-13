@@ -3,7 +3,7 @@ trap
 
 |Pythonv| |License|
 
-.. |Pythonv| image:: https://img.shields.io/badge/Python-3.9%2C%203.10%2C%203.11-brightgreen.svg
+.. |Pythonv| image:: https://img.shields.io/badge/Python-3.10%2C%203.11%2C%203.12-brightgreen.svg
             :target: https://github.com/m-samland/trap
 .. |License| image:: https://img.shields.io/badge/license-MIT-blue.svg?style=flat
             :target: https://github.com/m-samland/trap/blob/main/LICENSE
