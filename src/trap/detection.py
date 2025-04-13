@@ -39,7 +39,6 @@ from trap.utils import (
     compute_empirical_correlation_matrix,
     find_nearest,
     load_object,
-    remove_channel_from_correlation_matrix,
     save_object,
     subtract_angles,
 )
@@ -638,10 +637,10 @@ def plot_contrast_curve(
 
         if np.sum(mask) > 0:
             if convert_to_mag:
-                text_y = ymax
+                # text_y = ymax
                 y_text_shift *= -1.0
-            else:
-                text_y = ymin
+            # else:
+            #     text_y = ymin
 
             for idx, xc in enumerate(xposition):
                 ax0.axvline(
@@ -871,7 +870,7 @@ def plot_contrast_curve_ratio(
             "$10 \lambda/D$",
         ]
 
-        text_y = ymin
+        # text_y = ymin
 
         for idx, xc in enumerate(xposition):
             ax0.axvline(
@@ -1728,8 +1727,9 @@ class DetectionAnalysis(object):
                 mask_computation_annulus = np.logical_and(mask, ~detected_signal_mask)
 
             annulus_data_1d = self.detection_cube[:, 0, mask_computation_annulus]
-
-            if np.all(np.isfinite(annulus_data_1d)):
+           
+            # Check that residuals are present and not everything is masked
+            if np.all(np.isfinite(annulus_data_1d)) and (0 not in annulus_data_1d.shape):
                 psi_ij = compute_empirical_correlation_matrix(annulus_data_1d)
                 empirical_correlation_matrices.append(psi_ij)
                 separations_used.append(separation)
@@ -2389,7 +2389,7 @@ class DetectionAnalysis(object):
         contrast = []
         uncertainty = []
         try:
-            some_object_iterator = iter(temporal_components_fraction)
+            _ = iter(temporal_components_fraction)
         except TypeError:
             temporal_components_fraction = [temporal_components_fraction]
 
@@ -2889,7 +2889,7 @@ class DetectionAnalysis(object):
 
         # position_indices = [[32, 77]]
         # number_of_pca_regressors = int(np.round(38 * 0.1))
-        wavelength_indices = self.wavelength_indices
+        # wavelength_indices = self.wavelength_indices
         self.make_spectral_correlation_matrices()
 
         for _, yx_pixel in tqdm(enumerate(position_indices)):
@@ -3011,7 +3011,7 @@ class DetectionAnalysis(object):
         if file_paths is None:
             file_paths = {}
             output_dir_matching = os.path.join(
-                reduction_parameters.result_folder, "template_matching/"
+                self.reduction_parameters.result_folder, "template_matching/"
             )
             if not os.path.exists(output_dir_matching):
                 os.makedirs(output_dir_matching)
