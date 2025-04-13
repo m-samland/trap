@@ -71,16 +71,6 @@ write_to = "src/trap/_version.py"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.flake8]
-max-line-length = 130
-exclude = [
-    'docs',
-    '.tox',
-    '.eggs',
-    'build',
-    '*_version.py',
-]
-
 [tool.ruff]
 line-length = 127
 target-version = "py312"

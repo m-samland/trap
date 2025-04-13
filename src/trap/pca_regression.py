@@ -9,12 +9,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
 from numba import jit
-from scipy import sparse
 from scipy.linalg import cholesky, solve_triangular, svd
 from sklearn import preprocessing
 
 from . import regressor_selection
-from .embed_shell import ipsh
 
 # __all__ = ['matrix_scaling', 'compute_SVD', 'compute_V_inverse',
 #    'solve_linear_equation_simple', 'detect_bad_frames']

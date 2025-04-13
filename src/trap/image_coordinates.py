@@ -25,7 +25,7 @@ class ImageCoordinates(object):
             absolute_cartesian, relative_cartesian, polar
         """
 
-        self.absolute_coordinates = absolute_coordinates
+        # self.absolute_coordinates = absolute_coordinates
         self.image_center = image_center_yx
         self.pixel_scale = pixel_scale
 

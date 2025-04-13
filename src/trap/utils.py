@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.fft as fft
 import ray
+import scipy.interpolate as sinterp
 from numba import njit
 from numpy.random import default_rng
 from ray.actor import ActorHandle
@@ -367,7 +368,7 @@ def scale_images_sdi(arr, lam, newdim):
     return flux
 
 
-def high_pass_filter(image, cutoff_frequency=0.25):
+def high_pass_filter_hannon(image, cutoff_frequency=0.25):
     image_size = image.shape[0]
     cutoff = image_size / 2. * cutoff_frequency
 
@@ -395,7 +396,7 @@ def high_pass_filter_cube(data, cutoff_frequency=0.25, verbose=False):
         if verbose:
             wave = tqdm(wave)
         for frame_idx, frame in enumerate(wave):
-            filtered_data[wave_idx][frame_idx] = high_pass_filter(
+            filtered_data[wave_idx][frame_idx] = high_pass_filter_hannon(
                 frame, cutoff_frequency)
     return filtered_data
 

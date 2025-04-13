@@ -8,10 +8,10 @@ Routines used in TRAP
 import numpy as np
 
 # from pandas.plotting import autocorrelation_plot
-from scipy.linalg import cho_factor, cho_solve
+# from scipy.linalg import cho_factor, cho_solve
 
-from trap import makesource, regression
-from trap.image_coordinates import rhophi_to_relative_yx
+# from trap import makesource, regression
+# from trap.image_coordinates import rhophi_to_relative_yx
 
 # from statsmodels.graphics.tsaplots import plot_pacf
 
@@ -102,211 +102,211 @@ def lnprior(theta, mcmc_parameters):
 
 # FOR PLANET RETRIEVAL
 
-def lnlike_for_negfake(
-        theta, data, reduction_parameters, planet_relative_yx_pos, reduction_mask,
-        known_companion_mask, yx_center, overall_signal_mask,
-        regressor_matrix,
-        auxiliary_frame,
-        noise_map, true_contrast, fancy_noise, verbose):
-    """Calculates likelihood by interpolating model grid."""
+# def lnlike_for_negfake(
+#         theta, data, reduction_parameters, planet_relative_yx_pos, reduction_mask,
+#         known_companion_mask, yx_center, overall_signal_mask,
+#         regressor_matrix,
+#         auxiliary_frame,
+#         noise_map, true_contrast, fancy_noise, verbose):
+#     """Calculates likelihood by interpolating model grid."""
 
-    if reduction_parameters.number_of_pca_regressors is None:
-        number_of_pca_regressors = int(theta[3])
+#     if reduction_parameters.number_of_pca_regressors is None:
+#         number_of_pca_regressors = int(theta[3])
 
-    result = regression.run_trap_wo_model(
-        data=data,
-        reduction_parameters=reduction_parameters,
-        planet_relative_yx_pos=planet_relative_yx_pos,
-        reduction_mask=reduction_mask,
-        known_companion_mask=known_companion_mask,
-        yx_center=yx_center,
-        overall_signal_mask=overall_signal_mask,
-        regressor_matrix=regressor_matrix,
-        return_only_noise_model=False,
-        auxiliary_frame=auxiliary_frame,
-        true_contrast=true_contrast,
-        verbose=verbose)
+#     result = regression.run_trap_wo_model(
+#         data=data,
+#         reduction_parameters=reduction_parameters,
+#         planet_relative_yx_pos=planet_relative_yx_pos,
+#         reduction_mask=reduction_mask,
+#         known_companion_mask=known_companion_mask,
+#         yx_center=yx_center,
+#         overall_signal_mask=overall_signal_mask,
+#         regressor_matrix=regressor_matrix,
+#         return_only_noise_model=False,
+#         auxiliary_frame=auxiliary_frame,
+#         true_contrast=true_contrast,
+#         verbose=verbose)
 
-    # assume that pixel are independent -> flatten
-    ntime = data.shape[0]
-    pixel_lnlike = []
+#     # assume that pixel are independent -> flatten
+#     ntime = data.shape[0]
+#     pixel_lnlike = []
 
-    def faster_lnlike(r, K):
-        """
-        A faster version of ``lnlike``.
-        """
-        cho_decomp = cho_factor(K)
-        alpha_cho = cho_solve(cho_decomp, r)
-        lndet_K = 2. * np.sum(np.log(np.diag(cho_decomp[0])))
+#     def faster_lnlike(r, K):
+#         """
+#         A faster version of ``lnlike``.
+#         """
+#         cho_decomp = cho_factor(K)
+#         alpha_cho = cho_solve(cho_decomp, r)
+#         lndet_K = 2. * np.sum(np.log(np.diag(cho_decomp[0])))
 
-        return -0.5 * (np.dot(r, alpha_cho) + lndet_K)  # -0.5 * np.log())
+#         return -0.5 * (np.dot(r, alpha_cho) + lndet_K)  # -0.5 * np.log())
 
-    for i in range(result.n_reduction_pix):
-        # Should change this to cho_solve
-        r = result.residuals[:, i]
-        if noise_map is None:
-            cov = np.diag(np.ones(ntime))
-        else:
-            cov = np.diag(noise_map[i])
-        if fancy_noise:
-            const_term = np.ones(len(cov)) * theta[-1]
-            cov += np.diag(const_term)
+#     for i in range(result.n_reduction_pix):
+#         # Should change this to cho_solve
+#         r = result.residuals[:, i]
+#         if noise_map is None:
+#             cov = np.diag(np.ones(ntime))
+#         else:
+#             cov = np.diag(noise_map[i])
+#         if fancy_noise:
+#             const_term = np.ones(len(cov)) * theta[-1]
+#             cov += np.diag(const_term)
 
-        pixel_lnlike.append(faster_lnlike(r, cov))  # - 0.5 * np.log())
+#         pixel_lnlike.append(faster_lnlike(r, cov))  # - 0.5 * np.log())
 
-    log_likelihood = np.sum(np.array(pixel_lnlike))
-    # if verbose:
-    print(theta)
-    print("{0:.03E}".format(log_likelihood))
-    return log_likelihood
+#     log_likelihood = np.sum(np.array(pixel_lnlike))
+#     # if verbose:
+#     print(theta)
+#     print("{0:.03E}".format(log_likelihood))
+#     return log_likelihood
     # logdet = 2*np.sum(np.log(np.diag(L_cov)))
     # print(-0.5*chi2)
     # return -0.5*chi2
 
 
-def lnprob_for_negfake(
-        theta, mcmc_parameters, data, flux_psf, pa,
-        reduction_parameters, reduction_mask,
-        known_companion_mask, yx_center,
-        overall_signal_mask, regressor_matrix,
-        auxiliary_frame,
-        noise_map, true_contrast, verbose,
-        use_prior=True, fancy_noise=False):
+# def lnprob_for_negfake(
+#         theta, mcmc_parameters, data, flux_psf, pa,
+#         reduction_parameters, reduction_mask,
+#         known_companion_mask, yx_center,
+#         overall_signal_mask, regressor_matrix,
+#         auxiliary_frame,
+#         noise_map, true_contrast, verbose,
+#         use_prior=True, fancy_noise=False):
 
-    lp = 0.
-    if use_prior:
-        lp = lnprior(theta, mcmc_parameters)
-        if not np.isfinite(lp):
-            return -np.inf
+#     lp = 0.
+#     if use_prior:
+#         lp = lnprior(theta, mcmc_parameters)
+#         if not np.isfinite(lp):
+#             return -np.inf
 
-    # TODO right_handed into parameters
-    # relative_yx = [theta[1], theta[0]]
-    relative_yx = rhophi_to_relative_yx([theta[0], theta[1]])
-    planet_relative_yx_pos = np.array(relative_yx)
-    data_minus_model = makesource.addsource(
-        data, planet_relative_yx_pos, pa, flux_psf,
-        norm=-theta[2], jitter=0, poisson_noise=False,
-        right_handed=True, verbose=False)
+#     # TODO right_handed into parameters
+#     # relative_yx = [theta[1], theta[0]]
+#     relative_yx = rhophi_to_relative_yx([theta[0], theta[1]])
+#     planet_relative_yx_pos = np.array(relative_yx)
+#     data_minus_model = makesource.addsource(
+#         data, planet_relative_yx_pos, pa, flux_psf,
+#         norm=-theta[2], jitter=0, poisson_noise=False,
+#         right_handed=True, verbose=False)
 
-    # Check if any pixels are negative after subtracting planet model
-    # Reject those models
-    number_of_values = np.prod(data_minus_model[:, reduction_mask].shape)
-    number_of_values_below_zero = len(
-        np.where(data_minus_model[:, reduction_mask] < 0.))
+#     # Check if any pixels are negative after subtracting planet model
+#     # Reject those models
+#     number_of_values = np.prod(data_minus_model[:, reduction_mask].shape)
+#     number_of_values_below_zero = len(
+#         np.where(data_minus_model[:, reduction_mask] < 0.))
 
-    if number_of_values_below_zero / number_of_values > 0.9:
-        return -np.inf
+#     if number_of_values_below_zero / number_of_values > 0.9:
+#         return -np.inf
 
-    else:
-        return lp + lnlike_for_negfake(
-            theta,
-            data=data_minus_model,
-            reduction_parameters=reduction_parameters,
-            planet_relative_yx_pos=planet_relative_yx_pos,
-            reduction_mask=reduction_mask,
-            known_companion_mask=known_companion_mask,
-            yx_center=yx_center,
-            overall_signal_mask=overall_signal_mask,
-            regressor_matrix=regressor_matrix,
-            auxiliary_frame=auxiliary_frame,
-            noise_map=noise_map,
-            true_contrast=true_contrast,
-            fancy_noise=fancy_noise,
-            verbose=verbose)
-
-
-def lnlike_for_negfake_corrnoise(
-        theta, data, reduction_parameters, planet_relative_yx_pos, reduction_mask,
-        known_companion_mask, yx_center, overall_signal_mask,
-        regressor_matrix,
-        auxiliary_frame,
-        noise_map, true_contrast, verbose):
-    """Calculates likelihood by interpolating model grid."""
-
-    if reduction_parameters.number_of_pca_regressors is None:
-        number_of_pca_regressors = int(theta[3])
-
-    result = regression.run_trap_wo_model(
-        data=data,
-        reduction_parameters=reduction_parameters,
-        planet_relative_yx_pos=planet_relative_yx_pos,
-        reduction_mask=reduction_mask,
-        known_companion_mask=known_companion_mask,
-        yx_center=yx_center,
-        overall_signal_mask=overall_signal_mask,
-        regressor_matrix=regressor_matrix,
-        return_only_noise_model=False,
-        auxiliary_frame=auxiliary_frame,
-        true_contrast=true_contrast,
-        verbose=verbose)
-
-    # assume that pixel are independent -> flatten
-    ntime = data.shape[0]
-    pixel_lnlike = []
-
-    for i in range(result.n_reduction_pix):
-        # Should change this to cho_solve
-        r = result.residuals[:, i]
-        if noise_map is None:
-            cov = np.diag(np.ones(ntime))
-        else:
-            cov = np.diag(noise_map[i])
-
-        pixel_lnlike.append(lnlike_one_pixel)
-        # faster_lnlike(r, cov))  # - 0.5 * np.log())
-
-    log_likelihood = np.sum(np.array(pixel_lnlike))
-
-    print(theta)
-    print("{0:.03E}".format(log_likelihood))
-    return log_likelihood
-    # logdet = 2*np.sum(np.log(np.diag(L_cov)))
-    # print(-0.5*chi2)
-    # return -0.5*chi2
+#     else:
+#         return lp + lnlike_for_negfake(
+#             theta,
+#             data=data_minus_model,
+#             reduction_parameters=reduction_parameters,
+#             planet_relative_yx_pos=planet_relative_yx_pos,
+#             reduction_mask=reduction_mask,
+#             known_companion_mask=known_companion_mask,
+#             yx_center=yx_center,
+#             overall_signal_mask=overall_signal_mask,
+#             regressor_matrix=regressor_matrix,
+#             auxiliary_frame=auxiliary_frame,
+#             noise_map=noise_map,
+#             true_contrast=true_contrast,
+#             fancy_noise=fancy_noise,
+#             verbose=verbose)
 
 
-def lnprob_for_negfake_corrnoise(
-        theta, mcmc_parameters, data, flux_psf, pa,
-        reduction_parameters, reduction_mask,
-        known_companion_mask, yx_center,
-        overall_signal_mask, regressor_matrix,
-        auxiliary_frame,
-        noise_map, true_contrast, verbose):
+# def lnlike_for_negfake_corrnoise(
+#         theta, data, reduction_parameters, planet_relative_yx_pos, reduction_mask,
+#         known_companion_mask, yx_center, overall_signal_mask,
+#         regressor_matrix,
+#         auxiliary_frame,
+#         noise_map, true_contrast, verbose):
+#     """Calculates likelihood by interpolating model grid."""
 
-    lp = lnprior(theta, mcmc_parameters)
-    if not np.isfinite(lp):
-        return -np.inf
+#     if reduction_parameters.number_of_pca_regressors is None:
+#         number_of_pca_regressors = int(theta[3])
 
-    # TODO right_handed into parameters
-    # relative_yx = [theta[1], theta[0]]
-    relative_yx = rhophi_to_relative_yx([theta[0], theta[1]])
-    planet_relative_yx_pos = np.array(relative_yx)
-    data_minus_model = makesource.addsource(
-        data, planet_relative_yx_pos, pa, flux_psf,
-        norm=-theta[2], jitter=0, poisson_noise=False,
-        right_handed=True, verbose=False)
+#     result = regression.run_trap_wo_model(
+#         data=data,
+#         reduction_parameters=reduction_parameters,
+#         planet_relative_yx_pos=planet_relative_yx_pos,
+#         reduction_mask=reduction_mask,
+#         known_companion_mask=known_companion_mask,
+#         yx_center=yx_center,
+#         overall_signal_mask=overall_signal_mask,
+#         regressor_matrix=regressor_matrix,
+#         return_only_noise_model=False,
+#         auxiliary_frame=auxiliary_frame,
+#         true_contrast=true_contrast,
+#         verbose=verbose)
 
-    # Check if any pixels are negative after subtracting planet model
-    # Reject those models
-    number_of_values = np.prod(data_minus_model[:, reduction_mask].shape)
-    number_of_values_below_zero = len(
-        np.where(data_minus_model[:, reduction_mask] < 0.))
+#     # assume that pixel are independent -> flatten
+#     ntime = data.shape[0]
+#     pixel_lnlike = []
 
-    if number_of_values_below_zero / number_of_values > 0.9:
-        return -np.inf
+#     for i in range(result.n_reduction_pix):
+#         # Should change this to cho_solve
+#         r = result.residuals[:, i]
+#         if noise_map is None:
+#             cov = np.diag(np.ones(ntime))
+#         else:
+#             cov = np.diag(noise_map[i])
 
-    else:
-        return lp + lnlike_for_negfake_corrnoise(
-            theta,
-            data=data_minus_model,
-            reduction_parameters=reduction_parameters,
-            planet_relative_yx_pos=planet_relative_yx_pos,
-            reduction_mask=reduction_mask,
-            known_companion_mask=known_companion_mask,
-            yx_center=yx_center,
-            overall_signal_mask=overall_signal_mask,
-            regressor_matrix=regressor_matrix,
-            auxiliary_frame=auxiliary_frame,
-            noise_map=noise_map,
-            true_contrast=true_contrast,
-            verbose=verbose)
+#         pixel_lnlike.append(lnlike_one_pixel)
+#         # faster_lnlike(r, cov))  # - 0.5 * np.log())
+
+#     log_likelihood = np.sum(np.array(pixel_lnlike))
+
+#     print(theta)
+#     print("{0:.03E}".format(log_likelihood))
+#     return log_likelihood
+#     # logdet = 2*np.sum(np.log(np.diag(L_cov)))
+#     # print(-0.5*chi2)
+#     # return -0.5*chi2
+
+
+# def lnprob_for_negfake_corrnoise(
+#         theta, mcmc_parameters, data, flux_psf, pa,
+#         reduction_parameters, reduction_mask,
+#         known_companion_mask, yx_center,
+#         overall_signal_mask, regressor_matrix,
+#         auxiliary_frame,
+#         noise_map, true_contrast, verbose):
+
+#     lp = lnprior(theta, mcmc_parameters)
+#     if not np.isfinite(lp):
+#         return -np.inf
+
+#     # TODO right_handed into parameters
+#     # relative_yx = [theta[1], theta[0]]
+#     relative_yx = rhophi_to_relative_yx([theta[0], theta[1]])
+#     planet_relative_yx_pos = np.array(relative_yx)
+#     data_minus_model = makesource.addsource(
+#         data, planet_relative_yx_pos, pa, flux_psf,
+#         norm=-theta[2], jitter=0, poisson_noise=False,
+#         right_handed=True, verbose=False)
+
+#     # Check if any pixels are negative after subtracting planet model
+#     # Reject those models
+#     number_of_values = np.prod(data_minus_model[:, reduction_mask].shape)
+#     number_of_values_below_zero = len(
+#         np.where(data_minus_model[:, reduction_mask] < 0.))
+
+#     if number_of_values_below_zero / number_of_values > 0.9:
+#         return -np.inf
+
+#     else:
+#         return lp + lnlike_for_negfake_corrnoise(
+#             theta,
+#             data=data_minus_model,
+#             reduction_parameters=reduction_parameters,
+#             planet_relative_yx_pos=planet_relative_yx_pos,
+#             reduction_mask=reduction_mask,
+#             known_companion_mask=known_companion_mask,
+#             yx_center=yx_center,
+#             overall_signal_mask=overall_signal_mask,
+#             regressor_matrix=regressor_matrix,
+#             auxiliary_frame=auxiliary_frame,
+#             noise_map=noise_map,
+#             true_contrast=true_contrast,
+#             verbose=verbose)

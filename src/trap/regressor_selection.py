@@ -19,11 +19,6 @@ from .image_coordinates import (
 from .makesource import inject_model_into_data
 from .plotting_tools import plot_scale
 
-__all__ = [
-    'make_signal_mask', 'make_annulus_mask', 'make_annulus_mask_by_separation',
-    'make_regressor_pool_for_pixel', 'find_N_closest_values_in_image', 'find_N_unique_samples',
-    'select_regressors_for_pixel', 'make_mask_for_known_companions']
-
 
 def make_signal_mask(yx_dim, pos_yx, mask_radius, oversampling=1, relative_pos=False, yx_center=None):
     """ Masks all pixel inside of mask_radius in an image. If relative_pos is True
@@ -176,33 +171,6 @@ def make_annulus_mask(inner_edge, outer_edge, yx_dim, oversampling=1, yx_center=
     return annulus_mask
 
 
-def make_annulus_mask_by_separation_old(separation, width, yx_dim, yx_center=None):
-    """ Masks all pixel inside of an annulus of an image.
-
-    """
-    x = np.arange(yx_dim[1])
-    y = np.arange(yx_dim[0]).reshape(-1, 1)
-
-    if yx_center is None:
-        yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
-
-    dist = np.sqrt((x - yx_center[1])**2 + (y - yx_center[0])**2)
-
-    # Check if this corresponds to intended behaviour
-    if width == 1:
-        inner_mask = dist > (separation - width / 2)
-        outer_mask = dist < (separation + width / 2)
-    elif width % 2 == 0:
-        inner_mask = dist >= (separation - width // 2)
-        outer_mask = dist <= (separation + width // 2)
-    else:
-        inner_mask = dist >= (separation - width // 2 - 1)
-        outer_mask = dist <= (separation + width // 2 - 1)
-    annulus_mask = np.logical_and(inner_mask, outer_mask)
-
-    return annulus_mask
-
-
 def make_annulus_mask_by_separation(separation, width, yx_dim, yx_center=None):
     """ Masks all pixel inside of an annulus of an image.
 
@@ -228,7 +196,7 @@ def plot_annulus_pixels(yx_dim=(101, 101), yx_center=None):
     number_of_pixels = np.zeros((4, 50))
     for i, annulus_width in enumerate([5, 7, 9, 11]):
         for j, separation in enumerate(range(30)):
-            annulus_mask = make_annulus_mask_by_separation_new(
+            annulus_mask = make_annulus_mask_by_separation(
                 separation, annulus_width, yx_dim, yx_center=None)
             number_of_pixels[i][j] = np.sum(annulus_mask)
     for i, annulus_width in enumerate([5, 7, 9, 11]):
@@ -239,10 +207,9 @@ def plot_annulus_pixels(yx_dim=(101, 101), yx_center=None):
 
 def make_regressor_pool_for_pixel(
         reduction_parameters, yx_pixel, yx_dim, yx_center=None,
-        yx_center_injection=None,
         signal_mask=None, known_companion_mask=None,
         bad_pixel_mask=None, additional_regressors=None,
-        right_handed=True, pa=None, **kwargs):
+        **kwargs):
     """ Given a certain pixel position, an array with the dimension
     of the image is returned marking the for this pixelregressors as True.
 
@@ -292,24 +259,6 @@ def make_regressor_pool_for_pixel(
 
     radial_regressor_mask = np.zeros((yx_dim), dtype=bool)
     if reduction_parameters.add_radial_regressors:
-        # radial_mask = []
-        # for i, radial_shift in enumerate(
-        #         reduction_parameters.radial_separation_from_source):
-        #     if radial_shift is not None:
-        #         rhophi = relative_yx_to_rhophi(
-        #             absolute_yx_to_relative_yx(yx_pixel, yx_center))
-        #         rhophi[0] += radial_shift
-        #         track_position = rhophi_to_relative_yx(rhophi)
-        #         radial_shifted_psf_track = make_mask_from_psf_track(
-        #             yx_position=track_position,
-        #             psf_size=reduction_parameters.reduction_mask_psf_size,
-        #             pa=pa, image_size=yx_dim[0],
-        #             image_center=yx_center_injection,
-        #             yx_anamorphism=reduction_parameters.yx_anamorphism,
-        #             right_handed=right_handed,
-        #             return_cube=False)
-        #         radial_mask.append(radial_shifted_psf_track)
-        # radial_regressor_mask = np.logical_or.reduce(radial_mask)
         radial_regressor_mask = binary_dilation(signal_mask, iterations=7)
 
     inclusion = np.logical_or(annulus_mask, radial_regressor_mask)
@@ -397,7 +346,7 @@ def select_regressors_for_pixel(
     regressor_pool_mask = make_regressor_pool_for_pixel(
         reduction_parameters=reduction_parameters,
         yx_pixel=yx_pixel, yx_dim=yx_dim, yx_center=yx_center,
-        signal_mask=signal_pix_mask)
+        signal_mask=signal_mask)
 
     if auxiliary_frame is not None:
         if method_of_regressor_selection == 'auxiliary':
@@ -418,11 +367,12 @@ def select_regressors_for_pixel(
             raise NotImplementedError
 
     ref_pixel_positions = np.argwhere(reference_pixel_map)
+    signal_pix_indices = None
     if show_plot and save_plot and outputdir is not None:
-        plot_scale(auxiliary_frame, ref_pixel_positions, signal_pix_indeces, output_path=outputdir, show=True)
+        plot_scale(auxiliary_frame, ref_pixel_positions, signal_pix_indices, output_path=outputdir, show=True)
     elif save_plot and outputdir is not None:
-        plot_scale(auxiliary_frame, ref_pixel_positions, signal_pix_indeces, output_path=outputdir, show=False)
+        plot_scale(auxiliary_frame, ref_pixel_positions, signal_pix_indices, output_path=outputdir, show=False)
     elif show_plot:
-        plot_scale(auxiliary_frame, ref_pixel_positions, signal_pix_indeces, show=True)
+        plot_scale(auxiliary_frame, ref_pixel_positions, signal_pix_indices, show=True)
 
     return reference_pixel_map

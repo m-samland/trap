@@ -10,18 +10,12 @@ import collections
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.visualization import (
-    AsymmetricPercentileInterval,
     ImageNormalize,
-    LinearStretch,
-    LogStretch,
     MinMaxInterval,
-    PercentileInterval,
     ZScaleInterval,
 )
 from matplotlib import rcParams
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from trap.embed_shell import ipsh
 from trap.image_coordinates import absolute_yx_to_relative_yx
 
 # __all__ = ['plot_scale']
