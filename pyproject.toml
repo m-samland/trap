@@ -38,8 +38,6 @@ docs = [
 test = [
     "pytest",
     "pytest-doctestplus",
-    "flake8",
-    "flake8-pyproject",
     "codecov",
     "pytest-cov",
     "ruff",
@@ -98,11 +96,6 @@ max-complexity = 10
 [tool.ruff.format]
 quote-style = "double"  # to match Black formatting
 indent-style = "space"
-
-[tool.ruff]
-exclude = [
-    "examples/tutorial.ipynb",
-]
 
 [tool.coverage.run]
 omit = [
