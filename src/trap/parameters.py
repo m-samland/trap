@@ -376,7 +376,7 @@ class Reduction_parameters(object):
             search_region_inner_bound=1,
             search_region_outer_bound=55,
             oversampling=1,
-            data_auto_crop=False,
+            data_auto_crop=True,
             data_crop_size=None,
             right_handed=True,
             include_noise=False,

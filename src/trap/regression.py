@@ -4,7 +4,6 @@ Routines used in TRAP
 @author: Matthias Samland
          MPIA Heidelberg
 """
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 import os
 
@@ -13,8 +12,9 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from astropy.stats import mad_std, sigma_clip
+from numpy.random import default_rng
 from scipy import spatial
-from scipy.linalg import inv, pinv
+from scipy.linalg import inv
 from scipy.optimize import curve_fit
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
@@ -338,11 +338,12 @@ class Result(object):
             mask = self.good_residual_mask
         else:
             mask = np.ones(self.residuals.shape[0], dtype=bool)
-        self.measured_contrast = np.average(
-            contrast[mask],
-            weights=np.ones_like(contrast[mask]) / variance[mask])
 
         weight_for_variance = np.ones_like(contrast[mask]) / variance[mask]
+        self.measured_contrast = np.average(
+            contrast[mask],
+            weights=weight_for_variance)
+
         self.contrast_uncertainty = np.sqrt(1 / np.sum(weight_for_variance))
         self.snr = self.measured_contrast / self.contrast_uncertainty
         self.relative_uncertainty = 1. / self.snr
@@ -607,7 +608,7 @@ def run_trap_with_model_temporal(
         diagnostic_image = None
         reduced_result = None
     else:
-        # maximum_counts = np.max(model)
+        maximum_counts = np.max(model)
         # number_of_frames_affected = np.sum(model > 0, axis=0)
         n_reduction_pix = np.sum(reduction_mask)
         diagnostic_image = np.empty((4, yx_dim[0], yx_dim[1],))
@@ -718,9 +719,7 @@ def run_trap_with_model_temporal(
                 inverse_covariance = inverse_variance_reduction_area[:, idx]
             else:
                 inverse_covariance = 1. / y
-            inverse_covariance_matrix = np.identity(len(y)) * inverse_covariance
         else:
-            inverse_covariance_matrix = None
             inverse_covariance = None
 
         # if np.array_equal(yx_pixel, test_pixel):
@@ -888,7 +887,7 @@ def run_trap_with_model_temporal(
                 plt.close()
                 # plt.style.use("paper")
                 fig = plt.figure()
-                ax = plt.subplot(111)
+                ax = fig.add_subplot(111)
                 alpha = 0.7
                 ax.plot(y, label='data', color='blue', alpha=alpha)
                 ax.plot(reconstructed_lightcurve, label='complete model', color='orange', alpha=alpha)
@@ -1058,10 +1057,10 @@ def run_trap_with_model_spatial(
 
     local_model = reduction_parameters.local_spatial_model
     # Local model here means only area where PSF is located
-    if local_model:
-        n_reduction_pix = np.sum(model[0] > 0)  # PSF model always same size
-    else:
-        n_reduction_pix = np.sum(reduction_mask)  # PSF model always same size
+    # if local_model:
+    #     n_reduction_pix = np.sum(model[0] > 0)  # PSF model always same size
+    # else:
+    #     n_reduction_pix = np.sum(reduction_mask)  # PSF model always same size
 
     # Make array to contain stellar PSF model result
     model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
@@ -1082,7 +1081,7 @@ def run_trap_with_model_spatial(
     separation = np.sqrt(
         planet_relative_yx_pos[0]**2 + planet_relative_yx_pos[1]**2)
 
-    max_ncomp, time_masks = det_max_ncomp_specific(
+    _, time_masks = det_max_ncomp_specific(
         r_planet=separation,
         fwhm=reduction_parameters.fwhm,
         delta=reduction_parameters.protection_angle,
@@ -1366,7 +1365,7 @@ def run_trap_with_model_wavelength(
         diagnostic_image = None
         reduced_result = None
     else:
-        # maximum_counts = np.max(model)
+        maximum_counts = np.max(model)
         # number_of_frames_affected = np.sum(model > 0, axis=0)
         n_reduction_pix = np.sum(reduction_mask)
 
@@ -1558,7 +1557,7 @@ def run_trap_with_model_wavelength(
                 plt.close()
                 # plt.style.use("paper")
                 fig = plt.figure()
-                ax = plt.subplot(111)
+                ax = fig.add_subplot(111)
                 alpha = 0.7
                 ax.plot(y, label='data', color='blue', alpha=alpha)
                 ax.plot(reconstructed_lightcurve, label='complete model', color='orange', alpha=alpha)
@@ -1590,7 +1589,7 @@ def run_trap_with_model_wavelength(
                 plt.savefig('diagnostic_plots/residuals_test.jpg', dpi=300)
 
                 fig = plt.figure()
-                ax = plt.subplot(111)
+                ax = fig.add_subplot(111)
                 for i in range(5):
                     ax.plot(B[:, i] * lambdas_full[i] / np.cumsum(lambdas_full)
                             [-1] + 0.1 * i, label=i)  # + 1 * i, label=i)
@@ -1690,7 +1689,7 @@ def run_trap_with_model_temporal_optimized(
     # reduced_result[:] = np.nan
 
     reduction_pix_indeces = np.argwhere(reduction_mask)
-    test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
+    # test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
     # EDIT: !!!!!!!
     # Provide pre-stacked training matrix, only add model on top!
     training_matrix = data[:, regressor_pool_mask]
@@ -1700,7 +1699,7 @@ def run_trap_with_model_temporal_optimized(
     B = B_full[:, :reduction_parameters.number_of_pca_regressors]
     constant_offset = np.ones(ntime)
 
-    for idx, yx_pixel in enumerate(reduction_pix_indeces):
+    for idx, _ in enumerate(reduction_pix_indeces):
         # Pixel data to fit
         y = data[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
         # Lightcurve model fitting planet at pixel
@@ -1757,7 +1756,7 @@ def run_trap_with_model_temporal_optimized(
         use_residual_correlation=reduction_parameters.use_residual_correlation)
 
     result.compute_contrast_weighted_average(mask_outliers=True)
-    # Get rid of arrays for to save memory when accomulating results for many models
+    # Get rid of arrays to save memory when accomulating results for many models
     result.residuals = None
     result.reduced_result = None
     return result
@@ -1767,8 +1766,8 @@ def prepare_for_cross_validation(data, yx_position_relative, yx_center):
     yx_dim = (data.shape[-2], data.shape[-1])
     if yx_center is None:
         yx_center = (yx_dim[0] // 2, yx_dim[1] // 2)
-    position_absolute = image_coordinates.relative_yx_to_absolute_yx(
-        yx_position_relative, yx_center).astype('int')
+    # position_absolute = image_coordinates.relative_yx_to_absolute_yx(
+    #     yx_position_relative, yx_center).astype('int')
 
 
 def temporal_pca_cross_validation(
@@ -1776,7 +1775,7 @@ def temporal_pca_cross_validation(
         reduction_mask,
         test_size=0.2,
         split_iterations=250,
-        number_of_components_to_test=np.arange(1, 60),
+        number_of_components_to_test=np.arange(1, 40),
         number_of_pixels_to_test=15,
         inverse_variance_reduction_area=None,
         regressor_matrix=None,
@@ -1820,9 +1819,9 @@ def temporal_pca_cross_validation(
 
     ntime = data.shape[0]
 
-    n_reduction_pix = np.sum(reduction_mask)
-    reduced_result = np.empty((n_reduction_pix, 2))
-    fitted_model = np.empty((n_reduction_pix, ntime))
+    # n_reduction_pix = np.sum(reduction_mask)
+    # reduced_result = np.empty((n_reduction_pix, 2))
+    # fitted_model = np.empty((n_reduction_pix, ntime))
     # reduced_result[:] = np.nan
 
     reduction_pix_indeces = np.argwhere(reduction_mask)
@@ -1833,21 +1832,20 @@ def temporal_pca_cross_validation(
     B_full, _, _, _ = pca_regression.compute_SVD(
         training_matrix, n_components=None,
         scaling=reduction_parameters.pca_scaling)
-    B = B_full[:, :reduction_parameters.number_of_pca_regressors]
+    # B = B_full[:, :reduction_parameters.number_of_pca_regressors]
     constant_offset = np.ones(ntime)
 
     inverse_variance = np.zeros_like(data)
     inverse_variance[:, reduction_mask] = inverse_variance_reduction_area
     # for idx, yx_pixel in enumerate(reduction_pix_indeces):
     # Pixel data to fit
-    from numpy.random import default_rng
+
     rng = default_rng(12345)
     p = rng.permutation(len(reduction_pix_indeces))
     # ipsh()
     random_pixel_indices = reduction_pix_indeces[p][:number_of_pixels_to_test]
     pixel_indices = np.vstack((test_pixel, random_pixel_indices))
 
-    number_of_components_to_test = np.arange(1, 50)
     ncomp_pca_residuals = []
     ncomp_deviation = []
     for n_comp in tqdm(number_of_components_to_test):
@@ -1870,12 +1868,12 @@ def temporal_pca_cross_validation(
             for n in range(split_iterations):
                 (
                     A_train,
-                    A_test,
+                    _,
                     y_train,
                     y_test,
                     inverse_variance_train,
-                    inverse_variance_test,
-                    idx_train,
+                    _,
+                    _,
                     idx_test,
                 ) = train_test_split(
                     A, y, inverse_variance_vector, indices, test_size=test_size, random_state=n)
@@ -1907,8 +1905,8 @@ def temporal_pca_cross_validation(
         ncomp_deviation.append(deviation_per_pix)
     ncomp_pca_residuals = np.array(ncomp_pca_residuals)
     last_regressor_coefficient = np.array(ncomp_deviation)
-    score = np.std(ncomp_pca_residuals, axis=2)
-    score_robust = mad_std(ncomp_pca_residuals, axis=2)
+    # score = np.std(ncomp_pca_residuals, axis=2)
+    # score_robust = mad_std(ncomp_pca_residuals, axis=2)
 
     # mean_contrast_deviation = np.median(
     #     ncomp_deviation - 1e-4, axis=2)[:, :, 0]
@@ -1934,8 +1932,8 @@ def temporal_pca_cross_validation(
     #     reconstructed_lightcurve = np.empty(ntime)
     #     reconstructed_lightcurve[:] = np.nan
 
-    fitted_model[idx] = reconstructed_lightcurve
-    reduced_result[idx] = (P[-1], P_sigma_squared[-1])
+    # fitted_model[idx] = reconstructed_lightcurve
+    # reduced_result[idx] = (P[-1], P_sigma_squared[-1])
 
     # residuals = (data[:, reduction_mask].T - fitted_model)
 
@@ -1953,4 +1951,4 @@ def temporal_pca_cross_validation(
     #     compute_residual_correlation=reduction_parameters.compute_residual_correlation,
     #     use_residual_correlation=reduction_parameters.use_residual_correlation)
 
-    return result
+    # return result

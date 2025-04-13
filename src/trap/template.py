@@ -3,13 +3,85 @@ import os
 
 import numpy as np
 from astropy import units as u
-from trap.embed_shell import ipsh
-
-import species
+from species.phot.syn_phot import SyntheticPhotometry
+from species.plot.plot_spectrum import plot_spectrum
 from species.read.read_filter import ReadFilter
 
 
 class SpectralTemplate(object):
+    """
+    A class representing a spectral template.
+
+    Parameters:
+    ----------
+    name : str
+        The name of the spectral template.
+    instrument : Instrument
+        The instrument used for observation.
+    companion_modelbox : ModelBox
+        The model box representing the companion spectrum.
+    stellar_modelbox : ModelBox, optional
+        The model box representing the stellar spectrum. If not provided, a flat spectrum will be used.
+    wavelength_indices : list of int, optional
+        The indices of the wavelengths to consider.
+    correct_transmission : bool, optional
+        Flag indicating whether to correct for transmission effects.
+    fit_offset : bool, optional
+        Flag indicating whether to fit for an offset.
+    fit_slope : bool, optional
+        Flag indicating whether to fit for a slope.
+    number_of_pca_regressors : int, optional
+        The number of PCA regressors to use.
+    use_spectral_correlation : bool, optional
+        Flag indicating whether to use spectral correlation.
+    species_database_directory : str, optional
+        The directory containing the species database.
+
+    Raises:
+    ------
+    ValueError
+        If the necessary information is not available for the instrument.
+
+    NotImplementedError
+        If transmission correction is not yet implemented.
+
+    Attributes:
+    ----------
+    name : str
+        The name of the spectral template.
+    instrument : Instrument
+        The instrument used for observation.
+    wavelength_indices : list of int or None
+        The indices of the wavelengths to consider.
+    correct_transmission : bool
+        Flag indicating whether to correct for transmission effects.
+    fit_offset : bool
+        Flag indicating whether to fit for an offset.
+    fit_slope : bool
+        Flag indicating whether to fit for a slope.
+    number_of_pca_regressors : int
+        The number of PCA regressors to use.
+    use_spectral_correlation : bool
+        Flag indicating whether to use spectral correlation.
+    species_database_directory : str or None
+        The directory containing the species database.
+    companion_modelbox : ModelBox
+        The model box representing the companion spectrum.
+    stellar_modelbox : ModelBox
+        The model box representing the stellar spectrum.
+    contrast_modelbox : ModelBox
+        The model box representing the contrast spectrum.
+    mean_normalized_contrast_value : float
+        The mean normalized contrast value.
+    normalized_contrast_modelbox : ModelBox
+        The model box representing the normalized contrast spectrum.
+
+    Methods:
+    -------
+    plot_template(species_database_directory=None, output_path=None, plot_normalized=True)
+        Plot the spectral template.
+
+    """
     def __init__(
             self, name, instrument, companion_modelbox, stellar_modelbox,
             wavelength_indices=None,
@@ -115,7 +187,7 @@ class SpectralTemplate(object):
                 contrasts = []
                 wavelengths = []
                 for filter_name in filters:
-                    synphot = species.SyntheticPhotometry(filter_name)
+                    synphot = SyntheticPhotometry(filter_name)
                     wavelengths.append(
                         ReadFilter(filter_name).mean_wavelength())
                     star_phot, _ = synphot.spectrum_to_flux(
@@ -136,30 +208,42 @@ class SpectralTemplate(object):
         self.normalized_contrast_modelbox.flux = self.contrast_modelbox.flux / self.mean_normalized_contrast_value
 
     def plot_template(self, species_database_directory=None, output_path=None, plot_normalized=True):
-        if plot_normalized:
-            modelbox = self.normalized_contrast_modelbox
-        else:
-            modelbox = self.contrast_modelbox
+            """
+            Plot the template spectrum.
 
-        if self.instrument.instrument_type == 'photometry':
-            filters = self.instrument.filters
-            os.chdir(self.species_database_directory)
-            xlim = None
-            ylim = None
-        else:
-            xlim = (float(modelbox.wavelength[0]), float(modelbox.wavelength[-1]))
-            ylim = (np.min(modelbox.flux), np.max(modelbox.flux))
-            filters = None
+            Args:
+                species_database_directory (str, optional): The directory path of the species database. Defaults to None.
+                output_path (str, optional): The output path for saving the plot. Defaults to None.
+                plot_normalized (bool, optional): Flag indicating whether to plot the normalized contrast modelbox. 
+                                                   Defaults to True.
+            """
+            if plot_normalized:
+                modelbox = self.normalized_contrast_modelbox
+            else:
+                modelbox = self.contrast_modelbox
 
-        print(filters)
-        species.plot_spectrum(
-            boxes=[modelbox],
-            filters=filters,
-            offset=(-0.08, -0.04),
-            scale=None,  # ('log', 'log'),
-            # None,  # (np.min(modelbox.wavelength), np.max(modelbox.wavelength)),  # (0.8, 5.),
-            xlim=xlim,
-            ylim=ylim,
-            title=f'{self.name}',
-            legend={'loc': 'lower right', 'frameon': False, 'fontsize': 12.},
-            output=output_path)
+            if self.species_database_directory is None:
+                self.species_database_directory = species_database_directory
+
+            if self.instrument.instrument_type == 'photometry':
+                filters = self.instrument.filters
+                os.chdir(self.species_database_directory)
+                xlim = None
+                ylim = None
+            else:
+                xlim = (float(modelbox.wavelength[0]), float(modelbox.wavelength[-1]))
+                ylim = (np.min(modelbox.flux), np.max(modelbox.flux))
+                filters = None
+
+            print(filters)
+            plot_spectrum(
+                boxes=[modelbox],
+                filters=filters,
+                offset=(-0.08, -0.04),
+                scale=None,  # ('log', 'log'),
+                # None,  # (np.min(modelbox.wavelength), np.max(modelbox.wavelength)),  # (0.8, 5.),
+                xlim=xlim,
+                ylim=ylim,
+                title=f'{self.name}',
+                legend={'loc': 'lower right', 'frameon': False, 'fontsize': 12.},
+                output=output_path)

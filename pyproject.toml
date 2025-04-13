@@ -1,3 +1,103 @@
+[project]
+name = "trap"
+authors = [{name = "Matthias Samland", email = "m.samland@mailbox.org"}]
+description = "Detection of exoplanets in direct imaging data by causal regression of temporal systematics"
+readme = "README.rst"
+license = { file = 'LICENSE' }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+]
+requires-python = ">=3.11, <3.13"
+dependencies = [
+    "numpy>=1.22,<3.0", 
+    "scipy",
+    "matplotlib",
+    "numba",
+    "pandas",
+    "scikit-learn",
+    "astropy<7.0",
+    "photutils",
+    "seaborn",
+    "tqdm",
+    "ray[default]",
+    "bottleneck",
+    "natsort",
+    "species@git+https://github.com/tomasstolker/species", 
+]
+dynamic = ['version']
+
+[project.optional-dependencies]
+docs = [
+    "sphinx",
+    "sphinx-automodapi",
+    "numpydoc",
+]
+test = [
+    "pytest",
+    "pytest-doctestplus",
+    "codecov",
+    "pytest-cov",
+    "ruff",
+]
+all = [
+    "ipython",
+    "notebook",
+    "ipywidgets",
+    "ipympl",
+]
+
+[project.urls]
+"Bug Tracker" = "https://github.com/m-samland/trap/issues"
+"Source Code" = "https://github.com/m-samland/trap"
+
+
 [build-system]
-requires = ["setuptools>=42", "wheel", "cython"]
+requires = [
+    "setuptools>=60",
+    "setuptools_scm>=8.0",
+    "wheel",
+    "cython"
+]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "src/trap/_version.py"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 127
+target-version = "py312"
+exclude = [
+    'docs',
+    '*_version.py',
+]
+
+[tool.ruff.lint]
+# Enable Ruff rulesets you like (equivalent to Flake8 + isort, etc.)
+select = ["E", "F", "I"]  # E/F = Flake8 rules, I = isort rules, C90 = McCabe complexity, D = docstrings
+ignore = ["E203", "E501", "E712", "E722", "D100", "D104"] # ignore specific rules (customize as needed)
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+# Ignore specific docstring rules in test files
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
+
+[tool.ruff.lint.mccabe]
+# Flag errors (`C901`) whenever the complexity level exceeds 5.
+max-complexity = 10
+
+[tool.ruff.format]
+quote-style = "double"  # to match Black formatting
+indent-style = "space"
+
+[tool.coverage.run]
+omit = [
+    "_version.py",
+]

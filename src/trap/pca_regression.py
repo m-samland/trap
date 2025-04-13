@@ -4,23 +4,15 @@ Routines used in TRAP
 @author: Matthias Samland
          MPIA Heidelberg
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from scipy import sparse
 
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
 from numba import jit
+from scipy.linalg import cholesky, solve_triangular, svd
 from sklearn import preprocessing
 
-from scipy.linalg import svd
-from scipy.linalg import solve_triangular
-from scipy.linalg import cholesky
-
-
 from . import regressor_selection
-from .embed_shell import ipsh
 
 # __all__ = ['matrix_scaling', 'compute_SVD', 'compute_V_inverse',
 #    'solve_linear_equation_simple', 'detect_bad_frames']

@@ -8,18 +8,20 @@ Routines used in TRAP
 from asyncio import Event
 from typing import Tuple
 
+import dill
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.fft as fft
 import ray
+import scipy.interpolate as sinterp
 from numba import njit
 from numpy.random import default_rng
 from ray.actor import ActorHandle
+from scipy import ndimage
 from scipy.ndimage import spline_filter
 from tqdm import tqdm
 
 from trap import regressor_selection
-from trap.embed_shell import ipsh
 
 
 @ray.remote
@@ -160,7 +162,7 @@ def determine_psf_stampsizes(fwhm, size_in_lamda_over_d=2.2):
     return round_up_to_odd(fwhm * size_in_lamda_over_d * 2.)
 
 
-def prepare_psf(psf_cube, psf_size, filter=True):
+def prepare_psf(psf_cube, psf_size, filter_psf=True):
     psf_list = []
     for idx, psf_image in enumerate(psf_cube):
         psf_image = resize_image_cube(psf_image, int(psf_size[idx]))
@@ -172,7 +174,7 @@ def prepare_psf(psf_cube, psf_size, filter=True):
         mask = np.logical_or(mask_negative, ~mask_psf)
         psf_image[mask] = 0.
         psf_image = np.pad(psf_image, pad_width=[(1,), (1,)], mode='constant', constant_values=0.)
-        if filter:
+        if filter_psf:
             psf_image = spline_filter(psf_image.astype('float64'))
         psf_list.append(psf_image)
     return psf_list
@@ -207,9 +209,8 @@ def resize_arr(arr, newdim):
     if newdim % 2 == 0:
         return arr[dy1 - dy2:dy1 + dy2,
                    dx1 - dx2:dx1 + dx2]
-    else:
-        return arr[dy1 - dy2:dy1 + dy2 + 1,
-                   dx1 - dx2:dx1 + dx2 + 1]
+    return arr[dy1 - dy2:dy1 + dy2 + 1,
+                dx1 - dx2:dx1 + dx2 + 1]
 
 
 def crop_box_from_4D_cube(flux_arr, boxsize, center_yx=None):
@@ -226,10 +227,9 @@ def crop_box_from_4D_cube(flux_arr, boxsize, center_yx=None):
 
     if boxsize % 2 == 0:
         return flux_arr[:, :, int(dy1 - dy2):int(dy1 + dy2),
-                        int(dx1 - dx2):int(dx1 + dx2)]
-    else:
-        return flux_arr[:, :, int(dy1 - dy2):int(dy1 + dy2 + 1),
-                        int(dx1 - dx2):int(dx1 + dx2 + 1)]
+                        int(dx1 - dx2):int(dx1 + dx2)]   
+    return flux_arr[:, :, int(dy1 - dy2):int(dy1 + dy2 + 1),
+                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
 
 
 def crop_box_from_3D_cube(flux_arr, boxsize, center_yx=None):
@@ -247,9 +247,8 @@ def crop_box_from_3D_cube(flux_arr, boxsize, center_yx=None):
     if boxsize % 2 == 0:
         return flux_arr[:, int(dy1 - dy2):int(dy1 + dy2),
                         int(dx1 - dx2):int(dx1 + dx2)]
-    else:
-        return flux_arr[:, int(dy1 - dy2):int(dy1 + dy2 + 1),
-                        int(dx1 - dx2):int(dx1 + dx2 + 1)]
+    return flux_arr[:, int(dy1 - dy2):int(dy1 + dy2 + 1),
+                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
 
 
 def crop_box_from_image(flux_arr, boxsize, center_yx=None):
@@ -267,9 +266,8 @@ def crop_box_from_image(flux_arr, boxsize, center_yx=None):
     if boxsize % 2 == 0:
         return flux_arr[int(dy1 - dy2):int(dy1 + dy2),
                         int(dx1 - dx2):int(dx1 + dx2)]
-    else:
-        return flux_arr[int(dy1 - dy2):int(dy1 + dy2 + 1),
-                        int(dx1 - dx2):int(dx1 + dx2 + 1)]
+    return flux_arr[int(dy1 - dy2):int(dy1 + dy2 + 1),
+                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
 
 
 def resize_image_cube(arr, new_dim):
@@ -370,7 +368,7 @@ def scale_images_sdi(arr, lam, newdim):
     return flux
 
 
-def high_pass_filter(image, cutoff_frequency=0.25):
+def high_pass_filter_hannon(image, cutoff_frequency=0.25):
     image_size = image.shape[0]
     cutoff = image_size / 2. * cutoff_frequency
 
@@ -398,7 +396,7 @@ def high_pass_filter_cube(data, cutoff_frequency=0.25, verbose=False):
         if verbose:
             wave = tqdm(wave)
         for frame_idx, frame in enumerate(wave):
-            filtered_data[wave_idx][frame_idx] = high_pass_filter(
+            filtered_data[wave_idx][frame_idx] = high_pass_filter_hannon(
                 frame, cutoff_frequency)
     return filtered_data
 
@@ -518,8 +516,9 @@ def combine_reduction_regions(small_image, large_image):
 
 
 @njit
-def compute_empirical_correlation_matrix(residuals):
-    n_vectors = residuals.shape[0]
+def compute_empirical_correlation_matrix_original(residuals):
+    # residuals: number of wavelengths x number of pixels
+    n_vectors = residuals.shape[0] 
     psi_ij = np.zeros((n_vectors, n_vectors), dtype='float64')
     for i in range(n_vectors):
         for j in range(i, n_vectors):
@@ -530,6 +529,118 @@ def compute_empirical_correlation_matrix(residuals):
     psi_ij = psi_ij + psi_ij.T - np.diag(np.ones(n_vectors))
 
     return psi_ij
+
+
+@njit
+def compute_empirical_correlation_matrix(residuals, eps=1e-15):
+    """
+    Compute the empirical correlation matrix for a collection of row-vectors.
+    Each row is treated as a distinct vector, so the output shape is (n_rows, n_rows).
+    """
+    n_vectors, n_features = residuals.shape
+
+    # Precompute L2 norms of each row
+    norms = np.empty(n_vectors, dtype=np.float64)
+    for i in range(n_vectors):
+        val = 0.0
+        for k in range(n_features):
+            val += residuals[i, k] * residuals[i, k]
+        norms[i] = np.sqrt(val)
+
+    # Initialize correlation matrix
+    corr_matrix = np.zeros((n_vectors, n_vectors), dtype=np.float64)
+
+    # Fill upper triangle (including diagonal)
+    for i in range(n_vectors):
+        for j in range(i, n_vectors):
+            dot_ij = 0.0
+            for k in range(n_features):
+                dot_ij += residuals[i, k] * residuals[j, k]
+            denom = norms[i] * norms[j]
+            if denom < eps:
+                corr_matrix[i, j] = 0.0  # or np.nan, depending on your preference
+            else:
+                corr_matrix[i, j] = dot_ij / denom
+
+    # Mirror the upper triangle to the lower triangle
+    for i in range(n_vectors):
+        for j in range(i):
+            corr_matrix[i, j] = corr_matrix[j, i]
+
+    return corr_matrix
+
+
+@njit
+def compute_empirical_correlation_matrix_pearsson(residuals, eps=1e-15):
+    """
+    Compute the empirical Pearson correlation matrix for a collection of row-vectors.
+    Each row is treated as an independent vector, so the output shape is (n_rows, n_rows).
+    
+    This version matches what np.corrcoef(..., rowvar=True) does:
+    (1) Subtract the mean of each row.
+    (2) Divide by the standard deviation of each row.
+    (3) Compute the dot product among normalized rows.
+    
+    Parameters
+    ----------
+    residuals : np.ndarray, shape (n_vectors, n_features)
+        Each row is treated as a separate vector.
+    eps : float
+        Small positive constant to avoid zero divisions.
+    
+    Returns
+    -------
+    corr_matrix : np.ndarray, shape (n_vectors, n_vectors)
+        Pearson correlation among the row vectors.
+    """
+    n_vectors, n_features = residuals.shape
+
+    # Allocate space for mean- and std-subtracted data
+    # We'll create a copy to avoid altering the original array in-place
+    data_centered = np.empty_like(residuals, dtype=np.float64)
+    row_stds = np.empty(n_vectors, dtype=np.float64)
+
+    # 1) For each row, compute mean, subtract it, and compute the standard deviation
+    for i in range(n_vectors):
+        # Compute mean
+        mean_val = 0.0
+        for k in range(n_features):
+            mean_val += residuals[i, k]
+        mean_val /= n_features
+        
+        # Subtract mean
+        sum_sq = 0.0
+        for k in range(n_features):
+            centered_val = residuals[i, k] - mean_val
+            data_centered[i, k] = centered_val
+            sum_sq += centered_val * centered_val
+        
+        # Standard deviation
+        row_stds[i] = np.sqrt(sum_sq)  # population vs. sample doesn't matter for correlation shape
+
+    # 2) Initialize the correlation matrix
+    corr_matrix = np.zeros((n_vectors, n_vectors), dtype=np.float64)
+
+    # 3) Fill upper triangle (including diagonal)
+    for i in range(n_vectors):
+        for j in range(i, n_vectors):
+            denom = row_stds[i] * row_stds[j]
+            # If either row has near-zero std, set correlation to 0 to avoid inf/nan
+            if denom < eps:
+                corr_matrix[i, j] = 0.0
+            else:
+                # Dot product of the mean-subtracted data
+                dot_ij = 0.0
+                for k in range(n_features):
+                    dot_ij += data_centered[i, k] * data_centered[j, k]
+                corr_matrix[i, j] = dot_ij / denom
+
+    # Mirror the upper triangle to the lower triangle
+    for i in range(n_vectors):
+        for j in range(i):
+            corr_matrix[i, j] = corr_matrix[j, i]
+
+    return corr_matrix
 
 
 def matern32_kernel(distance, length_scale):
@@ -609,3 +720,39 @@ def subtract_angles(lhs, rhs):
     """
 
     return np.fmod((lhs - rhs) + 180. * 3, 2 * 180.) - 180.
+
+
+def save_object(obj, filename):
+    """
+    Save an object to a pickle file using dill.
+
+    Parameters
+    ----------
+    obj : object
+        The object to be saved.
+    filename : str
+        The name of the file where the object will be saved.
+    """
+
+    with open(filename, 'wb') as f:
+        dill.dump(obj, f)
+
+
+def load_object(filename):
+    """
+    Load an object from a pickle file using dill.
+
+    Parameters
+    ----------
+    filename : str
+        The name of the file from which the object will be loaded.
+
+    Returns
+    -------
+    obj : object
+        The object that was loaded from the file.
+    """
+
+    with open(filename, 'rb') as f:
+        obj = dill.load(f)
+    return obj
