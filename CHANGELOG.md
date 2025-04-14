@@ -46,6 +46,6 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Fixed
 - No known issues.
 
-[Unreleased]: https://github.com/m-samland/spherical/compare/v1.1.0...HEAD 
+[Unreleased]: https://github.com/m-samland/trap/compare/v1.1.0...HEAD 
 [1.1.0]: https://github.com/m-samland/trap/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/m-samland/trap/releases/tag/v1.0.0
