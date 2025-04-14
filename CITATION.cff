@@ -1,0 +1,56 @@
+cff-version: 1.2.0
+message: "If you use TRAP in your research, please cite the following paper:"
+title: "TRAP: a temporal systematics model for improved direct detection of exoplanets at small angular separations"
+authors:
+  - family-names: Samland
+    given-names: Matthias
+    orcid: https://orcid.org/0000-0001-9992-4067
+  - family-names: Bouwman
+    given-names: Jeroen
+  - family-names: Hogg
+    given-names: David W.
+  - family-names: Brandner
+    given-names: Wolfgang
+  - family-names: Henning
+    given-names: Thomas
+  - family-names: Janson
+    given-names: Markus
+abstract: >
+  TRAP is a novel algorithm for detecting exoplanets in high-contrast imaging data,
+  based on modeling temporal systematics. By working in the time domain rather than 
+  the spatial domain, TRAP enables improved detection performance, especially at small 
+  angular separations.
+date-released: 2021-02-01
+doi: 10.1051/0004-6361/201937308
+license: MIT
+repository-code: https://github.com/m-samland/trap
+keywords:
+  - astronomy
+  - exoplanets
+  - high-contrast imaging
+  - direct imaging
+  - data analysis
+  - temporal modeling
+  - Python
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Samland
+      given-names: Matthias
+    - family-names: Bouwman
+      given-names: Jeroen
+    - family-names: Hogg
+      given-names: David W.
+    - family-names: Brandner
+      given-names: Wolfgang
+    - family-names: Henning
+      given-names: Thomas
+    - family-names: Janson
+      given-names: Markus
+  title: "TRAP: a temporal systematics model for improved direct detection of exoplanets at small angular separations"
+  journal: Astronomy & Astrophysics
+  volume: 646
+  page: A24
+  year: 2021
+  doi: 10.1051/0004-6361/201937308
+  url: https://ui.adsabs.harvard.edu/abs/2021A&A...646A..24S
