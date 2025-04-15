@@ -1,0 +1,16 @@
+# Include essential project files
+include README.md
+include LICENSE
+include pyproject.toml
+include CHANGELOG.md
+include CITATION.cff
+
+# Include all Python source files
+recursive-include src *.py
+
+# Include tutorial notebooks
+include tutorial.ipynb
+
+# Include documentation and example files
+recursive-include docs *
+recursive-include examples *
