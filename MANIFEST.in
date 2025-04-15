@@ -11,6 +11,8 @@ recursive-include src *.py
 # Include tutorial notebooks
 include tutorial.ipynb
 
-# Include documentation and example files
+# Include documentation
 recursive-include docs *
-recursive-include examples *
+
+# Exclude example files
+prune examples
