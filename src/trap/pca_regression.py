@@ -5,6 +5,8 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import logging
+
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
@@ -13,6 +15,8 @@ from scipy.linalg import cholesky, solve_triangular, svd
 from sklearn import preprocessing
 
 from . import regressor_selection
+
+logger = logging.getLogger(__name__)
 
 # __all__ = ['matrix_scaling', 'compute_SVD', 'compute_V_inverse',
 #    'solve_linear_equation_simple', 'detect_bad_frames']
@@ -264,7 +268,7 @@ def remove_bad_frames(
         bad_frame_indices.append(bad_frame_indices_in_iteration)
         data = np.delete(data, bad_frame_indices_in_iteration, axis=0)
         if verbose:
-            print('Iteration: {} Bad frames: {}'.format(i, bad_frame_indices_in_iteration))
+            logger.debug("Iteration: %s Bad frames: %s", i, bad_frame_indices_in_iteration)
 
     return data, bad_frame_indices
 
