@@ -7,16 +7,15 @@ Routines used in TRAP
 
 import dataclasses
 import datetime
-import logging
 import multiprocessing
 import os
 from collections import OrderedDict
 
 import astropy.units as u
 import numpy as np
-import ray
 from astropy.io import fits
 from astropy.stats import mad_std
+from joblib import Parallel, delayed, parallel_config
 from tqdm.auto import tqdm
 
 from trap import (
@@ -24,13 +23,14 @@ from trap import (
     makesource,
     regression,
     regressor_selection,
+    shared_arrays,
 )
 from trap.parameters import (
     _to_reduction_config,
     build_runtime_state,
 )
+from trap.shared_arrays import SharedArrayRef, SharedArrayStore
 from trap.utils import (
-    ProgressBar,
     crop_box_from_3D_cube,
     crop_box_from_image,
     determine_psf_stampsizes,
@@ -39,11 +39,7 @@ from trap.utils import (
     shuffle_and_equalize_relative_positions,
 )
 
-logging.getLogger("ray").setLevel(logging.WARNING)
 
-
-
-# @ ray.remote
 def trap_one_position(
     guess_position,
     data,
@@ -133,7 +129,7 @@ def trap_one_position(
 
     if runtime.coronagraph_transmission_pix is not None:
         separation_pix = np.hypot(signal_position[0], signal_position[1])
-        # amplitude_modulation is shared read-only via ray.put: copy, never mutate.
+        # amplitude_modulation is shared read-only across positions: copy, never mutate.
         amplitude_modulation = amplitude_modulation * makesource.coronagraph_throughput_factor(
             separation_pix, runtime.coronagraph_transmission_pix
         )
@@ -616,12 +612,23 @@ def run_trap_search(
             6) Deviation from `true_contrast` in sigma
     """
 
-    data = data.astype("float64")
+    # `data`/`inverse_variance` may be shared-store references (dumped as
+    # float64); resolve to read-only memmap views for driver-side use.
+    data_ref = data if isinstance(data, SharedArrayRef) else None
+    inverse_variance_ref = (
+        inverse_variance if isinstance(inverse_variance, SharedArrayRef) else None
+    )
+    data = shared_arrays.resolve(data)
+    inverse_variance = shared_arrays.resolve(inverse_variance)
+
+    data = data.astype("float64", copy=data_ref is None)
     flux_psf = flux_psf.astype("float64")
     pa = pa.astype("float64")
 
     if inverse_variance is not None:
-        inverse_variance = inverse_variance.astype("float64")
+        inverse_variance = inverse_variance.astype(
+            "float64", copy=inverse_variance_ref is None
+        )
 
     oversampling = reduction_parameters.oversampling
     yx_dim = (data.shape[-2], data.shape[-1])
@@ -711,17 +718,10 @@ def run_trap_search(
     )
     print("Number of positions: {}".format(len(relative_coords)))
     ncpus = runtime.ncpus if runtime is not None else (reduction_parameters.ncpus or multiprocessing.cpu_count())
+    ncpus = min(ncpus, multiprocessing.cpu_count())
     if reduction_parameters.use_multiprocess:
-        num_ticks = len(relative_coords)
-        if use_progress_bar:
-            pb = ProgressBar(num_ticks)
-            actor = pb.actor
-        else:
-            pb = None
-            actor = None
-
         # Use more chunks than CPUs to prevent long idle time in case one job finishes quicker
-        number_of_chunks = round(ncpus * 2)
+        number_of_chunks = round(ncpus * 8)
 
         (
             search_coordinates,
@@ -742,41 +742,54 @@ def run_trap_search(
         )
 
         a = datetime.datetime.now()
-        data_id = ray.put(data)
-        inverse_variance_id = ray.put(inverse_variance)
-        flux_psf_id = ray.put(flux_psf)
-        pa_id = ray.put(pa)
-        known_companion_mask_id = ray.put(known_companion_mask)
-        amplitude_modulation_id = ray.put(amplitude_modulation)
-        bad_pixel_mask_id = ray.put(bad_pixel_mask)
-        contrast_map_id = ray.put(contrast_map)
-        result_ids = []
-        for region in relative_coords_regions:
-            result_ids.append(
-                trap_search_region.remote(
-                    region,
-                    data=data_id,
-                    inverse_variance=inverse_variance_id,
-                    flux_psf=flux_psf_id,
-                    pa=pa_id,
-                    reduction_parameters=reduction_parameters,
-                    runtime=runtime,
-                    known_companion_mask=known_companion_mask_id,
-                    bad_pixel_mask=bad_pixel_mask_id,
-                    yx_center=yx_center,
-                    yx_center_injection=yx_center_injection,
-                    amplitude_modulation=amplitude_modulation_id,
-                    contrast_map=contrast_map_id,
-                    readnoise=readnoise,
-                    pba=actor,
-                )
+        own_store = None
+        if data_ref is None:
+            # Standalone call without a pre-dumped store: dump the large
+            # arrays here so workers memmap them instead of unpickling copies.
+            required_bytes = data.nbytes
+            if inverse_variance is not None:
+                required_bytes += inverse_variance.nbytes
+            own_store = SharedArrayStore(
+                scratch_dir=getattr(reduction_parameters, "scratch_dir", None),
+                required_bytes=required_bytes,
             )
-        if pb is not None:
-            pb.print_until_done()
-        results = ray.get(result_ids)
-        if actor is not None:
-            results == list(range(num_ticks))
-            num_ticks == ray.get(actor.get_counter.remote())
+            data_ref = own_store.dump("data", data)
+            if inverse_variance is not None:
+                inverse_variance_ref = own_store.dump(
+                    "inverse_variance", inverse_variance
+                )
+        try:
+            with parallel_config(backend="loky", inner_max_num_threads=1):
+                result_generator = Parallel(n_jobs=ncpus, return_as="generator")(
+                    delayed(trap_search_region)(
+                        region,
+                        data=data_ref,
+                        inverse_variance=inverse_variance_ref,
+                        flux_psf=flux_psf,
+                        pa=pa,
+                        reduction_parameters=reduction_parameters,
+                        runtime=runtime,
+                        known_companion_mask=known_companion_mask,
+                        bad_pixel_mask=bad_pixel_mask,
+                        yx_center=yx_center,
+                        yx_center_injection=yx_center_injection,
+                        amplitude_modulation=amplitude_modulation,
+                        contrast_map=contrast_map,
+                        readnoise=readnoise,
+                    )
+                    for region in relative_coords_regions
+                )
+                results = list(
+                    tqdm(
+                        result_generator,
+                        total=len(relative_coords_regions),
+                        unit="chunk",
+                        disable=not use_progress_bar,
+                    )
+                )
+        finally:
+            if own_store is not None:
+                own_store.cleanup()
         results = [item for sublist in results for item in sublist]
 
         for idx, result in enumerate(results):
@@ -913,12 +926,23 @@ def multi_position_cross_validation(
             6) Deviation from `true_contrast` in sigma
     """
 
-    data = data.astype("float64")
+    # `data`/`inverse_variance` may be shared-store references (dumped as
+    # float64); resolve to read-only memmap views for driver-side use.
+    data_ref = data if isinstance(data, SharedArrayRef) else None
+    inverse_variance_ref = (
+        inverse_variance if isinstance(inverse_variance, SharedArrayRef) else None
+    )
+    data = shared_arrays.resolve(data)
+    inverse_variance = shared_arrays.resolve(inverse_variance)
+
+    data = data.astype("float64", copy=data_ref is None)
     flux_psf = flux_psf.astype("float64")
     pa = pa.astype("float64")
 
     if inverse_variance is not None:
-        inverse_variance = inverse_variance.astype("float64")
+        inverse_variance = inverse_variance.astype(
+            "float64", copy=inverse_variance_ref is None
+        )
 
     yx_dim = (data.shape[-2], data.shape[-1])
     if yx_center is None:
@@ -928,48 +952,52 @@ def multi_position_cross_validation(
         amplitude_modulation = np.ones(data.shape[0])
 
     print("Number of positions: {}".format(len(relative_coords)))
+    ncpus = runtime.ncpus if runtime is not None else (reduction_parameters.ncpus or multiprocessing.cpu_count())
+    ncpus = min(ncpus, multiprocessing.cpu_count())
     if reduction_parameters.use_multiprocess:
-        num_ticks = len(relative_coords)
-        pb = ProgressBar(num_ticks)
-        actor = pb.actor
-
         a = datetime.datetime.now()
-        data_id = ray.put(data)
-        inverse_variance_id = ray.put(inverse_variance)
-        flux_psf_id = ray.put(flux_psf)
-        pa_id = ray.put(pa)
-        known_companion_mask_id = ray.put(known_companion_mask)
-        amplitude_modulation_id = ray.put(amplitude_modulation)
-        bad_pixel_mask_id = ray.put(bad_pixel_mask)
-        contrast_map_id = ray.put(contrast_map)
-        result_ids = []
-
-        for coords in relative_coords:
-            result_ids.append(
-                trap_search_region.remote(
-                    coords,
-                    data=data_id,
-                    inverse_variance=inverse_variance_id,
-                    flux_psf=flux_psf_id,
-                    pa=pa_id,
-                    reduction_parameters=reduction_parameters,
-                    runtime=runtime,
-                    known_companion_mask=known_companion_mask_id,
-                    bad_pixel_mask=bad_pixel_mask_id,
-                    yx_center=yx_center,
-                    yx_center_injection=yx_center_injection,
-                    amplitude_modulation=amplitude_modulation_id,
-                    contrast_map=contrast_map_id,
-                    readnoise=readnoise,
-                    cross_validation=True,
-                    pba=actor,
-                )
+        own_store = None
+        if data_ref is None:
+            # Standalone call without a pre-dumped store: dump the large
+            # arrays here so workers memmap them instead of unpickling copies.
+            required_bytes = data.nbytes
+            if inverse_variance is not None:
+                required_bytes += inverse_variance.nbytes
+            own_store = SharedArrayStore(
+                scratch_dir=getattr(reduction_parameters, "scratch_dir", None),
+                required_bytes=required_bytes,
             )
-
-        pb.print_until_done()
-        results = ray.get(result_ids)
-        results == list(range(num_ticks))
-        num_ticks == ray.get(actor.get_counter.remote())
+            data_ref = own_store.dump("data", data)
+            if inverse_variance is not None:
+                inverse_variance_ref = own_store.dump(
+                    "inverse_variance", inverse_variance
+                )
+        try:
+            with parallel_config(backend="loky", inner_max_num_threads=1):
+                result_generator = Parallel(n_jobs=ncpus, return_as="generator")(
+                    delayed(trap_search_region)(
+                        coords,
+                        data=data_ref,
+                        inverse_variance=inverse_variance_ref,
+                        flux_psf=flux_psf,
+                        pa=pa,
+                        reduction_parameters=reduction_parameters,
+                        runtime=runtime,
+                        known_companion_mask=known_companion_mask,
+                        bad_pixel_mask=bad_pixel_mask,
+                        yx_center=yx_center,
+                        yx_center_injection=yx_center_injection,
+                        amplitude_modulation=amplitude_modulation,
+                        contrast_map=contrast_map,
+                        readnoise=readnoise,
+                        cross_validation=True,
+                    )
+                    for coords in relative_coords
+                )
+                results = list(tqdm(result_generator, total=len(relative_coords)))
+        finally:
+            if own_store is not None:
+                own_store.cleanup()
         results = [item for sublist in results for item in sublist]
 
         b = datetime.datetime.now()
@@ -1010,7 +1038,6 @@ def multi_position_cross_validation(
     return results
 
 
-@ray.remote
 def trap_search_region(
     relative_coords,
     data,
@@ -1028,7 +1055,6 @@ def trap_search_region(
     contrast_map=None,
     readnoise=0.0,
     cross_validation=False,
-    pba=None,
 ):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
@@ -1082,6 +1108,11 @@ def trap_search_region(
             6) Deviation from `true_contrast` in sigma
     """
 
+    # In worker processes the large arrays arrive as shared-store references;
+    # resolve them to read-only memmaps (plain arrays pass through).
+    data = shared_arrays.resolve(data)
+    inverse_variance = shared_arrays.resolve(inverse_variance)
+
     sub_region_results = []
     for idx, coords in enumerate(relative_coords):
         result = trap_one_position(
@@ -1102,8 +1133,6 @@ def trap_search_region(
             cross_validation=cross_validation,
         )
         sub_region_results.append(result)
-        if pba is not None:
-            pba.update.remote(1)
     return sub_region_results
 
 
@@ -1117,6 +1146,132 @@ def make_reduction_header(
     yx_known_companion_position,
 ):
     raise NotImplementedError()
+
+
+def _wavelength_geometry(
+    wavelength_index,
+    data_shape,
+    data_crop_size,
+    yx_center_full,
+    yx_center_injection_full,
+):
+    """Output-frame center and per-frame injection centers for one wavelength.
+
+    Single source of truth for the geometry used both when filling the
+    shared-array store and inside the reduction loops of
+    `run_complete_reduction`.
+    """
+    # This block defines yx_center which gives the center of the output file
+    # based on cropping or no cropping
+    if yx_center_full is None:
+        if data_crop_size is None:
+            yx_center = np.array((data_shape[-2] // 2.0, data_shape[-1] // 2.0))
+        else:
+            yx_center = np.array((data_crop_size // 2.0, data_crop_size // 2.0))
+    else:
+        if data_crop_size is None:
+            yx_center = np.array(yx_center_full[wavelength_index])
+        else:
+            yx_center = np.array((data_crop_size // 2.0, data_crop_size // 2.0))
+
+    yx_center_injection = yx_center
+    if yx_center_injection_full is not None:
+        try:
+            if yx_center_injection_full.ndim == 3:
+                if data_crop_size is None:
+                    yx_center_injection = yx_center_injection_full[
+                        wavelength_index, :
+                    ]
+                else:
+                    # Image centers in cropped frame
+                    yx_center_injection = (
+                        yx_center_injection_full[wavelength_index, :]
+                        - np.round(yx_center_full[wavelength_index])
+                        + yx_center
+                    )
+                    # Non-rounded image center in cropped frame
+                    yx_center = np.nanmedian(yx_center_injection, axis=0)
+        except AttributeError:
+            pass
+    return yx_center, yx_center_injection
+
+
+def _prepare_wavelength_slice(
+    wavelength_index,
+    data_full,
+    inverse_variance_full,
+    flux_psf,
+    pa,
+    reduction_parameters,
+    runtime,
+    data_crop_size,
+    yx_center_full,
+    yx_center_injection,
+    amplitude_modulation,
+):
+    """Crop the data (and inverse variance) for one wavelength and remove
+    known companions if configured.
+
+    Single source of truth for the per-wavelength data consumed by the
+    reduction: used to fill the shared-array store before the loops of
+    `run_complete_reduction` (parallel path) and inside the loops (serial
+    and single-position paths).
+    """
+    if reduction_parameters.inject_fake:
+        # Return copy of data when injecting fake to not contaminate data
+        if data_crop_size is not None:
+            data = crop_box_from_3D_cube(
+                data_full[wavelength_index],
+                data_crop_size,
+                center_yx=np.round(yx_center_full[wavelength_index]),
+            ).copy()
+        else:
+            data = data_full[wavelength_index].copy()
+    else:
+        if data_crop_size is not None:
+            data = crop_box_from_3D_cube(
+                data_full[wavelength_index],
+                data_crop_size,
+                center_yx=np.round(yx_center_full[wavelength_index]),
+            )
+        else:
+            data = data_full[wavelength_index]
+
+    if inverse_variance_full is not None:
+        inverse_variance = crop_box_from_3D_cube(
+            inverse_variance_full[wavelength_index],
+            data_crop_size,
+            center_yx=np.round(yx_center_full[wavelength_index]),
+        ).copy()
+    else:
+        inverse_variance = None
+
+    if reduction_parameters.remove_known_companions:
+        # NOTE: This currently doesn't remove photon noise from variance map
+        # NOTE: Should change to faster implementation of `inject_model_into_data`
+
+        for companion_index, kc_contrast in enumerate(
+            runtime.known_companion_contrast[wavelength_index]
+        ):
+            # NOTE: Check format of known_companion_contrast and amplitude_modulation
+            kc_contrast = kc_contrast * amplitude_modulation
+
+            data = makesource.addsource(
+                data,
+                runtime.yx_known_companion_position[companion_index],
+                pa,
+                flux_psf,
+                image_center=yx_center_injection,
+                norm=-1 * kc_contrast,
+                jitter=0,
+                poisson_noise=False,
+                yx_anamorphism=runtime.yx_anamorphism,
+                right_handed=reduction_parameters.right_handed,
+                subpixel=True,
+                verbose=False,
+            )
+
+    return data, inverse_variance
 
 
 def run_complete_reduction(
@@ -1372,9 +1527,6 @@ def run_complete_reduction(
         flux_psf_full.shape[0], data_full.shape[0], len(instrument.wavelengths)
     )
 
-    if reduction_parameters.reduce_single_position is True:
-        all_results = OrderedDict()
-
     # Loop over reductions for different numbers of components
     # Check if number of components is iterable, if not make it iterable
     try:
@@ -1383,14 +1535,150 @@ def run_complete_reduction(
         number_of_components = [number_of_components]
         temporal_components_fraction = [temporal_components_fraction]
 
+    if wavelength_indices is None:
+        wavelength_indices = np.arange(data_full.shape[0])
+
+    # Dump the preprocessed per-wavelength data once, before the
+    # component/wavelength loops: the preprocessing is identical for every
+    # component fraction, and workers memmap the store read-only instead of
+    # receiving array copies.
+    shared_store = None
+    data_refs = {}
+    inverse_variance_refs = {}
     if (
         reduction_parameters.use_multiprocess
         and not reduction_parameters.reduce_single_position
     ):
-        ray.init(
-            num_cpus=min(runtime.ncpus, multiprocessing.cpu_count()),
-            # log_to_driver=False,
-            logging_level=logging.WARNING)
+        if data_crop_size is None:
+            yx_shape = (data_full.shape[-2], data_full.shape[-1])
+        else:
+            yx_shape = (data_crop_size, data_crop_size)
+        n_arrays = 2 if inverse_variance_full is not None else 1
+        required_bytes = int(
+            n_arrays
+            * len(wavelength_indices)
+            * data_full.shape[1]
+            * np.prod(yx_shape)
+            * np.dtype("float64").itemsize
+        )
+        shared_store = SharedArrayStore(
+            scratch_dir=reduction_parameters.scratch_dir,
+            required_bytes=required_bytes,
+        )
+        print("Shared array store: {}".format(shared_store.directory))
+        for wavelength_index in wavelength_indices:
+            flux_psf = psf_stamps[wavelength_index].astype("float64")
+            yx_center, yx_center_injection = _wavelength_geometry(
+                wavelength_index,
+                data_shape=data_full.shape,
+                data_crop_size=data_crop_size,
+                yx_center_full=yx_center_full,
+                yx_center_injection_full=yx_center_injection_full,
+            )
+            # Wavelengths with non-finite PSF or centers are skipped by the
+            # reduction loop below; skip dumping them as well.
+            if np.any(~np.isfinite(flux_psf)) or np.any(
+                ~np.isfinite(yx_center_injection)
+            ):
+                continue
+            if amplitude_modulation_full is None:
+                amplitude_modulation = np.ones(data_full.shape[1])
+            else:
+                amplitude_modulation = amplitude_modulation_full[wavelength_index, :]
+            data, inverse_variance = _prepare_wavelength_slice(
+                wavelength_index,
+                data_full=data_full,
+                inverse_variance_full=inverse_variance_full,
+                flux_psf=flux_psf,
+                pa=pa,
+                reduction_parameters=reduction_parameters,
+                runtime=runtime,
+                data_crop_size=data_crop_size,
+                yx_center_full=yx_center_full,
+                yx_center_injection=yx_center_injection,
+                amplitude_modulation=amplitude_modulation,
+            )
+            # Workers consume float64 (the cast `run_trap_search` would
+            # otherwise apply); dump that representation directly.
+            data_refs[wavelength_index] = shared_store.dump(
+                "data_lam{:03d}".format(wavelength_index),
+                data.astype("float64", copy=False),
+            )
+            if inverse_variance is not None:
+                inverse_variance_refs[wavelength_index] = shared_store.dump(
+                    "inverse_variance_lam{:03d}".format(wavelength_index),
+                    inverse_variance.astype("float64", copy=False),
+                )
+            else:
+                inverse_variance_refs[wavelength_index] = None
+
+    try:
+        return _run_reduction_loops(
+            number_of_components=number_of_components,
+            temporal_components_fraction=temporal_components_fraction,
+            wavelength_indices=wavelength_indices,
+            data_full=data_full,
+            inverse_variance_full=inverse_variance_full,
+            psf_stamps=psf_stamps,
+            pa=pa,
+            instrument=instrument,
+            reduction_parameters=reduction_parameters,
+            runtime=runtime,
+            stamp_sizes=stamp_sizes,
+            stamp_sizes_reduction=stamp_sizes_reduction,
+            yx_center_full=yx_center_full,
+            yx_center_injection_full=yx_center_injection_full,
+            amplitude_modulation_full=amplitude_modulation_full,
+            bad_pixel_mask_full=bad_pixel_mask_full,
+            data_crop_size=data_crop_size,
+            result_folder=result_folder,
+            prefix=prefix,
+            cross_validation=cross_validation,
+            overwrite=overwrite,
+            use_progress_bar=use_progress_bar,
+            shared_store=shared_store,
+            data_refs=data_refs,
+            inverse_variance_refs=inverse_variance_refs,
+        )
+    finally:
+        if shared_store is not None:
+            shared_store.cleanup()
+
+
+def _run_reduction_loops(
+    number_of_components,
+    temporal_components_fraction,
+    wavelength_indices,
+    data_full,
+    inverse_variance_full,
+    psf_stamps,
+    pa,
+    instrument,
+    reduction_parameters,
+    runtime,
+    stamp_sizes,
+    stamp_sizes_reduction,
+    yx_center_full,
+    yx_center_injection_full,
+    amplitude_modulation_full,
+    bad_pixel_mask_full,
+    data_crop_size,
+    result_folder,
+    prefix,
+    cross_validation,
+    overwrite,
+    use_progress_bar,
+    shared_store,
+    data_refs,
+    inverse_variance_refs,
+):
+    """Component/wavelength loops of `run_complete_reduction`.
+
+    Separated out so the shared-array store is cleaned up in a single
+    ``try/finally`` regardless of which internal path returns.
+    """
+    if reduction_parameters.reduce_single_position is True:
+        all_results = OrderedDict()
 
     for comp_index, ncomp in enumerate(number_of_components):
         print(
@@ -1399,10 +1687,6 @@ def run_complete_reduction(
 
         if reduction_parameters.reduce_single_position:
             wavelength_results = OrderedDict()
-        number_of_wavelengths = data_full.shape[0]
-
-        if wavelength_indices is None:
-            wavelength_indices = np.arange(number_of_wavelengths)
 
         # Loop over reduction for different wavelengths
         for (
@@ -1518,21 +1802,15 @@ def run_complete_reduction(
             #         ),
             #     )
 
-            # This block defines yx_center which gives the center of the output file
-            # based on cropping or no cropping
-            if yx_center_full is None:
-                if data_crop_size is None:
-                    yx_center = np.array(
-                        (data_full.shape[-2] // 2.0, data_full.shape[-1] // 2.0)
-                    )
-                else:
-                    yx_center = np.array((data_crop_size // 2.0, data_crop_size // 2.0))
-            else:
-                # try:
-                if data_crop_size is None:
-                    yx_center = np.array(yx_center_full[wavelength_index])
-                else:
-                    yx_center = np.array((data_crop_size // 2.0, data_crop_size // 2.0))
+            # Output-frame center and per-frame injection centers for this
+            # wavelength (shared with the store pre-dump pass).
+            yx_center, yx_center_injection = _wavelength_geometry(
+                wavelength_index,
+                data_shape=data_full.shape,
+                data_crop_size=data_crop_size,
+                yx_center_full=yx_center_full,
+                yx_center_injection_full=yx_center_injection_full,
+            )
 
             # Make companion mask before cropping to be consistent
             # Do this for each wavelength separately to account for PSF size
@@ -1573,35 +1851,6 @@ def run_complete_reduction(
             else:
                 known_companion_mask = None
 
-            if reduction_parameters.inject_fake:
-                # Return copy of data when injecting fake to not contaminate data
-                if data_crop_size is not None:
-                    data = crop_box_from_3D_cube(
-                        data_full[wavelength_index],
-                        data_crop_size,
-                        center_yx=np.round(yx_center_full[wavelength_index]),
-                    ).copy()
-                else:
-                    data = data_full[wavelength_index].copy()
-            else:
-                if data_crop_size is not None:
-                    data = crop_box_from_3D_cube(
-                        data_full[wavelength_index],
-                        data_crop_size,
-                        center_yx=np.round(yx_center_full[wavelength_index]),
-                    )
-                else:
-                    data = data_full[wavelength_index]
-
-            if inverse_variance_full is not None:
-                inverse_variance = crop_box_from_3D_cube(
-                    inverse_variance_full[wavelength_index],
-                    data_crop_size,
-                    center_yx=np.round(yx_center_full[wavelength_index]),
-                ).copy()
-            else:
-                inverse_variance = None
-
             flux_psf = psf_stamps[wavelength_index].astype("float64")
 
             if bad_pixel_mask_full is None:
@@ -1623,29 +1872,6 @@ def run_complete_reduction(
                         raise ValueError(
                             "Bad pixel mask, must either be one image or a number of images corresponding to wavelength"
                         )
-                except AttributeError:
-                    pass
-
-            if yx_center_injection_full is None:
-                yx_center_injection = yx_center
-            else:
-                try:
-                    if yx_center_injection_full.ndim == 3:
-                        if data_crop_size is None:
-                            yx_center_injection = yx_center_injection_full[
-                                wavelength_index, :
-                            ]
-                        else:
-                            # Image centers in cropped frame
-                            yx_center_injection = (
-                                yx_center_injection_full[wavelength_index, :]
-                                - np.round(yx_center_full[wavelength_index])
-                                + yx_center
-                            )
-                            # np.round(yx_center_full[wavelength_index]) - yx_center_injection_full[:, wavelength_index] \
-                            # + yx_center
-                            # Non-rounded image center in cropped frame
-                            yx_center = np.nanmedian(yx_center_injection, axis=0)
                 except AttributeError:
                     pass
 
@@ -1696,32 +1922,25 @@ def run_complete_reduction(
                 )
                 continue
 
-            if reduction_parameters.remove_known_companions:
-                # NOTE: This currently doesn't remove photon noise from variance map
-                # NOTE: Should change to faster implementation of `inject_model_into_data`
-
-                for companion_index, kc_contrast in enumerate(
-                    runtime.known_companion_contrast[wavelength_index]
-                ):
-                    # NOTE: Check format of known_companion_contrast and amplitude_modulation
-                    kc_contrast = kc_contrast * amplitude_modulation
-
-                    data = makesource.addsource(
-                        data,
-                        runtime.yx_known_companion_position[
-                            companion_index
-                        ],
-                        pa,
-                        flux_psf,
-                        image_center=yx_center_injection,
-                        norm=-1 * kc_contrast,
-                        jitter=0,
-                        poisson_noise=False,
-                        yx_anamorphism=runtime.yx_anamorphism,
-                        right_handed=reduction_parameters.right_handed,
-                        subpixel=True,
-                        verbose=False,
-                    )
+            if shared_store is not None and wavelength_index in data_refs:
+                # Preprocessed data was dumped to the shared store before the
+                # loops; pass references so workers memmap it read-only.
+                data = data_refs[wavelength_index]
+                inverse_variance = inverse_variance_refs[wavelength_index]
+            else:
+                data, inverse_variance = _prepare_wavelength_slice(
+                    wavelength_index,
+                    data_full=data_full,
+                    inverse_variance_full=inverse_variance_full,
+                    flux_psf=flux_psf,
+                    pa=pa,
+                    reduction_parameters=reduction_parameters,
+                    runtime=runtime,
+                    data_crop_size=data_crop_size,
+                    yx_center_full=yx_center_full,
+                    yx_center_injection=yx_center_injection,
+                    amplitude_modulation=amplitude_modulation,
+                )
 
             print("PSF Size: {}".format(runtime.reduction_mask_psf_size))
             if reduction_parameters.reduce_single_position:
@@ -1800,8 +2019,7 @@ def run_complete_reduction(
                     scores = mad_std(np.array(ncomp_residuals), axis=3)
                     best_scores = np.argmin(scores, axis=1)
                     median_best_scores = np.median(best_scores, axis=1)
-                    ray.shutdown()
-                    
+
                     return ncomp_residuals, scores, best_scores, median_best_scores
                     
                 (
@@ -1849,12 +2067,6 @@ def run_complete_reduction(
             all_results[
                 "{}".format(temporal_components_fraction[comp_index])
             ] = wavelength_results
-
-    if (
-        reduction_parameters.use_multiprocess
-        and not reduction_parameters.reduce_single_position
-    ):
-        ray.shutdown()
 
     if reduction_parameters.reduce_single_position:
         return all_results

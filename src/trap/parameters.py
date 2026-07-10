@@ -19,7 +19,11 @@ The legacy Reduction_parameters class is still available but deprecated.
 from __future__ import annotations
 
 import multiprocessing
+import os
+import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -731,6 +735,7 @@ class TrapReductionConfig:
     # Processing parameters
     use_multiprocess: bool = True
     ncpus: int = 4
+    scratch_dir: Optional[Path] = None
     prefix: str = ''
     result_folder: str = './'
     
@@ -1078,13 +1083,48 @@ class TrapResources:
     """Resource management for TRAP processing."""
     ncpu_reduction: int = 1
     ncpu_detection: int = 1
+    scratch_dir: Optional[Path] = None
 
     def apply(self, reduction_config: TrapReductionConfig) -> TrapReductionConfig:
         """Apply resource settings to reduction configuration.
 
         Returns a new config with ncpus set (frozen config cannot be mutated).
         """
-        return reduction_config.merge(ncpus=self.ncpu_reduction)
+        return reduction_config.merge(
+            ncpus=self.ncpu_reduction, scratch_dir=self.scratch_dir
+        )
+
+
+def resolve_scratch_dir(scratch_dir=None, required_bytes=None):
+    """Resolve the directory used for the shared-array store.
+
+    Resolution order: an explicit ``scratch_dir`` always wins; otherwise
+    ``/dev/shm`` is used if it exists and has headroom for the estimated
+    store size; otherwise ``tempfile.gettempdir()``.
+
+    Parameters
+    ----------
+    scratch_dir : str or Path, optional
+        Explicit scratch directory. Used as-is if given.
+    required_bytes : int, optional
+        Estimated size of the store. Used to check ``/dev/shm`` headroom;
+        if None, ``/dev/shm`` is used whenever it exists.
+
+    Returns
+    -------
+    Path
+        Directory in which to create the shared-array store.
+    """
+    if scratch_dir is not None:
+        return Path(scratch_dir)
+    shm = Path("/dev/shm")
+    if shm.is_dir() and os.access(shm, os.W_OK):
+        if required_bytes is None:
+            return shm
+        # Require 20% headroom over the estimated store size.
+        if shutil.disk_usage(shm).free > required_bytes * 1.2:
+            return shm
+    return Path(tempfile.gettempdir())
 
 
 # -------- wavelength and processing parameters ------------------------------
