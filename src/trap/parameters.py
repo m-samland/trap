@@ -18,12 +18,15 @@ The legacy Reduction_parameters class is still available but deprecated.
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 from astropy import units as u
+
+logger = logging.getLogger(__name__)
 
 
 class Instrument(object):
@@ -954,7 +957,7 @@ def build_runtime_state(
         guess_position_separation = np.sqrt(
             config.guess_position[0] ** 2 + config.guess_position[1] ** 2
         )
-        print("Adjusting outer bound to fit guess position")
+        logger.info("Adjusting outer bound to fit guess position")
         search_region_outer_bound = int(np.ceil(guess_position_separation) + 5)
 
     data_crop_size = config.data_crop_size
@@ -975,7 +978,7 @@ def build_runtime_state(
                 f"Data crop size {data_crop_size} is larger than input image "
                 f"size: {data_shape[-1]}"
             )
-        print(f"Auto crop size cropped data to: {data_crop_size}")
+        logger.info("Auto crop size cropped data to: %s", data_crop_size)
         yx_dim = (data_crop_size, data_crop_size)
     else:
         if config.search_region is None:

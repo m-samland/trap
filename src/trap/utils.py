@@ -5,6 +5,7 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import logging
 from asyncio import Event
 from typing import Tuple
 
@@ -22,6 +23,8 @@ from scipy.ndimage import spline_filter
 from tqdm import tqdm
 
 from trap import regressor_selection
+
+logger = logging.getLogger(__name__)
 
 
 @ray.remote
@@ -277,8 +280,7 @@ def resize_cube(arr, new_dim):
 def derotate_cube(flux_arr, pa, right_handed, verbose=False):
     for i in range(flux_arr.shape[0]):
         if verbose is True:
-            print("Derotating Spectral Channel: Frame: {:02d} by {:02.03f} degree.".format(
-                i + 1, pa[i]))
+            logger.debug("Derotating Spectral Channel: Frame: %02d by %02.03f degree.", i + 1, pa[i])
         flux_arr[i] = ndimage.rotate(flux_arr[i], pa[i], reshape=False)
 
     return flux_arr
@@ -304,7 +306,7 @@ def mask_cube(arr, dim, r_init=3, fwhm=5):
     assert len(np.asarray(arr).shape) == 4, "Function arr_resize expects a 4D data cube"
     for i in range(arr.shape[0]):
         for j in range(arr.shape[1]):
-            print("Masking Center of Channel {0}: Frame {1}".format(i + 1, j + 1))
+            logger.debug("Masking Center of Channel %d: Frame %d", i + 1, j + 1)
             arr[i, j] = mask_center(arr[i, j], dim, r_init, fwhm)
     return arr
 
@@ -314,12 +316,12 @@ def scale_images(arr, lam, newdim):
     """
     magnification = np.zeros_like(lam)
     flux = arr.copy()
-    print(arr.shape)
-    print(lam.shape)
+    logger.debug("%s", arr.shape)
+    logger.debug("%s", lam.shape)
     for i in range(lam.shape[0] - 1):
         magnification[i] = np.divide(lam[-1], lam[i])
         for j in range(arr.shape[1]):
-            print("Magnifing Channel {0}: Frame {1}".format(i + 1, j + 1))
+            logger.debug("Magnifing Channel %d: Frame %d", i + 1, j + 1)
             # Crop Image before saving into flux is necessary!
             flux[i, j] = resize_arr(ndimage.interpolation.zoom(
                 arr[i, j], float(magnification[i]), order=3), newdim)
@@ -331,11 +333,11 @@ def scale_images_sdi(arr, lam, newdim):
     """
     magnification = np.zeros_like(lam)
     flux = arr.copy()
-    print(arr.shape)
-    print(lam.shape)
+    logger.debug("%s", arr.shape)
+    logger.debug("%s", lam.shape)
     for i in range(lam.shape[0] - 1):
         magnification[i] = np.divide(lam[-1], lam[i])
-        print("Magnifing Channel {0}".format(i + 1))
+        logger.debug("Magnifing Channel %d", i + 1)
         # Crop Image before saving into flux is necessary!
         flux[i] = resize_arr(ndimage.interpolation.zoom(
             arr[i], float(magnification[i]), order=3), newdim)
