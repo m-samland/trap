@@ -10,6 +10,7 @@ import datetime
 import logging
 import multiprocessing
 import os
+import warnings
 from collections import OrderedDict
 
 import astropy.units as u
@@ -58,6 +59,7 @@ def trap_one_position(
     contrast_map=None,
     readnoise=0.0,
     cross_validation=False,
+    multiwavelength_regressors=None,
 ):
     """Runs TRAP on individual position.
 
@@ -262,6 +264,25 @@ def trap_one_position(
             pa=pa,
         )
 
+        multiwavelength_masks = None
+        multiwavelength_data = None
+        if multiwavelength_regressors is not None:
+            # Seeded per position: pool subsampling is then identical between
+            # the serial and the parallel path.
+            rng = np.random.default_rng([int(abs(position_absolute[0])), int(abs(position_absolute[1]))])
+            multiwavelength_masks = regressor_selection.make_multiwavelength_regressor_masks(
+                multiwavelength_regressors,
+                reduction_parameters=reduction_parameters,
+                yx_pixel=planet_absolute_yx_pos,
+                yx_dim=yx_dim,
+                yx_center=yx_center,
+                signal_mask=signal_mask,
+                n_reference_pixels=int(np.sum(regressor_pool_mask)),
+                known_companion_mask=known_companion_mask,
+                rng=rng,
+            )
+            multiwavelength_data = multiwavelength_regressors.data
+
         if cross_validation:
             cv_result = regression.temporal_pca_cross_validation(
                 data=data_reduce,
@@ -298,6 +319,8 @@ def trap_one_position(
                 inverse_variance_reduction_area=inverse_variance_reduction_area,
                 plot_all_diagnostics=reduction_parameters.plot_all_diagnostics,
                 return_input_data=reduction_parameters.return_input_data,
+                multiwavelength_data=multiwavelength_data,
+                multiwavelength_masks=multiwavelength_masks,
             )
         else:
             result = regression.run_trap_with_model_temporal_optimized(
@@ -310,6 +333,8 @@ def trap_one_position(
                 regressor_pool_mask=regressor_pool_mask,
                 regressor_matrix=None,
                 inverse_variance_reduction_area=inverse_variance_reduction_area,
+                multiwavelength_data=multiwavelength_data,
+                multiwavelength_masks=multiwavelength_masks,
             )
 
         # if result is not None:
@@ -382,6 +407,8 @@ def trap_one_position(
                 plot_all_diagnostics=reduction_parameters.plot_all_diagnostics,
                 return_input_data=False,
                 verbose=reduction_parameters.verbose,
+                multiwavelength_data=multiwavelength_data,
+                multiwavelength_masks=multiwavelength_masks,
             )
 
             data_reduce_noise_subtracted = data_reduce - np.nan_to_num(
@@ -450,6 +477,18 @@ def trap_one_position(
         results["temporal_plus_spatial"] = result
 
     return results
+
+
+@dataclasses.dataclass
+class _MultiwavelengthDriverState:
+    """Driver-side bookkeeping for multi-wavelength regressor enrichment."""
+
+    mode: str
+    regressor_wavelength_set: list
+    master: object  # SharedArrayRef (parallel) or ndarray (serial)
+    prepared_wavelengths: set
+    yx_center_by_wavelength: dict
+    bad_pixel_mask_by_wavelength: dict
 
 
 @dataclasses.dataclass
@@ -561,6 +600,7 @@ def run_trap_search(
     contrast_map=None,
     readnoise=0.0,
     use_progress_bar=False,
+    multiwavelength_regressors=None,
 ):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
@@ -776,6 +816,7 @@ def run_trap_search(
                         amplitude_modulation=amplitude_modulation,
                         contrast_map=contrast_map,
                         readnoise=readnoise,
+                        multiwavelength_regressors=multiwavelength_regressors,
                     )
                     for region in relative_coords_regions
                 )
@@ -830,6 +871,7 @@ def run_trap_search(
                 amplitude_modulation=amplitude_modulation,
                 contrast_map=contrast_map,
                 readnoise=readnoise,
+                multiwavelength_regressors=multiwavelength_regressors,
             )
             fill_detection_image(
                 detection_image,
@@ -1053,6 +1095,7 @@ def trap_search_region(
     contrast_map=None,
     readnoise=0.0,
     cross_validation=False,
+    multiwavelength_regressors=None,
 ):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
@@ -1129,6 +1172,7 @@ def trap_search_region(
             contrast_map=contrast_map,
             readnoise=readnoise,
             cross_validation=cross_validation,
+            multiwavelength_regressors=multiwavelength_regressors,
         )
         sub_region_results.append(result)
     return sub_region_results
@@ -1192,6 +1236,22 @@ def _wavelength_geometry(
         except AttributeError:
             pass
     return yx_center, yx_center_injection
+
+
+def _bad_pixel_mask_for_wavelength(bad_pixel_mask_full, wavelength_index, data_crop_size, yx_center_full):
+    """Per-wavelength bad-pixel mask in the working (cropped) frame."""
+    if bad_pixel_mask_full is None:
+        return None
+    mask = np.asarray(bad_pixel_mask_full).astype("bool")
+    if mask.ndim == 3:
+        mask = mask[wavelength_index]
+    if data_crop_size is not None:
+        mask = crop_box_from_image(
+            mask,
+            data_crop_size,
+            center_yx=np.round(yx_center_full[wavelength_index]),
+        )
+    return mask
 
 
 def _prepare_wavelength_slice(
@@ -1369,6 +1429,11 @@ def run_complete_reduction(
     # Convert any input type to TrapReductionConfig (frozen, immutable)
     reduction_parameters = _to_reduction_config(reduction_parameters)
 
+    multiwavelength_mode = reduction_parameters.multiwavelength_regressors
+    if multiwavelength_mode is not None and cross_validation:
+        warnings.warn("multiwavelength_regressors is not applied during cross_validation runs; disabling it for this call.")
+        multiwavelength_mode = None
+
     if bad_frames is None:
         bad_frames = []
 
@@ -1382,6 +1447,10 @@ def run_complete_reduction(
         data_full = np.expand_dims(data_full, axis=0)
     if inverse_variance_full is not None and inverse_variance_full.ndim < 4:
         inverse_variance_full = np.expand_dims(inverse_variance_full, axis=0)
+
+    if multiwavelength_mode is not None and data_full.shape[0] < 2:
+        warnings.warn("multiwavelength_regressors requires a multi-wavelength cube; disabling it for this call.")
+        multiwavelength_mode = None
 
     if reduction_parameters.highpass_filter is not None:
         raise NotImplementedError()
@@ -1539,28 +1608,89 @@ def run_complete_reduction(
     shared_store = None
     data_refs = {}
     inverse_variance_refs = {}
+    if multiwavelength_mode is not None:
+        if reduction_parameters.regressor_wavelength_indices is None:
+            regressor_wavelength_set = list(range(data_full.shape[0]))
+        else:
+            regressor_wavelength_set = sorted(int(index) for index in reduction_parameters.regressor_wavelength_indices)
+    if data_crop_size is None:
+        yx_shape = (data_full.shape[-2], data_full.shape[-1])
+    else:
+        yx_shape = (data_crop_size, data_crop_size)
     if (
         reduction_parameters.use_multiprocess
         and not reduction_parameters.reduce_single_position
     ):
-        if data_crop_size is None:
-            yx_shape = (data_full.shape[-2], data_full.shape[-1])
-        else:
-            yx_shape = (data_crop_size, data_crop_size)
         n_arrays = 2 if inverse_variance_full is not None else 1
-        required_bytes = int(
-            n_arrays
-            * len(wavelength_indices)
-            * data_full.shape[1]
-            * np.prod(yx_shape)
-            * np.dtype("float64").itemsize
-        )
+        slice_bytes = int(data_full.shape[1] * np.prod(yx_shape) * np.dtype("float64").itemsize)
+        if multiwavelength_mode is None:
+            required_bytes = n_arrays * len(wavelength_indices) * slice_bytes
+        else:
+            n_master_slices = len(set(int(index) for index in wavelength_indices) | set(regressor_wavelength_set))
+            # Master cube + one working data/ivar slice alive at a time.
+            required_bytes = (n_master_slices + 2) * slice_bytes
         shared_store = SharedArrayStore(
             scratch_dir=reduction_parameters.scratch_dir,
             required_bytes=required_bytes,
         )
         print("Shared array store: {}".format(shared_store.directory))
-        for wavelength_index in wavelength_indices:
+        if multiwavelength_mode is None:
+            for wavelength_index in wavelength_indices:
+                flux_psf = psf_stamps[wavelength_index].astype("float64")
+                yx_center, yx_center_injection = _wavelength_geometry(
+                    wavelength_index,
+                    data_shape=data_full.shape,
+                    data_crop_size=data_crop_size,
+                    yx_center_full=yx_center_full,
+                    yx_center_injection_full=yx_center_injection_full,
+                )
+                # Wavelengths with non-finite PSF or centers are skipped by the
+                # reduction loop below; skip dumping them as well.
+                if np.any(~np.isfinite(flux_psf)) or np.any(~np.isfinite(yx_center_injection)):
+                    continue
+                if amplitude_modulation_full is None:
+                    amplitude_modulation = np.ones(data_full.shape[1])
+                else:
+                    amplitude_modulation = amplitude_modulation_full[wavelength_index, :]
+                data, inverse_variance = _prepare_wavelength_slice(
+                    wavelength_index,
+                    data_full=data_full,
+                    inverse_variance_full=inverse_variance_full,
+                    flux_psf=flux_psf,
+                    pa=pa,
+                    reduction_parameters=reduction_parameters,
+                    runtime=runtime,
+                    data_crop_size=data_crop_size,
+                    yx_center_full=yx_center_full,
+                    yx_center_injection=yx_center_injection,
+                    amplitude_modulation=amplitude_modulation,
+                )
+                # Workers consume float64 (the cast `run_trap_search` would
+                # otherwise apply); dump that representation directly.
+                data_refs[wavelength_index] = shared_store.dump(
+                    "data_lam{:03d}".format(wavelength_index),
+                    data.astype("float64", copy=False),
+                )
+                if inverse_variance is not None:
+                    inverse_variance_refs[wavelength_index] = shared_store.dump(
+                        "inverse_variance_lam{:03d}".format(wavelength_index),
+                        inverse_variance.astype("float64", copy=False),
+                    )
+                else:
+                    inverse_variance_refs[wavelength_index] = None
+
+    multiwavelength_state = None
+    if multiwavelength_mode is not None:
+        union_indices = sorted(set(int(index) for index in wavelength_indices) | set(regressor_wavelength_set))
+        master_shape = (data_full.shape[0], yx_shape[0], yx_shape[1], data_full.shape[1])
+        if shared_store is not None:
+            master = shared_store.create("data_multiwavelength", shape=master_shape, dtype="float64")
+        else:
+            master = np.zeros(master_shape, dtype="float64")
+        prepared_wavelengths = set()
+        yx_center_by_wavelength = {}
+        bad_pixel_mask_by_wavelength = {}
+        for wavelength_index in union_indices:
             flux_psf = psf_stamps[wavelength_index].astype("float64")
             yx_center, yx_center_injection = _wavelength_geometry(
                 wavelength_index,
@@ -1569,20 +1699,16 @@ def run_complete_reduction(
                 yx_center_full=yx_center_full,
                 yx_center_injection_full=yx_center_injection_full,
             )
-            # Wavelengths with non-finite PSF or centers are skipped by the
-            # reduction loop below; skip dumping them as well.
-            if np.any(~np.isfinite(flux_psf)) or np.any(
-                ~np.isfinite(yx_center_injection)
-            ):
+            if np.any(~np.isfinite(flux_psf)) or np.any(~np.isfinite(yx_center_injection)):
                 continue
             if amplitude_modulation_full is None:
                 amplitude_modulation = np.ones(data_full.shape[1])
             else:
                 amplitude_modulation = amplitude_modulation_full[wavelength_index, :]
-            data, inverse_variance = _prepare_wavelength_slice(
+            data, _ = _prepare_wavelength_slice(
                 wavelength_index,
                 data_full=data_full,
-                inverse_variance_full=inverse_variance_full,
+                inverse_variance_full=None,
                 flux_psf=flux_psf,
                 pa=pa,
                 reduction_parameters=reduction_parameters,
@@ -1592,19 +1718,27 @@ def run_complete_reduction(
                 yx_center_injection=yx_center_injection,
                 amplitude_modulation=amplitude_modulation,
             )
-            # Workers consume float64 (the cast `run_trap_search` would
-            # otherwise apply); dump that representation directly.
-            data_refs[wavelength_index] = shared_store.dump(
-                "data_lam{:03d}".format(wavelength_index),
-                data.astype("float64", copy=False),
+            master[wavelength_index] = np.transpose(data.astype("float64", copy=False), (1, 2, 0))
+            prepared_wavelengths.add(wavelength_index)
+            yx_center_by_wavelength[wavelength_index] = np.asarray(yx_center)
+            bad_pixel_mask_by_wavelength[wavelength_index] = _bad_pixel_mask_for_wavelength(
+                bad_pixel_mask_full,
+                wavelength_index,
+                data_crop_size,
+                yx_center_full,
             )
-            if inverse_variance is not None:
-                inverse_variance_refs[wavelength_index] = shared_store.dump(
-                    "inverse_variance_lam{:03d}".format(wavelength_index),
-                    inverse_variance.astype("float64", copy=False),
-                )
-            else:
-                inverse_variance_refs[wavelength_index] = None
+        if shared_store is not None:
+            master.flush()
+            del master
+            master = shared_store.ref("data_multiwavelength")
+        multiwavelength_state = _MultiwavelengthDriverState(
+            mode=multiwavelength_mode,
+            regressor_wavelength_set=regressor_wavelength_set,
+            master=master,
+            prepared_wavelengths=prepared_wavelengths,
+            yx_center_by_wavelength=yx_center_by_wavelength,
+            bad_pixel_mask_by_wavelength=bad_pixel_mask_by_wavelength,
+        )
 
     try:
         return _run_reduction_loops(
@@ -1633,6 +1767,7 @@ def run_complete_reduction(
             shared_store=shared_store,
             data_refs=data_refs,
             inverse_variance_refs=inverse_variance_refs,
+            multiwavelength_state=multiwavelength_state,
         )
     finally:
         if shared_store is not None:
@@ -1665,6 +1800,7 @@ def _run_reduction_loops(
     shared_store,
     data_refs,
     inverse_variance_refs,
+    multiwavelength_state,
 ):
     """Component/wavelength loops of `run_complete_reduction`.
 
@@ -1697,6 +1833,29 @@ def _run_reduction_loops(
                 reduction_mask_psf_size=int(stamp_sizes_reduction[wavelength_index]),
                 signal_mask_psf_size=int(stamp_sizes[wavelength_index]),
             )
+
+            multiwavelength_regressors = None
+            if multiwavelength_state is not None:
+                selected = [
+                    index
+                    for index in multiwavelength_state.regressor_wavelength_set
+                    if index != wavelength_index and index in multiwavelength_state.prepared_wavelengths
+                ]
+                if selected:
+                    scale_factors = (
+                        (instrument.wavelengths[selected] / instrument.wavelengths[wavelength_index]).decompose().value
+                    )
+                    multiwavelength_regressors = regressor_selection.MultiwavelengthRegressors(
+                        data=multiwavelength_state.master,
+                        wavelength_indices=np.array(selected),
+                        scale_factors=np.asarray(scale_factors, dtype="float64"),
+                        fwhm=np.array([instrument.fwhm[index].value for index in selected]),
+                        fwhm_reference=instrument.fwhm[wavelength_index].value,
+                        yx_centers=np.array([multiwavelength_state.yx_center_by_wavelength[index] for index in selected]),
+                        bad_pixel_masks=[multiwavelength_state.bad_pixel_mask_by_wavelength.get(index) for index in selected],
+                        mode=multiwavelength_state.mode,
+                        max_regressor_pool_size=reduction_parameters.max_regressor_pool_size,
+                    )
             basename = {}
             if reduction_parameters.inject_fake:
                 basename[
@@ -1906,6 +2065,8 @@ def _run_reduction_loops(
                 )
                 continue
 
+            work_data_name = None
+            work_ivar_name = None
             if shared_store is not None and wavelength_index in data_refs:
                 # Preprocessed data was dumped to the shared store before the
                 # loops; pass references so workers memmap it read-only.
@@ -1925,6 +2086,18 @@ def _run_reduction_loops(
                     yx_center_injection=yx_center_injection,
                     amplitude_modulation=amplitude_modulation,
                 )
+                if shared_store is not None and multiwavelength_state is not None:
+                    # Multi-lambda mode keeps only the (lambda, y, x, t) master
+                    # in the store; the (t, y, x) working slice is transposed
+                    # out per iteration and cleaned up afterwards.
+                    work_data_name = "data_work_c{:02d}_lam{:03d}".format(comp_index, wavelength_index)
+                    data = shared_store.dump(work_data_name, data.astype("float64", copy=False))
+                    if inverse_variance is not None:
+                        work_ivar_name = "ivar_work_c{:02d}_lam{:03d}".format(comp_index, wavelength_index)
+                        inverse_variance = shared_store.dump(
+                            work_ivar_name,
+                            inverse_variance.astype("float64", copy=False),
+                        )
 
             logger.debug("PSF Size: %s", runtime.reduction_mask_psf_size)
             if reduction_parameters.reduce_single_position:
@@ -1943,6 +2116,7 @@ def _run_reduction_loops(
                     amplitude_modulation=amplitude_modulation,
                     contrast_map=contrast_map,
                     readnoise=instrument.readnoise,
+                    multiwavelength_regressors=multiwavelength_regressors,
                 )
 
                 wavelength_results["{}".format(wavelength_index)] = results
@@ -2025,6 +2199,7 @@ def _run_reduction_loops(
                     contrast_map=contrast_map,
                     readnoise=instrument.readnoise,
                     use_progress_bar=use_progress_bar,
+                    multiwavelength_regressors=multiwavelength_regressors,
                 )
 
                 for key in detection_image:
@@ -2046,6 +2221,11 @@ def _run_reduction_loops(
                         )
 
                 del detection_image
+
+                if work_data_name is not None:
+                    shared_store.remove(work_data_name)
+                if work_ivar_name is not None:
+                    shared_store.remove(work_ivar_name)
 
         if reduction_parameters.reduce_single_position:
             all_results[

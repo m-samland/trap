@@ -20,7 +20,7 @@ from scipy.optimize import curve_fit
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-from trap import image_coordinates, pca_regression, plotting_tools, regressor_selection
+from trap import image_coordinates, pca_regression, plotting_tools, regressor_selection, shared_arrays
 from trap.utils import (
     compute_empirical_correlation_matrix,
     det_max_ncomp_specific,
@@ -503,6 +503,33 @@ class Result(object):
             plt.show()
 
 
+def _assemble_training_matrix(
+    data, regressor_pool_mask, data_range_to_fit=None, multiwavelength_data=None, multiwavelength_masks=None
+):
+    """Training matrix ``(n_time, n_pixel)`` for the temporal systematics model.
+
+    Base columns are the reference-slice pool pixels. When multi-wavelength
+    enrichment is active, time series from other slices of the
+    ``(n_lambda, y, x, t)`` cube (plain array or shared-store reference) are
+    appended; ``multiwavelength_masks`` maps slice index to a boolean
+    ``(y, x)`` selection.
+    """
+    if data_range_to_fit is None:
+        training_matrix = data[:, regressor_pool_mask]
+    else:
+        training_matrix = data[data_range_to_fit][:, regressor_pool_mask]
+    if not multiwavelength_masks:
+        return training_matrix
+    cube = shared_arrays.resolve(multiwavelength_data)
+    columns = [training_matrix]
+    for slice_index, mask in multiwavelength_masks.items():
+        series = np.asarray(cube[slice_index][mask]).T  # (n_time, n_pixel_j)
+        if data_range_to_fit is not None:
+            series = series[data_range_to_fit]
+        columns.append(series)
+    return np.concatenate(columns, axis=1)
+
+
 def run_trap_with_model_temporal(
         data, model, pa, reduction_parameters,
         planet_relative_yx_pos, reduction_mask,
@@ -516,6 +543,8 @@ def run_trap_with_model_temporal(
         opposite_mask=None,
         bad_pixel_mask=None,
         regressor_pool_mask=None,
+        multiwavelength_data=None,
+        multiwavelength_masks=None,
         true_contrast=None,
         return_input_data=False,
         plot_all_diagnostics=False,
@@ -668,7 +697,12 @@ def run_trap_with_model_temporal(
 
             if not local_model:
                 if number_of_pca_regressors != 0:
-                    training_matrix = data[:, regressor_pool_mask_global]
+                    training_matrix = _assemble_training_matrix(
+                        data,
+                        regressor_pool_mask_global,
+                        multiwavelength_data=multiwavelength_data,
+                        multiwavelength_masks=multiwavelength_masks,
+                    )
                     B_full, lambdas_full, _, _ = pca_regression.compute_SVD(
                         training_matrix, n_components=None, scaling=pca_scaling,
                         compute_robust_lambda=compute_robust_lambda)
@@ -719,7 +753,13 @@ def run_trap_with_model_temporal(
                 local_regressors = np.logical_and(reduction_mask, locally_unaffected)
                 regressor_pool_mask[local_regressors] = True
 
-            training_matrix = data[data_range_to_fit][:, regressor_pool_mask]  # .copy()
+            training_matrix = _assemble_training_matrix(
+                data,
+                regressor_pool_mask,
+                data_range_to_fit=data_range_to_fit,
+                multiwavelength_data=multiwavelength_data,
+                multiwavelength_masks=multiwavelength_masks,
+            )
 
             if number_of_pca_regressors != 0:
                 B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
@@ -1712,7 +1752,9 @@ def run_trap_with_model_temporal_optimized(
         runtime=None,
         inverse_variance_reduction_area=None,
         regressor_matrix=None,
-        regressor_pool_mask=None):
+        regressor_pool_mask=None,
+        multiwavelength_data=None,
+        multiwavelength_masks=None):
     """Core function of the TRAP analysis. Builds the temporal regression
     model and perform model fitting for all time series vectors in the
     `reduction_mask` as described in Samland et al. 2020.
@@ -1761,7 +1803,9 @@ def run_trap_with_model_temporal_optimized(
     # test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
     # EDIT: !!!!!!!
     # Provide pre-stacked training matrix, only add model on top!
-    training_matrix = data[:, regressor_pool_mask]
+    training_matrix = _assemble_training_matrix(
+        data, regressor_pool_mask, multiwavelength_data=multiwavelength_data, multiwavelength_masks=multiwavelength_masks
+    )
     B_full, _, _, _ = pca_regression.compute_SVD(
         training_matrix, n_components=None,
         scaling=reduction_parameters.pca_scaling)

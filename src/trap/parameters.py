@@ -779,6 +779,11 @@ class TrapReductionConfig:
     add_radial_regressors: bool = True
     include_opposite_regressors: bool = True
     
+    # Multi-wavelength regressor enrichment (WP2, IFS data only)
+    multiwavelength_regressors: Optional[str] = None  # None | "pool" | "occluded"
+    regressor_wavelength_indices: Optional[Any] = None  # indices into wavelength axis; None = all
+    max_regressor_pool_size: float = 3.0  # total pool budget in units of the single-wavelength pool
+
     # Processing control
     make_reconstructed_lightcurve: bool = True
     compute_residual_correlation: bool = False
@@ -794,6 +799,12 @@ class TrapReductionConfig:
     # Output control
     return_input_data: bool = False
     verbose: bool = False
+
+    def __post_init__(self):
+        if self.multiwavelength_regressors not in (None, "pool", "occluded"):
+            raise ValueError(
+                f"multiwavelength_regressors must be None, 'pool' or 'occluded', got {self.multiwavelength_regressors!r}"
+            )
 
     def merge(self, **kw) -> "TrapReductionConfig":
         """Return a copy with selected fields overridden."""
@@ -815,6 +826,9 @@ class TrapReductionConfig:
         )
         params_dict = asdict(self)
         params_dict.pop("coronagraph_transmission", None)
+        params_dict.pop("multiwavelength_regressors", None)
+        params_dict.pop("regressor_wavelength_indices", None)
+        params_dict.pop("max_regressor_pool_size", None)
 
         # Filter out None values, but keep explicit None defaults where needed
         filtered_params = {}

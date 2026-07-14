@@ -128,6 +128,18 @@ class SharedArrayStore:
             raise KeyError(f"No array named {name!r} in store {self.directory}")
         return SharedArrayRef(str(path))
 
+    def remove(self, name: str):
+        """Delete a single array from the store.
+
+        Only the driver-side memmap cache is invalidated; workers that still
+        hold the file open keep a valid mapping (POSIX unlink semantics).
+        Callers must use unique names per reduction iteration so reused
+        worker processes never see a stale cache entry for a recreated path.
+        """
+        path = self._path(name)
+        _MEMMAP_CACHE.pop(str(path), None)
+        path.unlink(missing_ok=True)
+
     def cleanup(self):
         """Delete the store directory and all arrays in it."""
         for path in self.directory.glob("*.npy"):

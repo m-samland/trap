@@ -6,6 +6,24 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ## [Unreleased]
 
 ### Added
+- **Multi-wavelength regressors for IFS (WP2)** – the temporal regressor pool
+  can be enriched with time series from other wavelength slices. The speckle
+  field zooms radially by `s = λ_j/λ_ref` about the star center while
+  astrophysical sources stay static, so per-slice masks are built by scaling
+  the reference-pool geometry and excluding the static source position (sized
+  with the slice FWHM plus margin), slice bad pixels, and known companions.
+  Configured on `TrapReductionConfig` via `multiwavelength_regressors`
+  (`None` | `"pool"` = full scaled annulus | `"occluded"` = scaled
+  reference-signal-mask footprint, a subset of `"pool"`),
+  `regressor_wavelength_indices`, and `max_regressor_pool_size` (total pool
+  budget in units of the single-wavelength pool; occluded pixels are always
+  kept, annulus enrichment is subsampled per slice). The preprocessed cube is
+  stored once as `(λ, y, x, t)` in the shared-array store for efficient
+  scattered time-series reads; the per-wavelength `(t, y, x)` working slice
+  is transposed out per iteration and removed afterwards. Single-wavelength
+  reductions and the default `multiwavelength_regressors=None` path are
+  bit-identical to before. Only mask construction and training-matrix
+  concatenation changed; solvers are untouched.
 - Optional coronagraph throughput correction: pass a `(separation_mas, throughput)`
   table via `TrapReductionConfig.coronagraph_transmission` to attenuate the
   forward model by the separation-dependent coronagraph transmission, correcting
