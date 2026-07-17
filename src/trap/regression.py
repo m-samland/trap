@@ -5,6 +5,7 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import logging
 import os
 
 import matplotlib.pyplot as plt
@@ -27,6 +28,8 @@ from trap.utils import (
     matern32_kernel,
     matern52_kernel,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Result(object):
@@ -186,7 +189,7 @@ class Result(object):
         else:
             self.compute_good_residual_mask(sigma_for_outlier=sigma)
             self.compute_contrast_weighted_average(mask_outliers=True, use_signal_weighting=self.use_signal_weighting)
-        print(self.__str__())
+        logger.debug("%s", self)
 
     def compute_good_residual_mask(self,
                                    sigma=3, clip_median=True, clip_std=False,
@@ -197,8 +200,11 @@ class Result(object):
         number_of_nan_pixels = np.sum(mask_nans)
         number_of_pixels = self.residuals.shape[0]
         if number_of_nan_pixels > 0:
-            print(
-                f"Fraction of nan pixels: {number_of_nan_pixels / number_of_pixels}.\n Number of pixels: {number_of_pixels}")
+            logger.debug(
+                "Fraction of nan pixels: %s. Number of pixels: %d",
+                number_of_nan_pixels / number_of_pixels,
+                number_of_pixels,
+            )
         if clip_median:  # Clip pixels based on time-domain median
             mask.append(
                 sigma_clip(np.median(self.residuals, axis=1),
@@ -658,7 +664,7 @@ def run_trap_with_model_temporal(
             else:
                 regressor_pool_mask_global = regressor_pool_mask.copy()
             if verbose:
-                print("Number of reference pixel: {}".format(np.sum(regressor_pool_mask)))
+                logger.debug("Number of reference pixel: %d", np.sum(regressor_pool_mask))
 
             if not local_model:
                 if number_of_pca_regressors != 0:
@@ -702,7 +708,7 @@ def run_trap_with_model_temporal(
                     np.round(reduction_parameters.number_of_components_fraction * maximum_number_of_components))
                 if number_of_pca_regressors < 1:
                     number_of_pca_regressors = 1
-                print("Number of components used: {}".format(number_of_pca_regressors))
+                logger.debug("Number of components used: %s", number_of_pca_regressors)
 
         y = y[data_range_to_fit]
 
@@ -845,7 +851,7 @@ def run_trap_with_model_temporal(
 
         if reduction_parameters.plot_all_diagnostics and model is not None:
             if np.array_equal(yx_pixel, test_pixel):
-                print("Selected pixel: {}".format(yx_pixel))
+                logger.debug("Selected pixel: %s", yx_pixel)
                 mask_coordinates = np.argwhere(regressor_pool_mask)
 
                 plotting_tools.plot_scale(np.median(data, axis=0), yx_coords=mask_coordinates,
@@ -1136,7 +1142,7 @@ def run_trap_with_model_spatial(
         # flux_overlap_fraction = compute_flux_overlap(idx, model)
         # time_mask = flux_overlap_fraction < reduction_parameters.spatial_exclusion_flux_overlap
         if np.sum(time_mask) < 3:  # require at least 5 reference frames
-            print('Returning None for lack of frames')
+            logger.debug("Returning None for lack of frames")
             return None
 
         if training_data is None:
@@ -1449,7 +1455,7 @@ def run_trap_with_model_wavelength(
             else:
                 regressor_pool_mask_global = regressor_pool_mask.copy()
             if verbose:
-                print("Number of reference pixel: {}".format(np.sum(regressor_pool_mask)))
+                logger.debug("Number of reference pixel: %d", np.sum(regressor_pool_mask))
 
             if not local_model:
                 if number_of_pca_regressors != 0:
@@ -1492,7 +1498,7 @@ def run_trap_with_model_wavelength(
                     np.round(reduction_parameters.number_of_components_fraction * maximum_number_of_components))
                 if number_of_pca_regressors < 1:
                     number_of_pca_regressors = 1
-                print("Number of components used: {}".format(number_of_pca_regressors))
+                logger.debug("Number of components used: %s", number_of_pca_regressors)
 
         y = y[data_range_to_fit]
 
@@ -1557,7 +1563,7 @@ def run_trap_with_model_wavelength(
 
         if plot_all_diagnostics and model is not None:
             if np.array_equal(yx_pixel, test_pixel):
-                print("Selected pixel: {}".format(yx_pixel))
+                logger.debug("Selected pixel: %s", yx_pixel)
                 mask_coordinates = np.argwhere(regressor_pool_mask)
 
                 plotting_tools.plot_scale(np.median(data, axis=0), yx_coords=mask_coordinates,

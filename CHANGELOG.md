@@ -47,6 +47,9 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Fixed
 - **Out-of-grid stellar parameters no longer abort template matching** – `add_default_templates` built the stellar template from the solar-only `bt-nextgen` grid but passed the requested `stellar_parameters` straight to `species`' `get_model`, so a sub-solar `[Fe/H]` (or an out-of-range Teff/log g) raised `ValueError: … smaller than the lower boundary of the model grid`. Values are now clamped to the grid boundaries (via `ReadModel.get_bounds()`) before `get_model`, snapping to the nearest edge with a `warnings.warn`, so any caller's stellar parameters degrade gracefully instead of crashing.
 
+### Changed
+- **Library logging instead of `print`** – Replaced the library's `print()` calls with standard-library `logging` (per-module `logging.getLogger(__name__)`, a single `NullHandler` at the package root). The library sets no levels or handlers of its own; callers control verbosity via `logging.getLogger("trap").setLevel(...)`, so a driver such as `spherical` can quiet routine output down to warnings/errors and keep its progress bar intact. Per-position diagnostics on the Ray worker path are `debug` only. `likelihood_tools.py` and `embed_shell.py` are unchanged.
+
 ## [1.3.0] - 2026-07-03
 
 ### Added

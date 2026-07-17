@@ -6,6 +6,7 @@ Routines used in TRAP
 """
 
 import copy
+import logging
 import os
 import warnings
 from collections import OrderedDict
@@ -43,6 +44,8 @@ from trap.utils import (
     save_object,
     subtract_angles,
 )
+
+logger = logging.getLogger(__name__)
 
 # plt.style.use("paper")
 
@@ -760,9 +763,7 @@ def plot_contrast_curve(
         try:
             pdf.savefig(bbox_inches="tight")
         except RuntimeError:
-            print(
-                "Could not output pdf-version of contrast curve (this may be a Mac issue)."
-            )
+            logger.warning("Could not output pdf-version of contrast curve (this may be a Mac issue).")
         pdf.close()
 
     if show is True:
@@ -970,9 +971,7 @@ def plot_contrast_curve_ratio(
         try:
             pdf.savefig(bbox_inches="tight")
         except RuntimeError:
-            print(
-                "Could not output pdf-version of contrast curve (this may be a Mac issue)."
-            )
+            logger.warning("Could not output pdf-version of contrast curve (this may be a Mac issue).")
         pdf.close()
 
     if show is True:
@@ -2790,7 +2789,7 @@ class DetectionAnalysis(object):
             return None
 
         for candidate_index, yx_candidate_position in tqdm(enumerate(yx_candidate_positions)):
-            print("Running TRAP at candidate position: ", yx_candidate_position)
+            logger.info("Running TRAP at candidate position: %s", yx_candidate_position)
             candidate_spectrum = self.rereduce_single_position(
                 candidate_index=candidate_index,
                 yx_candidate_position=yx_candidate_position,
@@ -3083,9 +3082,7 @@ class DetectionAnalysis(object):
         try:
             database = Database()
         except:
-            print(
-                f"No initialized species database found in: {species_database_directory}"
-            )
+            logger.warning("No initialized species database found in: %s", species_database_directory)
             SpeciesInit()
             database = Database()
 
@@ -3731,16 +3728,18 @@ class DetectionAnalysis(object):
             
             # Check if candidates survived the second iteration validation
             if candidates_fit_final is None or len(candidates_fit_final) == 0:
-                print("Warning: No candidates survived second iteration validation")
-                print("This typically occurs when initial detections were false positives")
-                print("that did not meet the criteria when background statistics were corrected.")
+                logger.warning(
+                    "No candidates survived second iteration validation. This typically occurs "
+                    "when initial detections were false positives that did not meet the criteria "
+                    "when background statistics were corrected."
+                )
                 template.companion_table = None
                 template.validated_companion_table = None
                 template.validated_companion_table_short = None
                 template.detection_products = detection_products
                 return
             
-            print("Extracting candidate spectra.")
+            logger.info("Extracting candidate spectra.")
             candidate_spectra = self.extract_candidate_spectra(
                 yx_candidate_positions=candidates_fit_final["snr_image"][
                     ["y_relative", "x_relative"]
@@ -4010,7 +4009,7 @@ class DetectionAnalysis(object):
                 if not companion_table.empty:
                     combined_detection_products.append(companion_table)
             except FileNotFoundError:
-                print(f"{filename} not found.")
+                logger.warning("%s not found.", filename)
 
         if combined_detection_products:  # Check if list is not empty
             combined_companion_table = pd.concat(combined_detection_products, ignore_index=True)
@@ -4127,7 +4126,7 @@ class DetectionAnalysis(object):
                 index=False,
             )
         else:
-            print("No companion tables found.")
+            logger.warning("No companion tables found.")
 
 
     def detection_and_characterization(
@@ -4159,7 +4158,7 @@ class DetectionAnalysis(object):
             file_paths=self.file_paths
         )
 
-        print("Identifying and fitting potential candidates.")
+        logger.info("Identifying and fitting potential candidates.")
         candidates, candidates_fit = self.complete_candidate_table(
             wavelength_indices=None,
             candidate_threshold=candidate_threshold,
@@ -4174,7 +4173,7 @@ class DetectionAnalysis(object):
             plot_companions = False
         else:
             plot_companions = True
-            print("Extracting candidate spectra.")
+            logger.info("Extracting candidate spectra.")
             candidate_spectra = self.extract_candidate_spectra(
                 yx_candidate_positions=candidates_fit["snr_image"][
                     ["y_relative", "x_relative"]

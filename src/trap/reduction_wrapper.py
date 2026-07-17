@@ -7,6 +7,7 @@ Routines used in TRAP
 
 import dataclasses
 import datetime
+import logging
 import multiprocessing
 import os
 from collections import OrderedDict
@@ -39,6 +40,7 @@ from trap.utils import (
     shuffle_and_equalize_relative_positions,
 )
 
+logger = logging.getLogger(__name__)
 
 def trap_one_position(
     guess_position,
@@ -343,7 +345,7 @@ def trap_one_position(
             if reduction_parameters.fit_planet:
                 result.compute_contrast_weighted_average(mask_outliers=True)
                 if reduction_parameters.verbose:
-                    print(result)
+                    logger.debug("%s", result)
             result.reduction_parameters = reduction_parameters
         results["spatial"] = result
 
@@ -443,7 +445,7 @@ def trap_one_position(
             if reduction_parameters.fit_planet:
                 result.compute_contrast_weighted_average(mask_outliers=True)
                 if reduction_parameters.verbose:
-                    print(result)
+                    logger.debug("%s", result)
             result.reduction_parameters = reduction_parameters
         results["temporal_plus_spatial"] = result
 
@@ -716,7 +718,7 @@ def run_trap_search(
             )
         )
     )
-    print("Number of positions: {}".format(len(relative_coords)))
+    logger.info("Number of positions: %d", len(relative_coords))
     ncpus = runtime.ncpus if runtime is not None else (reduction_parameters.ncpus or multiprocessing.cpu_count())
     ncpus = min(ncpus, multiprocessing.cpu_count())
     if reduction_parameters.use_multiprocess:
@@ -737,9 +739,7 @@ def run_trap_search(
             max_iterations=50,
             rng=None,
         )
-        print(
-            "Number of positions per chunk: {}".format(len(relative_coords_regions[0]))
-        )
+        logger.debug("Number of positions per chunk: %d", len(relative_coords_regions[0]))
 
         a = datetime.datetime.now()
         own_store = None
@@ -844,8 +844,7 @@ def run_trap_search(
             del result
         b = datetime.datetime.now()
     c = b - a
-    print("Main reduction computation time:")
-    print(c)
+    logger.debug("Main reduction computation time: %s", c)
 
     if (
         not reduction_parameters.compute_residual_correlation
@@ -951,7 +950,7 @@ def multi_position_cross_validation(
     if amplitude_modulation is None:
         amplitude_modulation = np.ones(data.shape[0])
 
-    print("Number of positions: {}".format(len(relative_coords)))
+    logger.info("Number of positions: %d", len(relative_coords))
     ncpus = runtime.ncpus if runtime is not None else (reduction_parameters.ncpus or multiprocessing.cpu_count())
     ncpus = min(ncpus, multiprocessing.cpu_count())
     if reduction_parameters.use_multiprocess:
@@ -1032,8 +1031,7 @@ def multi_position_cross_validation(
             results.append(result)
         b = datetime.datetime.now()
     c = b - a
-    print("Main reduction computation time:")
-    print(c)
+    logger.debug("Main reduction computation time: %s", c)
 
     return results
 
@@ -1467,9 +1465,7 @@ def run_complete_reduction(
                 xy_image_centers[..., 1]
             )
             max_shift = np.max([max_shift_x, max_shift_y]) * 2
-            print(
-                "The center varies by a maximum of in x or y: {}".format(max_shift / 2)
-            )
+            logger.debug("The center varies by a maximum of in x or y: %s", max_shift / 2)
         # print("Center variation: {}".format(np.std(amplitude_modulation_full, axis=0)))
 
     # Build runtime state (replaces all mutations of reduction_parameters)
@@ -1492,9 +1488,7 @@ def run_complete_reduction(
         amplitude_modulation_full = np.delete(
             amplitude_modulation_full, bad_frames, axis=1
         )
-        print(
-            "Amplitude variation: {}".format(np.std(amplitude_modulation_full, axis=1))
-        )
+        logger.debug("Amplitude variation: %s", np.std(amplitude_modulation_full, axis=1))
 
     # Configure number of principal components
 
@@ -1681,9 +1675,7 @@ def _run_reduction_loops(
         all_results = OrderedDict()
 
     for comp_index, ncomp in enumerate(number_of_components):
-        print(
-            "Number of principal comp. used: {} of {}".format(ncomp, data_full.shape[1])
-        )
+        logger.debug("Number of principal comp. used: %s of %d", ncomp, data_full.shape[1])
 
         if reduction_parameters.reduce_single_position:
             wavelength_results = OrderedDict()
@@ -1694,11 +1686,7 @@ def _run_reduction_loops(
             wavelength_index,
         ) in enumerate(wavelength_indices):
             wavelength = instrument.wavelengths[wavelength_index]
-            print(
-                "Lambda index: {} Wavelength: {:.3f}".format(
-                    wavelength_index, wavelength
-                )
-            )
+            logger.debug("Lambda index: %s Wavelength: %.3f", wavelength_index, wavelength)
             if prefix is None:
                 prefix = ""
             # Update per-iteration runtime state
@@ -1765,7 +1753,7 @@ def _run_reduction_loops(
                     reduction_parameters.protection_angle,
                     reduction_parameters.spatial_components_fraction,
                 )
-            print(basename["temporal"])
+            logger.debug("%s", basename["temporal"])
 
             # Having all the different reductions in the output makes it easier to compare but also more complex to refactor
             # Since individual outputs cannot be checked for existence
@@ -1787,8 +1775,9 @@ def _run_reduction_loops(
                 # If output file with basename already exists, skip reduction
                 if not overwrite and not reduction_parameters.reduce_single_position:
                     if os.path.exists(output_paths[key].detection_image):
-                        print(
-                            f"Reduction already exists for {output_paths[key].detection_image} - skipping."
+                        logger.info(
+                            "Reduction already exists for %s - skipping.",
+                            output_paths[key].detection_image,
                         )
                         return None
 
@@ -1908,17 +1897,12 @@ def _run_reduction_loops(
             flux_psf_not_finite = np.any(~np.isfinite(flux_psf))
             yx_center_injection_not_finite = np.any(~np.isfinite(yx_center_injection))
             if flux_psf_not_finite:
-                print(
-                    "Skipping wavelength {}. NaNs detected in flux PSF.".format(
-                        wavelength_index
-                    )
-                )
+                logger.warning("Skipping wavelength %s. NaNs detected in flux PSF.", wavelength_index)
                 continue
             if yx_center_injection_not_finite:
-                print(
-                    "Skipping wavelength {}. NaNs detected in provided center position.".format(
-                        wavelength_index
-                    )
+                logger.warning(
+                    "Skipping wavelength %s. NaNs detected in provided center position.",
+                    wavelength_index,
                 )
                 continue
 
@@ -1942,7 +1926,7 @@ def _run_reduction_loops(
                     amplitude_modulation=amplitude_modulation,
                 )
 
-            print("PSF Size: {}".format(runtime.reduction_mask_psf_size))
+            logger.debug("PSF Size: %s", runtime.reduction_mask_psf_size)
             if reduction_parameters.reduce_single_position:
                 results = trap_one_position(
                     reduction_parameters.guess_position,
