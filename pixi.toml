@@ -23,11 +23,11 @@ bottleneck = "*"
 natsort = "*"
 dill = "*"
 cython = "*"
+joblib = "*"
 
 # Editable install of the package itself
 [pypi-dependencies]
 trap = { path = ".", editable = true }
-ray = { version = ">=2.47.1", extras = ["default"] }
 species = { git = "https://github.com/tomasstolker/species" }
 
 # ──────────────────────────────────────────────

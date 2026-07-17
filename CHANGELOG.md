@@ -5,6 +5,45 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Added
+- Optional coronagraph throughput correction: pass a `(separation_mas, throughput)`
+  table via `TrapReductionConfig.coronagraph_transmission` to attenuate the
+  forward model by the separation-dependent coronagraph transmission, correcting
+  underestimated contrasts at small separations (#31).
+- **Shared-array store** (`trap.shared_arrays`) – large input arrays are dumped
+  once as `.npy` files to a scratch directory and worker processes memmap them
+  read-only, so the OS page cache provides a single shared in-RAM copy per node.
+  The scratch directory is configurable via `TrapReductionConfig.scratch_dir` /
+  `TrapResources.scratch_dir` and defaults to `/dev/shm` when present with
+  sufficient headroom (cluster nodes), otherwise the system temp directory
+  (see `trap.parameters.resolve_scratch_dir`).
+- Serial-vs-parallel equivalence test on a synthetic cube
+  (`tests/test_parallel_equivalence.py`) plus unit tests for the shared-array
+  store (`tests/test_shared_arrays.py`).
+
+### Changed
+- **Ray removed; multiprocessing now uses joblib/loky** – `run_trap_search` and
+  `multi_position_cross_validation` dispatch position chunks through
+  `joblib.Parallel` (loky backend) instead of Ray remote functions. Results are
+  identical to the serial path; single-wavelength reductions are unchanged.
+  Startup time, memory reservation and dependency footprint shrink, worker
+  logs/exceptions now surface on the driver, and one code path serves laptop
+  and cluster (multi-node scaling via scheduler job arrays over
+  wavelengths/epochs). BLAS threads in workers are capped to 1, matching Ray's
+  previous implicit behavior.
+- `run_complete_reduction` dumps the preprocessed per-wavelength data (and
+  inverse variance) to the shared-array store once, before the
+  component/wavelength loops, instead of re-transferring the cube to workers
+  for every component fraction. Position chunking raised from `2 × ncpus` to
+  `8 × ncpus` to reduce idle tails.
+- Progress reporting is now a driver-side `tqdm` bar ticking per completed
+  chunk; the Ray-based `ProgressBarActor`/`ProgressBar` in `trap.utils` were
+  removed, along with the no-op `==` statements that belonged to them
+  (roadmap item 5 / improvement note 7).
+
+### Removed
+- Dependency on `ray[default]`; `joblib` added instead.
+
 ### Fixed
 - **Out-of-grid stellar parameters no longer abort template matching** – `add_default_templates` built the stellar template from the solar-only `bt-nextgen` grid but passed the requested `stellar_parameters` straight to `species`' `get_model`, so a sub-solar `[Fe/H]` (or an out-of-range Teff/log g) raised `ValueError: … smaller than the lower boundary of the model grid`. Values are now clamped to the grid boundaries (via `ReadModel.get_bounds()`) before `get_model`, snapping to the nearest edge with a `warnings.warn`, so any caller's stellar parameters degrade gracefully instead of crashing.
 

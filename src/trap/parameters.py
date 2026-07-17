@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
+import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -734,6 +738,7 @@ class TrapReductionConfig:
     # Processing parameters
     use_multiprocess: bool = True
     ncpus: int = 4
+    scratch_dir: Optional[Path] = None
     prefix: str = ''
     result_folder: str = './'
     
@@ -766,6 +771,7 @@ class TrapReductionConfig:
     threshold_pixel_by_contribution: float = 0.0
     target_pix_mask_radius: Optional[float] = None
     use_relative_position: bool = False
+    coronagraph_transmission: Optional[Any] = None
     
     # Regressor selection
     annulus_width: int = 5
@@ -808,7 +814,8 @@ class TrapReductionConfig:
             stacklevel=2,
         )
         params_dict = asdict(self)
-        
+        params_dict.pop("coronagraph_transmission", None)
+
         # Filter out None values, but keep explicit None defaults where needed
         filtered_params = {}
         for k, v in params_dict.items():
@@ -844,6 +851,7 @@ class ReductionRuntimeState:
     data_crop_size: Optional[int] = None
     search_region: Optional[np.ndarray] = None       # binary mask
     ncpus: int = 4
+    coronagraph_transmission_pix: Optional[np.ndarray] = None
 
     # --- Category C: per iteration (wavelength x component) ---
     number_of_pca_regressors: int = 20
@@ -877,6 +885,7 @@ def build_runtime_state(
     stamp_sizes: np.ndarray,
     stamp_sizes_reduction: np.ndarray,
     max_shift: float,
+    mas_per_pixel: Optional[float] = None,
 ) -> ReductionRuntimeState:
     """Compute all derived values from user config + data properties.
 
@@ -902,6 +911,19 @@ def build_runtime_state(
     ReductionRuntimeState
     """
     from trap import regressor_selection  # local import to avoid circular
+
+    coronagraph_transmission_pix = None
+    transmission = getattr(config, "coronagraph_transmission", None)
+    if transmission is not None:
+        if mas_per_pixel is None:
+            raise ValueError(
+                "mas_per_pixel is required to use coronagraph_transmission."
+            )
+        from trap.makesource import coronagraph_transmission_to_pixels
+
+        coronagraph_transmission_pix = coronagraph_transmission_to_pixels(
+            transmission, mas_per_pixel
+        )
 
     # --- Category A: normalize inputs ---
     yx_anamorphism = np.array(config.yx_anamorphism)
@@ -1014,6 +1036,7 @@ def build_runtime_state(
         data_crop_size=data_crop_size,
         search_region=search_region,
         ncpus=ncpus,
+        coronagraph_transmission_pix=coronagraph_transmission_pix,
         # Category C: initial values (will be overwritten by for_iteration)
         number_of_pca_regressors=config.number_of_pca_regressors,
         temporal_components_fraction=0.0,
@@ -1063,13 +1086,48 @@ class TrapResources:
     """Resource management for TRAP processing."""
     ncpu_reduction: int = 1
     ncpu_detection: int = 1
+    scratch_dir: Optional[Path] = None
 
     def apply(self, reduction_config: TrapReductionConfig) -> TrapReductionConfig:
         """Apply resource settings to reduction configuration.
 
         Returns a new config with ncpus set (frozen config cannot be mutated).
         """
-        return reduction_config.merge(ncpus=self.ncpu_reduction)
+        return reduction_config.merge(
+            ncpus=self.ncpu_reduction, scratch_dir=self.scratch_dir
+        )
+
+
+def resolve_scratch_dir(scratch_dir=None, required_bytes=None):
+    """Resolve the directory used for the shared-array store.
+
+    Resolution order: an explicit ``scratch_dir`` always wins; otherwise
+    ``/dev/shm`` is used if it exists and has headroom for the estimated
+    store size; otherwise ``tempfile.gettempdir()``.
+
+    Parameters
+    ----------
+    scratch_dir : str or Path, optional
+        Explicit scratch directory. Used as-is if given.
+    required_bytes : int, optional
+        Estimated size of the store. Used to check ``/dev/shm`` headroom;
+        if None, ``/dev/shm`` is used whenever it exists.
+
+    Returns
+    -------
+    Path
+        Directory in which to create the shared-array store.
+    """
+    if scratch_dir is not None:
+        return Path(scratch_dir)
+    shm = Path("/dev/shm")
+    if shm.is_dir() and os.access(shm, os.W_OK):
+        if required_bytes is None:
+            return shm
+        # Require 20% headroom over the estimated store size.
+        if shutil.disk_usage(shm).free > required_bytes * 1.2:
+            return shm
+    return Path(tempfile.gettempdir())
 
 
 # -------- wavelength and processing parameters ------------------------------

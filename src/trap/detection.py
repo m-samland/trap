@@ -73,7 +73,7 @@ def make_radial_profile(
 
     Parameters:
     - data (ndarray): The 2D data array.
-    - radial_bounds (list, optional): The radial bounds of the profile. If not provided, the bounds are determined based on the size of the data array.
+    - radial_bounds (tuple, optional): The radial bounds of the profile. If not provided, the bounds are determined based on the size of the data array.
     - bin_width (float, optional): The width of each radial bin.
     - operation (str, optional): The operation to be applied to the data within each bin. Options are "mad_std", "median", "mean", "min", "std", and "percentiles".
     - yx_center (tuple, optional): The center coordinates of the data array. If not provided, the center is assumed to be the center of the data array.
@@ -92,7 +92,7 @@ def make_radial_profile(
 
     if radial_bounds is None:
         separation_max = data.shape[-1] // 2 * np.sqrt(2)
-        radial_bounds = [1, int(separation_max)]
+        radial_bounds = (1, int(separation_max))
 
     if yx_center is None:
         yx_center = (data.shape[-2] // 2.0, data.shape[-1] // 2.0)
@@ -120,7 +120,7 @@ def make_radial_profile(
     if non_zero_separation > radial_bounds[0] + 13:
         non_zero_separation = 0
 
-    for _, separation in enumerate(range(radial_bounds[0], radial_bounds[1])):
+    for separation in range(radial_bounds[0], radial_bounds[1]):
         if separation < non_zero_separation:
             if operation == "percentiles":
                 values.append(np.ones(7) * np.nan)
@@ -211,7 +211,7 @@ def make_contrast_curve(
 
     if radial_bounds is None:
         separation_max = detection_image.shape[-1] // 2 * np.sqrt(2)
-        radial_bounds = [1, int(separation_max)]
+        radial_bounds = (1, int(separation_max))
 
     if yx_known_companion_position is not None:
         yx_known_companion_position = np.array(yx_known_companion_position)
@@ -1078,6 +1078,23 @@ def fit_2d_gaussian(
     else:
         cy, cx = yx_position
     cutout = Cutout2D(image, (cx, cy), box_size)
+
+    if np.all(np.isnan(cutout.data)):
+        # The cutout contains only NaNs.
+        # This likely has happened because the cutout of the
+        # normalized_detection_image contains only NaNs, which
+        # is a result of make_radial_profile creating a central
+        # mask of NaNs. This can happen with a candidate close
+        # to the search_region_inner_bound.
+
+        raise RuntimeError(
+            f"The cutout image at position (y, x) = ({cy}, {cx}) "
+            "contains only NaNs. The issue might be caused by "
+            "make_radial_profile that is used for "
+            "normalized_detection_image. Perhaps there is a "
+            "candidate too close to the search_region_inner_bound? "
+        )
+
     # stamp = image[cy - box_size:cy + box_size, cx - box_size:cx + box_size].copy()
     xx, yy = np.meshgrid(np.arange(box_size), np.arange(box_size))
     yx_position_cutout = np.unravel_index(np.nanargmax(cutout.data), cutout.shape)

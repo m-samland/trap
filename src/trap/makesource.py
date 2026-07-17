@@ -4,6 +4,8 @@ Routines used in TRAP
 @author: Tim Brandt, Matthias Samland
 """
 
+import warnings
+
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.nddata import Cutout2D
@@ -364,3 +366,79 @@ def extract_stamps(flux_arr, pos, pa, stamp_size, image_center=None,
 
     stamps = np.array(stamps)
     return stamps, shifts
+
+
+def coronagraph_transmission_to_pixels(transmission, mas_per_pixel):
+    """Convert a coronagraph throughput table's separation axis to pixels.
+
+    Parameters
+    ----------
+    transmission : array_like
+        Either an ``(N, 2)`` array of ``[separation_mas, throughput]`` rows, or
+        a ``(separation_mas, throughput)`` tuple of 1-D arrays. Throughput must
+        lie in ``[0, 1]``.
+    mas_per_pixel : float
+        Instrument plate scale in milliarcseconds per pixel.
+
+    Returns
+    -------
+    numpy.ndarray
+        Sorted ``(N, 2)`` float array of ``[separation_pixels, throughput]``.
+    """
+    if isinstance(transmission, tuple) and len(transmission) == 2:
+        separation_mas = np.asarray(transmission[0], dtype=float)
+        throughput = np.asarray(transmission[1], dtype=float)
+    else:
+        transmission = np.asarray(transmission, dtype=float)
+        if transmission.ndim != 2 or transmission.shape[1] != 2:
+            raise ValueError(
+                "coronagraph_transmission must be an (N, 2) array or a "
+                "(separation_mas, throughput) tuple."
+            )
+        separation_mas = transmission[:, 0]
+        throughput = transmission[:, 1]
+
+    if np.any(throughput < 0.0) or np.any(throughput > 1.0):
+        warnings.warn(
+            "Coronagraph throughput values outside [0, 1] were clipped.",
+            stacklevel=2,
+        )
+    throughput = np.clip(throughput, 0.0, 1.0)
+
+    order = np.argsort(separation_mas)
+    separation_pix = separation_mas[order] / mas_per_pixel
+    throughput = throughput[order]
+
+    if not np.isclose(throughput[-1], 1.0):
+        warnings.warn(
+            "Largest-separation coronagraph throughput is not 1.0; separations "
+            "beyond the table are treated as fully transmitting (1.0).",
+            stacklevel=2,
+        )
+
+    return np.column_stack((separation_pix, throughput))
+
+
+def coronagraph_throughput_factor(separation_pix, transmission_pix):
+    """Interpolate the coronagraph throughput at a given separation in pixels.
+
+    Below the smallest tabulated separation the innermost value is used; beyond
+    the largest tabulated separation the throughput is 1.0.
+
+    Parameters
+    ----------
+    separation_pix : float
+        Separation of the candidate from the star in pixels.
+    transmission_pix : numpy.ndarray
+        Sorted ``(N, 2)`` array of ``[separation_pixels, throughput]``.
+
+    Returns
+    -------
+    float
+        Throughput scaling factor in ``[0, 1]``.
+    """
+    separation = transmission_pix[:, 0]
+    throughput = transmission_pix[:, 1]
+    return float(
+        np.interp(separation_pix, separation, throughput, left=throughput[0], right=1.0)
+    )
