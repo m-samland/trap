@@ -1255,7 +1255,9 @@ def trap_config_for_irdis() -> TrapConfig:
     IRDIS-specific defaults:
 
     * ``pixel_scale_arcsec_per_pixel = 0.01225`` (vs 0.00746 for IFS).
-    * ``instrument_type = "imaging"`` (DBI is imaging, not IFU).
+    * ``instrument_type = "photometry"`` (DBI has discrete filter channels;
+      matches the ``SpectralTemplate`` branch that integrates model spectra
+      through filter bandpasses via ``species.SyntheticPhotometry``).
     * ``wavelength_indices = range(0, 2)`` (2 discrete filter channels).
     * ``search_region_outer_bound = 200`` (K-band AO cutoff at ~1.4″ /
       0.01225″/px ≈ 115 px; 200 px gives comfortable outer margin).
@@ -1272,7 +1274,7 @@ def trap_config_for_irdis() -> TrapConfig:
             telescope_diameter_m=7.99,
             detector_gain=1.0,
             readnoise=0.0,
-            instrument_type="imaging",
+            instrument_type="photometry",
         ),
         reduction=TrapReductionConfig(
             search_region_outer_bound=200,
