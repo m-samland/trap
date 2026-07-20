@@ -22,6 +22,21 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   store (`tests/test_shared_arrays.py`).
 
 ### Changed
+- **`include_noise` → `estimate_noise_from_data`; ivar cube is always used when passed.**
+  The old gate on `TrapReductionConfig.include_noise` silently discarded any
+  `inverse_variance_full` handed to `run_complete_reduction` when the flag was
+  False, which was a footgun: passing an ivar cube looked like a request to
+  use it, but the flag had to be flipped separately. The gate is now:
+  explicit ivar always wins; the (renamed) `estimate_noise_from_data` flag
+  only controls the fallback path when NO ivar is supplied (True estimates
+  Poisson + read-noise from the data itself; False leaves the fit
+  unweighted). Callers migrating: rename `include_noise=…` to
+  `estimate_noise_from_data=…`; behavior is unchanged unless you were
+  passing an ivar cube with `include_noise=False`, in which case it now
+  actually gets used. Renamed everywhere (`parameters.py`, `regression.py`,
+  the tutorial `.ipynb` / `.py` variants, the IRDIS debris tutorial, the
+  CV validation scripts); dead `1./y` fallback in `regression.py`'s four
+  inner gates removed (the top-level gate already covers it).
 - **Ray removed; multiprocessing now uses joblib/loky** – `run_trap_search` and
   `multi_position_cross_validation` dispatch position chunks through
   `joblib.Parallel` (loky backend) instead of Ray remote functions. Results are

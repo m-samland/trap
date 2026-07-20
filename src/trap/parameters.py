@@ -162,12 +162,14 @@ class Reduction_parameters(object):
         Determines the sky rotation direction. True for SPHERE,
         False for most instruments. Best try both on a data set
         with known companion to confirm for your instrument.
-    include_noise : boolean
-        Take into account variance of the input data when fitting
-        models. If True and no explicit variance is provided to
-        the reduction wrapper, the data is assumed to represent the
-        shot noise in the data and the read noise and gain from
-        the instrument object are used. Default is False.
+    estimate_noise_from_data : boolean
+        Fallback trigger for noise weighting when the user does NOT
+        provide an ``inverse_variance`` cube to the reduction wrapper.
+        If True, TRAP estimates the noise from the data itself
+        (shot noise + read noise from the instrument object). If False,
+        the fit is unweighted. If an ``inverse_variance`` cube IS
+        provided, it is always used regardless of this flag. Default
+        is False. (Renamed from ``include_noise``.)
     temporal_model : boolean
         Perform temporal model fit. Default is True.
     temporal_plus_spatial_model : boolean
@@ -365,7 +367,7 @@ class Reduction_parameters(object):
     search_region_inner_bound
     search_region_outer_bound
     oversampling
-    include_noise
+    estimate_noise_from_data
     data_auto_crop
     data_crop_size
     right_handed
@@ -439,7 +441,7 @@ class Reduction_parameters(object):
             data_auto_crop=True,
             data_crop_size=None,
             right_handed=True,
-            include_noise=False,
+            estimate_noise_from_data=False,
             temporal_model=True,
             temporal_plus_spatial_model=False,
             second_stage_trap=False,
@@ -511,7 +513,7 @@ class Reduction_parameters(object):
         self.search_region_inner_bound = search_region_inner_bound
         self.search_region_outer_bound = search_region_outer_bound
         self.oversampling = oversampling
-        self.include_noise = include_noise
+        self.estimate_noise_from_data = estimate_noise_from_data
         self.data_auto_crop = data_auto_crop
         self.data_crop_size = data_crop_size
         self.right_handed = right_handed
@@ -725,7 +727,7 @@ class TrapReductionConfig:
     data_auto_crop: bool = True
     data_crop_size: Optional[int] = None
     right_handed: bool = True
-    include_noise: bool = False
+    estimate_noise_from_data: bool = False
     use_progress_bar: bool = True
 
     # Model selection

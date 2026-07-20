@@ -200,26 +200,26 @@ def trap_one_position(
     else:
         model = None
 
-    if reduction_parameters.include_noise:
-        if inverse_variance is None:
-            # NOTE: Uses photon noise from data itself.
-            # May not be valid based on pre-processing steps done
-            if bad_pixel_mask is not None:
-                inverse_variance_reduction_area = 1.0 / (
-                    np.abs(data_reduce[:, reduction_mask_wo_badpixels]) + readnoise**2
-                )
-            else:
-                inverse_variance_reduction_area = 1.0 / (
-                    np.abs(data_reduce[:, reduction_mask]) + readnoise**2
-                )
-
+    if inverse_variance is not None:
+        # Explicit ivar always wins — passing an ivar cube is the request
+        # to use it, regardless of `estimate_noise_from_data`.
+        if bad_pixel_mask is not None:
+            inverse_variance_reduction_area = inverse_variance[
+                :, reduction_mask_wo_badpixels
+            ]
         else:
-            if bad_pixel_mask is not None:
-                inverse_variance_reduction_area = inverse_variance[
-                    :, reduction_mask_wo_badpixels
-                ]
-            else:
-                inverse_variance_reduction_area = inverse_variance[:, reduction_mask]
+            inverse_variance_reduction_area = inverse_variance[:, reduction_mask]
+    elif reduction_parameters.estimate_noise_from_data:
+        # No ivar supplied and user asked for theoretical-from-data noise.
+        # May not be valid depending on preprocessing steps.
+        if bad_pixel_mask is not None:
+            inverse_variance_reduction_area = 1.0 / (
+                np.abs(data_reduce[:, reduction_mask_wo_badpixels]) + readnoise**2
+            )
+        else:
+            inverse_variance_reduction_area = 1.0 / (
+                np.abs(data_reduce[:, reduction_mask]) + readnoise**2
+            )
     else:
         inverse_variance_reduction_area = None
 

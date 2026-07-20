@@ -546,7 +546,7 @@ def run_trap_with_model_temporal(
     yx_center_injection : array_like
         Array containing yx_center to be used for forward model position.
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -740,11 +740,8 @@ def run_trap_with_model_temporal(
                 model_matrix = np.vstack((constant_offset, model_for_pixel))
                 A = model_matrix.T
 
-        if reduction_parameters.include_noise:
-            if inverse_variance_reduction_area is not None:
-                inverse_covariance = inverse_variance_reduction_area[:, idx]
-            else:
-                inverse_covariance = 1. / y
+        if inverse_variance_reduction_area is not None:
+            inverse_covariance = inverse_variance_reduction_area[:, idx]
         else:
             inverse_covariance = None
 
@@ -1062,7 +1059,7 @@ def run_trap_with_model_spatial(
     yx_center_injection : array_like
         Array containing yx_center to be used for forward model position.
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     true_contrast : scalar, optional
         The true contrast of an injected signal.
@@ -1180,21 +1177,14 @@ def run_trap_with_model_spatial(
             else:
                 A = np.hstack((B, model_matrix.T))
 
-            if reduction_parameters.include_noise:
-                if inverse_variance_reduction_area is not None:
-                    inverse_covariance = inverse_variance_reduction_area[idx]
-                else:
-                    inverse_covariance = 1. / y
-
-                P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
-                    design_matrix=A.T,
-                    data=y,
-                    inverse_covariance=inverse_covariance)
+            if inverse_variance_reduction_area is not None:
+                inverse_covariance = inverse_variance_reduction_area[idx]
             else:
-                P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
-                    design_matrix=A.T,
-                    data=y,
-                    inverse_covariance=None)
+                inverse_covariance = None
+            P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
+                design_matrix=A.T,
+                data=y,
+                inverse_covariance=inverse_covariance)
 
             reconstructed_lightcurve = np.dot(A, P_wo_marginalization)
 
@@ -1340,7 +1330,7 @@ def run_trap_with_model_wavelength(
     yx_center_injection : array_like
         Array containing yx_center to be used for forward model position.
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -1529,11 +1519,8 @@ def run_trap_with_model_wavelength(
                 model_matrix = np.vstack((constant_offset, model_for_pixel))
                 A = model_matrix.T
 
-        if reduction_parameters.include_noise:
-            if inverse_variance_reduction_area is not None:
-                inverse_covariance = inverse_variance_reduction_area[:, idx]
-            else:
-                inverse_covariance = 1. / y
+        if inverse_variance_reduction_area is not None:
+            inverse_covariance = inverse_variance_reduction_area[:, idx]
         else:
             inverse_covariance = None
 
@@ -1732,7 +1719,7 @@ def run_trap_with_model_temporal_optimized(
         Boolean mask of data included in the reduction
         (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -1782,11 +1769,8 @@ def run_trap_with_model_temporal_optimized(
             model_matrix = np.vstack((constant_offset, model_for_pixel))
             A = model_matrix.T
 
-        if reduction_parameters.include_noise:
-            if inverse_variance_reduction_area is not None:
-                inverse_covariance = inverse_variance_reduction_area[:, idx]
-            else:
-                inverse_covariance = 1. / y
+        if inverse_variance_reduction_area is not None:
+            inverse_covariance = inverse_variance_reduction_area[:, idx]
         else:
             inverse_covariance = None
         try:
@@ -1886,7 +1870,7 @@ def temporal_pca_cross_validation(
         Boolean mask of data included in the reduction
         (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -1965,7 +1949,7 @@ def temporal_pca_cross_validation(
                 ) = train_test_split(
                     A, y, inverse_variance_vector, indices, test_size=test_size, random_state=n)
 
-                if reduction_parameters.include_noise:
+                if reduction_parameters.estimate_noise_from_data:
                     if inverse_variance_reduction_area is not None:
                         inverse_covariance = inverse_variance_train
                     else:
