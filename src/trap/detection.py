@@ -4033,9 +4033,12 @@ class DetectionAnalysis(object):
                     final_x_positions.append(unique_x_relative[idx])
                 else:
                     if idx not in unique_candidate_indices and idx not in rejected:
-                        temp_candidate_index = np.argmax(
-                            combined_companion_table.iloc[unique_indices][mask]["peak_pixel_snr"]
+                        _peak_column = (
+                            combined_companion_table.iloc[unique_indices][mask]["peak_pixel_snr"].to_numpy()
                         )
+                        if np.isnan(_peak_column).all():
+                            continue
+                        temp_candidate_index = int(np.nanargmax(_peak_column))
                         x_position = combined_companion_table.iloc[unique_indices][mask].iloc[
                             temp_candidate_index
                         ]["x_relative"]
