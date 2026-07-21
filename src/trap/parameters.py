@@ -720,7 +720,8 @@ class TrapReductionConfig:
     # Search region parameters
     search_region: Optional[Any] = None  # Binary mask of relative position to search for planets
     search_region_inner_bound: int = 1
-    search_region_outer_bound: int = 85
+    search_region_outer_bound: Optional[int] = 85
+    reduction_mask_min_pixels: int = 30
     oversampling: int = 1
     
     # Data preprocessing
@@ -883,6 +884,8 @@ class ReductionRuntimeState:
     search_region: Optional[np.ndarray] = None       # binary mask
     ncpus: int = 4
     coronagraph_transmission_pix: Optional[np.ndarray] = None
+    valid_pixel_mask_cropped: Optional[np.ndarray] = None
+    reduction_mask_min_pixels: int = 30
 
     # --- Category C: per iteration (wavelength x component) ---
     number_of_pca_regressors: int = 20
