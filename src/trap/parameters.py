@@ -162,12 +162,14 @@ class Reduction_parameters(object):
         Determines the sky rotation direction. True for SPHERE,
         False for most instruments. Best try both on a data set
         with known companion to confirm for your instrument.
-    include_noise : boolean
-        Take into account variance of the input data when fitting
-        models. If True and no explicit variance is provided to
-        the reduction wrapper, the data is assumed to represent the
-        shot noise in the data and the read noise and gain from
-        the instrument object are used. Default is False.
+    estimate_noise_from_data : boolean
+        Fallback trigger for noise weighting when the user does NOT
+        provide an ``inverse_variance`` cube to the reduction wrapper.
+        If True, TRAP estimates the noise from the data itself
+        (shot noise + read noise from the instrument object). If False,
+        the fit is unweighted. If an ``inverse_variance`` cube IS
+        provided, it is always used regardless of this flag. Default
+        is False. (Renamed from ``include_noise``.)
     temporal_model : boolean
         Perform temporal model fit. Default is True.
     temporal_plus_spatial_model : boolean
@@ -365,7 +367,7 @@ class Reduction_parameters(object):
     search_region_inner_bound
     search_region_outer_bound
     oversampling
-    include_noise
+    estimate_noise_from_data
     data_auto_crop
     data_crop_size
     right_handed
@@ -439,7 +441,7 @@ class Reduction_parameters(object):
             data_auto_crop=True,
             data_crop_size=None,
             right_handed=True,
-            include_noise=False,
+            estimate_noise_from_data=False,
             temporal_model=True,
             temporal_plus_spatial_model=False,
             second_stage_trap=False,
@@ -511,7 +513,7 @@ class Reduction_parameters(object):
         self.search_region_inner_bound = search_region_inner_bound
         self.search_region_outer_bound = search_region_outer_bound
         self.oversampling = oversampling
-        self.include_noise = include_noise
+        self.estimate_noise_from_data = estimate_noise_from_data
         self.data_auto_crop = data_auto_crop
         self.data_crop_size = data_crop_size
         self.right_handed = right_handed
@@ -597,6 +599,14 @@ def _to_dict(maybe_dataclass) -> Dict[str, Any]:
 
 # -------- instrument configuration ------------------------------------------
 
+# IRDIS DBI / broadband filter modes accepted by InstrumentConfig.to_instrument.
+# Kept at module scope because InstrumentConfig uses slots=True.
+_IRDIS_OBS_MODES = (
+    "DB_K12", "DB_H23", "DB_H34", "DB_Y23", "DB_J23",
+    "BB_H", "BB_K", "BB_J", "BB_Y", "BB_Ks",
+)
+
+
 @dataclass(slots=True)
 class InstrumentConfig:
     """Configuration for TRAP instrument parameters."""
@@ -608,34 +618,40 @@ class InstrumentConfig:
     instrument_type: str = "ifu"
     spectral_resolution_yj: int = 55
     spectral_resolution_h: int = 35
-    
+
     def merge(self, **kw) -> "InstrumentConfig":
         """Return a copy with selected fields overridden."""
         return replace(self, **kw)
-    
+
     def to_instrument(self, obs_mode: str, wavelengths=None) -> Instrument:
-        """Create Instrument instance from configuration.
-        
+        """Create ``Instrument`` from configuration.
+
         Parameters
         ----------
         obs_mode : str
-            Observation mode, either 'OBS_YJ' or 'OBS_H'
+            Observation mode. IFS: ``"OBS_YJ"`` or ``"OBS_H"``. IRDIS: any of
+            ``DB_K12/H23/H34/Y23/J23`` or ``BB_H/K/J/Y/Ks``.
         wavelengths : astropy.units.Quantity, optional
-            Wavelength array. If None, will be set to None in the Instrument.
-            
+            Wavelength array. If ``None``, ``Instrument.wavelengths`` is left
+            unset.
+
         Returns
         -------
         Instrument
-            TRAP Instrument instance configured with the parameters.
+            TRAP ``Instrument`` instance. For IFS modes, ``spectral_resolution``
+            comes from ``spectral_resolution_yj``/``spectral_resolution_h``.
+            For IRDIS modes, ``spectral_resolution=None`` — DBI has no
+            meaningful spectral R (2 discrete filters).
         """
-        # Determine spectral resolution based on observation mode
         if obs_mode == 'OBS_YJ':
             spectral_resolution = self.spectral_resolution_yj
         elif obs_mode == 'OBS_H':
             spectral_resolution = self.spectral_resolution_h
+        elif obs_mode in _IRDIS_OBS_MODES:
+            spectral_resolution = None
         else:
             raise ValueError(f"Unsupported observation mode: {obs_mode}")
-        
+
         return Instrument(
             name=self.name,
             pixel_scale=u.pixel_scale(self.pixel_scale_arcsec_per_pixel * u.arcsec / u.pixel),
@@ -711,7 +727,7 @@ class TrapReductionConfig:
     data_auto_crop: bool = True
     data_crop_size: Optional[int] = None
     right_handed: bool = True
-    include_noise: bool = False
+    estimate_noise_from_data: bool = False
     use_progress_bar: bool = True
 
     # Model selection
@@ -1242,6 +1258,47 @@ def trap_config_for_ifs() -> TrapConfig:
         ),
         processing=ProcessingParameters(
             wavelength_indices=range(1, 38),
+        ),
+    )
+    return config
+
+
+def trap_config_for_irdis() -> TrapConfig:
+    """Create TRAP configuration optimized for IRDIS observations.
+
+    IRDIS-specific defaults:
+
+    * ``pixel_scale_arcsec_per_pixel = 0.01225`` (vs 0.00746 for IFS).
+    * ``instrument_type = "photometry"`` (DBI has discrete filter channels;
+      matches the ``SpectralTemplate`` branch that integrates model spectra
+      through filter bandpasses via ``species.SyntheticPhotometry``).
+    * ``wavelength_indices = range(0, 2)`` (2 discrete filter channels).
+    * ``search_region_outer_bound = 200`` (K-band AO cutoff at ~1.4″ /
+      0.01225″/px ≈ 115 px; 200 px gives comfortable outer margin).
+    * ``search_region_inner_bound = 1`` (coronagraph inner-working-angle is
+      enforced by the coronagraph_transmission table injected by
+      ``spherical.pipeline.run_trap``).
+    * ``temporal_model=True``, ``spatial_model=False``, ``right_handed=False``
+      (SPHERE convention; mirrors ``trap_config_for_ifs``).
+    """
+    config = TrapConfig(
+        instrument=InstrumentConfig(
+            name="IRDIS",
+            pixel_scale_arcsec_per_pixel=0.01225,
+            telescope_diameter_m=7.99,
+            detector_gain=1.0,
+            readnoise=0.0,
+            instrument_type="photometry",
+        ),
+        reduction=TrapReductionConfig(
+            search_region_outer_bound=200,
+            temporal_model=True,
+            spatial_model=False,
+            right_handed=False,
+            search_region_inner_bound=1,
+        ),
+        processing=ProcessingParameters(
+            wavelength_indices=range(0, 2),
         ),
     )
     return config
