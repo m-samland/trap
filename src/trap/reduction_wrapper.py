@@ -181,6 +181,14 @@ def trap_one_position(
     )
     reduction_mask[low_contribution_mask] = False
 
+    valid_pixel_mask_cropped = getattr(runtime, "valid_pixel_mask_cropped", None) if runtime is not None else None
+    if valid_pixel_mask_cropped is not None:
+        signal_mask = np.logical_and(signal_mask, valid_pixel_mask_cropped)
+        reduction_mask = np.logical_and(reduction_mask, valid_pixel_mask_cropped)
+    min_pixels = getattr(runtime, "reduction_mask_min_pixels", 0) if runtime is not None else 0
+    if int(reduction_mask.sum()) < min_pixels:
+        return None
+
     if bad_pixel_mask is not None:
         reduction_mask_wo_badpixels = np.logical_and(reduction_mask, ~bad_pixel_mask)
 
@@ -259,6 +267,7 @@ def trap_one_position(
             signal_mask=signal_mask,
             known_companion_mask=known_companion_mask,
             bad_pixel_mask=bad_pixel_mask,
+            valid_pixel_mask=valid_pixel_mask_cropped,
             additional_regressors=opposite_mask,
             right_handed=reduction_parameters.right_handed,
             pa=pa,
@@ -547,6 +556,8 @@ def fill_detection_image(
     use_residual_correlation,
 ):
     """Fill detection image arrays for a single position from a result dict."""
+    if result is None:
+        return
     for key in detection_image:
         if result[key] is not None:
             detection_image[key][0][yx[0], yx[1]] = result[key].measured_contrast

@@ -91,3 +91,47 @@ class TestMultiwavelengthRegressorFootprint:
         result = self._run(mode, valid_pixel_masks=[mask_left, None])
         if 0 in result:
             assert not (result[0] & ~mask_left).any()
+
+
+class TestTrapOnePositionThreshold:
+    def _fake_runtime(self, mask, threshold):
+        from trap.parameters import ReductionRuntimeState
+        return ReductionRuntimeState(
+            yx_anamorphism=np.array([1.0, 1.0]),
+            valid_pixel_mask_cropped=mask,
+            reduction_mask_min_pixels=threshold,
+            reduction_mask_psf_size=5,
+            signal_mask_psf_size=5,
+        )
+
+    def _fake_inputs(self):
+        data = np.zeros((8, 41, 41), dtype="float64")
+        psf = np.zeros((5, 5), dtype="float64")
+        psf[2, 2] = 1.0
+        pa = np.zeros(8, dtype="float64")
+        return data, psf, pa
+
+    def test_returns_none_when_survivors_below_threshold(self):
+        from trap.reduction_wrapper import trap_one_position
+        data, psf, pa = self._fake_inputs()
+        mask = np.zeros(data.shape[-2:], dtype=bool)
+        runtime = self._fake_runtime(mask, threshold=1)
+        config = TrapReductionConfig(
+            reduction_mask_min_pixels=1,
+            annulus_width=5,
+            temporal_model=True,
+            spatial_model=False,
+            temporal_plus_spatial_model=False,
+            fit_planet=False,
+            use_multiprocess=False,
+        )
+        result = trap_one_position(
+            guess_position=(0, 15),
+            data=data, flux_psf=psf, pa=pa,
+            reduction_parameters=config,
+            known_companion_mask=np.zeros(data.shape[-2:], dtype=bool),
+            runtime=runtime,
+            yx_center=(20, 20),
+            yx_center_injection=np.array([20.0, 20.0]),
+        )
+        assert result is None
