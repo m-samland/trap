@@ -234,6 +234,7 @@ class MultiwavelengthRegressors:
     bad_pixel_masks: Any
     mode: str
     max_regressor_pool_size: float
+    valid_pixel_masks: Any = None
 
 
 def make_multiwavelength_regressor_masks(
@@ -245,6 +246,7 @@ def make_multiwavelength_regressor_masks(
     signal_mask,
     n_reference_pixels,
     known_companion_mask=None,
+    valid_pixel_masks=None,
     rng=None,
 ):
     """Regressor-pixel masks in other wavelength slices for one tested position.
@@ -276,6 +278,8 @@ def make_multiwavelength_regressor_masks(
     no eligible pixels are omitted.
     """
     context = multiwavelength_regressors
+    if valid_pixel_masks is None:
+        valid_pixel_masks = context.valid_pixel_masks
     annulus_width = reduction_parameters.annulus_width
     annulus_offset = reduction_parameters.annulus_offset
     separation = np.sqrt((yx_pixel[0] - yx_center[0]) ** 2 + (yx_pixel[1] - yx_center[1]) ** 2) + annulus_offset
@@ -310,6 +314,11 @@ def make_multiwavelength_regressor_masks(
         footprint = scale_mask_about_center(signal_mask, scale, yx_center_slice)
         occluded_mask = np.logical_and(pool_mask, footprint)
         sdi_mask = np.logical_and(np.logical_and(annulus_mask, ~bad_pixel_exclusion), footprint)
+        if valid_pixel_masks is not None and valid_pixel_masks[i] is not None:
+            slice_valid = valid_pixel_masks[i]
+            pool_mask = np.logical_and(pool_mask, slice_valid)
+            occluded_mask = np.logical_and(occluded_mask, slice_valid)
+            sdi_mask = np.logical_and(sdi_mask, slice_valid)
         candidates[int(slice_index)] = (pool_mask, occluded_mask, sdi_mask)
 
     masks = OrderedDict()
@@ -362,6 +371,7 @@ def make_regressor_pool_for_pixel(
         reduction_parameters, yx_pixel, yx_dim, yx_center=None,
         signal_mask=None, known_companion_mask=None,
         bad_pixel_mask=None, additional_regressors=None,
+        valid_pixel_mask=None,
         runtime=None, **kwargs):
     """ Given a certain pixel position, an array with the dimension
     of the image is returned marking the for this pixelregressors as True.
@@ -417,12 +427,11 @@ def make_regressor_pool_for_pixel(
     inclusion = np.logical_or(annulus_mask, radial_regressor_mask)
     if additional_regressors is not None:
         inclusion = np.logical_or(inclusion, additional_regressors)
-    regressor_pool_mask = np.logical_and.reduce(([inclusion,
-                                                  ~target_pix_mask,
-                                                  ~signal_mask,
-                                                  ~known_companion_mask,
-                                                  ~bad_pixel_mask]))
-    return regressor_pool_mask
+    masks = [inclusion, ~target_pix_mask, ~signal_mask,
+             ~known_companion_mask, ~bad_pixel_mask]
+    if valid_pixel_mask is not None:
+        masks.append(valid_pixel_mask)
+    return np.logical_and.reduce(masks)
 
 
 def find_N_closest_values_in_image(target_value, image, N, regressor_pool_mask=None):
