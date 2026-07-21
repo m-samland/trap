@@ -3,7 +3,11 @@
 import numpy as np
 import pytest
 
-from trap.parameters import ReductionRuntimeState, TrapReductionConfig
+from trap.parameters import (
+    ReductionRuntimeState,
+    TrapReductionConfig,
+    _derive_outer_bound,
+)
 
 
 class TestConfigDefaults:
@@ -49,3 +53,35 @@ class TestRuntimeStateDefaults:
         )
         assert rs2.valid_pixel_mask_cropped is mask
         assert rs2.reduction_mask_min_pixels == 17
+
+
+class TestDeriveOuterBound:
+    def test_full_footprint_reaches_edge(self):
+        H = W = 101
+        mask = np.ones((H, W), dtype=bool)
+        r = _derive_outer_bound(mask, (H // 2, W // 2), min_pixels=8)
+        assert r >= 70
+
+    def test_circular_footprint_matches_radius(self):
+        H = W = 101
+        yy, xx = np.indices((H, W))
+        cy, cx = H // 2, W // 2
+        radius = 30
+        mask = np.hypot(yy - cy, xx - cx) <= radius
+        r = _derive_outer_bound(mask, (cy, cx), min_pixels=8)
+        assert radius - 1 <= r <= radius
+
+    def test_empty_footprint_returns_zero(self):
+        mask = np.zeros((51, 51), dtype=bool)
+        assert _derive_outer_bound(mask, (25, 25), min_pixels=1) == 0
+
+    def test_min_pixels_gate_reduces_radius(self):
+        H = W = 101
+        cy, cx = 50, 50
+        mask = np.zeros((H, W), dtype=bool)
+        for dy, dx in [(30, 0), (-30, 0), (0, 30), (0, -30)]:
+            mask[cy + dy, cx + dx] = True
+        r_low = _derive_outer_bound(mask, (cy, cx), min_pixels=1)
+        r_high = _derive_outer_bound(mask, (cy, cx), min_pixels=8)
+        assert r_low == 30
+        assert r_high == 0

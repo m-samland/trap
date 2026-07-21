@@ -914,6 +914,24 @@ class ReductionRuntimeState:
         )
 
 
+def _derive_outer_bound(valid_mask, yx_center, min_pixels):
+    """Largest integer radius whose annulus holds >= ``min_pixels`` valid pixels.
+
+    Single-pass over the mask via bincount; O(H*W) work, no Python loop.
+    """
+    if not np.any(valid_mask):
+        return 0
+    yy, xx = np.indices(valid_mask.shape, dtype=np.float32)
+    r = np.hypot(yy - yx_center[0], xx - yx_center[1])
+    r_int = r.astype(np.int32)
+    counts = np.bincount(
+        r_int[valid_mask].ravel(),
+        minlength=int(r.max()) + 1,
+    )
+    valid_radii = np.flatnonzero(counts >= min_pixels)
+    return int(valid_radii.max()) if valid_radii.size else 0
+
+
 def build_runtime_state(
     config: TrapReductionConfig,
     data_shape: tuple,
