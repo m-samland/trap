@@ -1436,6 +1436,15 @@ def run_complete_reduction(
         If True, overwrite existing files. Default is False.
     use_progress_bar : bool, optional
         If True, display a progress bar during processing. Default is False.
+    valid_pixel_mask : array_like, optional
+        Static 2D boolean array (``H × W``) or 3D per-wavelength array
+        (``n_wave × H × W``) aligned with ``data_full``'s spatial axes.
+        ``True`` = detector pixel carries real data. ``None`` (default) =
+        no footprint constraint. When supplied, positions outside the
+        footprint are excluded from scheduling, per-position reduction
+        and regressor masks are intersected with the footprint, and
+        positions with fewer than ``reduction_mask_min_pixels`` surviving
+        pixels return ``NaN`` in the detection map instead of crashing.
 
     Returns
     -------

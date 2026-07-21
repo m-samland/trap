@@ -6,6 +6,17 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ## [Unreleased]
 
 ### Added
+- **Edge-of-FoV reduction** – `run_complete_reduction` accepts a
+  `valid_pixel_mask` (2D `H×W` or 3D `n_wave×H×W`) describing which detector
+  pixels carry real data. Positions outside the footprint are excluded from
+  scheduling, per-position `signal_mask` / `reduction_mask` / single- and
+  multi-wavelength regressor pools are intersected with the footprint, and
+  positions with fewer than `reduction_mask_min_pixels` surviving reduction
+  pixels return `NaN` in the detection map instead of raising. Two new knobs
+  on `TrapReductionConfig`: `search_region_outer_bound: Optional[int] = 85`
+  (`None` triggers footprint-derived auto-derivation) and
+  `reduction_mask_min_pixels: int = 30`. Callers that don't pass a footprint
+  see identical behavior.
 - **Multi-wavelength regressors for IFS (WP2)** – the temporal regressor pool
   can be enriched with time series from other wavelength slices. The speckle
   field zooms radially by `s = λ_j/λ_ref` about the star center while
@@ -45,6 +56,15 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   store (`tests/test_shared_arrays.py`).
 
 ### Fixed
+- `inject_signal` no longer raises when the injection stamp overlaps the
+  array boundary — the destination slice and stamp are clipped per frame
+  and frames entirely outside the array are skipped.
+- `build_runtime_state` clamps the auto-computed `data_crop_size` at the
+  input FoV with an INFO log instead of raising when the requested crop
+  would exceed it.
+- Detection-map peak extraction (`detection.py:4036`) is NaN-safe:
+  positions marked `NaN` by the reduction no longer poison the `argmax`
+  result of the candidate cluster.
 - **`trap_config_for_irdis()` now sets `instrument_type="photometry"`** (was
   `"imaging"`). The old value matched neither branch of
   `SpectralTemplate.__init__` (which checks for `'ifu'` and `'photometry'`),
