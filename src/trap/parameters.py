@@ -1281,6 +1281,11 @@ def trap_config_for_irdis() -> TrapConfig:
       ``spherical.pipeline.run_trap``).
     * ``temporal_model=True``, ``spatial_model=False``, ``right_handed=False``
       (SPHERE convention; mirrors ``trap_config_for_ifs``).
+    * ``yx_anamorphism=[1.0062, 1.0]`` (SPHERE-measured y-stretch). Matches the
+      spherical IRDIS preprocessing default where ``correct_anamorphism=False``,
+      so the un-corrected geometry is baked into the cubes and the forward model
+      compensates. Override to ``[1.0, 1.0]`` when the anamorphism correction is
+      applied upstream.
     """
     config = TrapConfig(
         instrument=InstrumentConfig(
@@ -1297,6 +1302,7 @@ def trap_config_for_irdis() -> TrapConfig:
             spatial_model=False,
             right_handed=False,
             search_region_inner_bound=1,
+            yx_anamorphism=np.array([1.0062, 1.0]),
         ),
         processing=ProcessingParameters(
             wavelength_indices=range(0, 2),
