@@ -14,10 +14,15 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   with the slice FWHM plus margin), slice bad pixels, and known companions.
   Configured on `TrapReductionConfig` via `multiwavelength_regressors`
   (`None` | `"pool"` = full scaled annulus | `"occluded"` = scaled
-  reference-signal-mask footprint, a subset of `"pool"`),
-  `regressor_wavelength_indices`, and `max_regressor_pool_size` (total pool
-  budget in units of the single-wavelength pool; occluded pixels are always
-  kept, annulus enrichment is subsampled per slice). The preprocessed cube is
+  reference-signal-mask footprint, a subset of `"pool"` | `"sdi"` = the
+  scaled footprint with the static-signal *and* known-companion exclusions
+  dropped, so the speckle pool at the tested position is admitted; classic
+  SDI trick for a "dark" donor channel — e.g. IRDIS K2 for methane-rich
+  companions — will self-subtract where the source is bright, bad-pixel
+  exclusion still applies), `regressor_wavelength_indices`, and
+  `max_regressor_pool_size` (total pool budget in units of the
+  single-wavelength pool; occluded pixels are always kept, annulus
+  enrichment is subsampled per slice). The preprocessed cube is
   stored once as `(λ, y, x, t)` in the shared-array store for efficient
   scattered time-series reads; the per-wavelength `(t, y, x)` working slice
   is transposed out per iteration and removed afterwards. Single-wavelength

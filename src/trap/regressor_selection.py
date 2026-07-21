@@ -255,20 +255,33 @@ def make_multiwavelength_regressor_masks(
     (width also scaled by s, budget-capped); mode ``"occluded"`` keeps only
     its intersection with the scaled reference-signal-mask footprint, i.e.
     the speckles that occlude the tested position at the reference
-    wavelength (B is a subset of A).
+    wavelength (B is a subset of A). Mode ``"sdi"`` is like ``"occluded"``
+    but drops the reference-signal-mask exclusion — the scaled speckle
+    footprint at the tested position is admitted to the regressor pool.
+    This is the classic SDI trick: valid only when the donor channel is
+    assumed to carry little astrophysical flux at the tested position
+    (e.g. IRDIS K2 for methane/water-rich planets); on channels where the
+    source is bright it will self-subtract. ``"sdi"`` also drops the
+    ``known_companion_mask`` exclusion in donor slices — for a two-channel
+    dataset with the tested position on the known companion (as in a
+    forced-photometry / injection recovery run) the companion mask would
+    otherwise erase most of the very pixels this mode is meant to admit.
+    Bad-pixel exclusions still apply in ``"sdi"``.
 
-    In every slice the *static* source position is excluded with the
-    reference signal track dilated to the slice's FWHM plus a margin; the
-    displacement-eligibility criterion ``r >= fwhm_j / (s - 1)`` falls out
-    of this test. Returns an OrderedDict mapping slice index to boolean
-    ``(y, x)`` mask; slices with no eligible pixels are omitted.
+    In modes ``"pool"`` and ``"occluded"`` the *static* source position is
+    excluded with the reference signal track dilated to the slice's FWHM
+    plus a margin; the displacement-eligibility criterion
+    ``r >= fwhm_j / (s - 1)`` falls out of that test. Returns an
+    OrderedDict mapping slice index to boolean ``(y, x)`` mask; slices with
+    no eligible pixels are omitted.
     """
     context = multiwavelength_regressors
     annulus_width = reduction_parameters.annulus_width
     annulus_offset = reduction_parameters.annulus_offset
     separation = np.sqrt((yx_pixel[0] - yx_center[0]) ** 2 + (yx_pixel[1] - yx_center[1]) ** 2) + annulus_offset
 
-    candidates = OrderedDict()  # slice index -> (pool_mask, occluded_mask)
+    # slice index -> (pool_mask, occluded_mask, sdi_mask)
+    candidates = OrderedDict()
     for i, slice_index in enumerate(context.wavelength_indices):
         scale = float(context.scale_factors[i])
         if np.isclose(scale, 1.0):
@@ -280,33 +293,45 @@ def make_multiwavelength_regressor_masks(
             annulus_mask = make_annulus_mask_by_separation(
                 separation=separation * scale, width=annulus_width * scale, yx_dim=yx_dim, yx_center=yx_center_slice
             )
-        # Static-position exclusion: the source sits at the same (y, x) in
-        # every slice; grow the reference track to the slice's FWHM + margin.
         growth = int(np.ceil(max(context.fwhm[i] - context.fwhm_reference, 0.0) / 2.0)) + 1
-        exclusion_mask = binary_dilation(signal_mask, iterations=growth)
-        if known_companion_mask is not None:
-            exclusion_mask = np.logical_or(exclusion_mask, binary_dilation(known_companion_mask, iterations=growth))
+        # Additive exclusions. Bad pixels always apply. Known companions
+        # apply in "pool"/"occluded" (static across lambda, excluded at the
+        # same (y, x) in every donor). Static signal-track exclusion
+        # (dilated tested-position track) applies only in "pool"/"occluded".
+        bad_pixel_exclusion = np.zeros(yx_dim, dtype=bool)
         if context.bad_pixel_masks is not None and context.bad_pixel_masks[i] is not None:
-            exclusion_mask = np.logical_or(exclusion_mask, context.bad_pixel_masks[i])
-        pool_mask = np.logical_and(annulus_mask, ~exclusion_mask)
+            bad_pixel_exclusion = context.bad_pixel_masks[i]
+        companion_exclusion = np.zeros(yx_dim, dtype=bool)
+        if known_companion_mask is not None:
+            companion_exclusion = binary_dilation(known_companion_mask, iterations=growth)
+        signal_exclusion = binary_dilation(signal_mask, iterations=growth)
+        full_exclusion = np.logical_or(signal_exclusion, np.logical_or(companion_exclusion, bad_pixel_exclusion))
+        pool_mask = np.logical_and(annulus_mask, ~full_exclusion)
         footprint = scale_mask_about_center(signal_mask, scale, yx_center_slice)
         occluded_mask = np.logical_and(pool_mask, footprint)
-        candidates[int(slice_index)] = (pool_mask, occluded_mask)
+        sdi_mask = np.logical_and(np.logical_and(annulus_mask, ~bad_pixel_exclusion), footprint)
+        candidates[int(slice_index)] = (pool_mask, occluded_mask, sdi_mask)
 
     masks = OrderedDict()
     if context.mode == "occluded":
-        for slice_index, (_, occluded_mask) in candidates.items():
+        for slice_index, (_, occluded_mask, _) in candidates.items():
             if np.any(occluded_mask):
                 masks[slice_index] = occluded_mask
         return masks
 
+    if context.mode == "sdi":
+        for slice_index, (_, _, sdi_mask) in candidates.items():
+            if np.any(sdi_mask):
+                masks[slice_index] = sdi_mask
+        return masks
+
     # Mode "pool": occluded pixels are always kept; the remaining annulus
     # pixels share the enrichment budget (units of the single-lambda pool).
-    n_occluded_total = sum(int(np.count_nonzero(occluded_mask)) for _, occluded_mask in candidates.values())
+    n_occluded_total = sum(int(np.count_nonzero(occluded_mask)) for _, occluded_mask, _ in candidates.values())
     budget_total = int(round(context.max_regressor_pool_size * n_reference_pixels))
     enrichment_budget = max(budget_total - int(n_reference_pixels) - n_occluded_total, 0)
     per_slice_budget = enrichment_budget // len(candidates) if candidates else 0
-    for slice_index, (pool_mask, occluded_mask) in candidates.items():
+    for slice_index, (pool_mask, occluded_mask, _) in candidates.items():
         extra_mask = np.logical_and(pool_mask, ~occluded_mask)
         n_extra = int(np.count_nonzero(extra_mask))
         if n_extra > per_slice_budget:

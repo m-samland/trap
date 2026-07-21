@@ -817,9 +817,10 @@ class TrapReductionConfig:
     verbose: bool = False
 
     def __post_init__(self):
-        if self.multiwavelength_regressors not in (None, "pool", "occluded"):
+        if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
             raise ValueError(
-                f"multiwavelength_regressors must be None, 'pool' or 'occluded', got {self.multiwavelength_regressors!r}"
+                "multiwavelength_regressors must be None, 'pool', 'occluded' or 'sdi', "
+                f"got {self.multiwavelength_regressors!r}"
             )
 
     def merge(self, **kw) -> "TrapReductionConfig":

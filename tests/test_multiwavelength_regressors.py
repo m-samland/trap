@@ -19,7 +19,7 @@ class TestConfig:
         assert config.max_regressor_pool_size == 3.0
 
     def test_valid_modes_accepted(self):
-        for mode in (None, "pool", "occluded"):
+        for mode in (None, "pool", "occluded", "sdi"):
             config = TrapReductionConfig(multiwavelength_regressors=mode)
             assert config.multiwavelength_regressors == mode
 
@@ -221,6 +221,73 @@ class TestMultiwavelengthMasks:
             n_reference_pixels=200,
             rng=np.random.default_rng(3),
         )
+        assert not np.any(masks[1] & bad)
+
+    def test_sdi_superset_of_occluded(self):
+        # "sdi" drops the reference-signal exclusion but shares annulus and
+        # footprint with "occluded", so occluded must be a strict subset of
+        # sdi and the pixel counts must differ.
+        masks_sdi, _ = self._masks("sdi")
+        masks_occluded, _ = self._masks("occluded")
+        assert set(masks_sdi) == set(masks_occluded) == {1}
+        assert not np.any(masks_occluded[1] & ~masks_sdi[1])
+        assert masks_sdi[1].sum() > masks_occluded[1].sum()
+
+    def test_sdi_ignores_known_companion_mask(self):
+        # A known companion overlapping the scaled footprint is dropped by
+        # occluded (blanket exclusion of astrophysical sources) but kept by
+        # sdi (SDI premise: donor channel is astrophysically faint here).
+        config = _Config(annulus_width=5, annulus_offset=0.0)
+        center = (self.image_size // 2, self.image_size // 2)
+        signal_mask = _signal_track(self.image_size, 12)
+        # Companion sits in the scaled-footprint band (sep ~ 12 * 1.25 = 15).
+        companion_mask = make_signal_mask(
+            (self.image_size, self.image_size),
+            (center[0], center[1] + 15),
+            mask_radius=1.5,
+        )
+        common = dict(
+            reduction_parameters=config,
+            yx_pixel=(center[0], center[1] + 12),
+            yx_dim=(self.image_size, self.image_size),
+            yx_center=center,
+            signal_mask=signal_mask,
+            n_reference_pixels=200,
+            known_companion_mask=companion_mask,
+        )
+        base = _mw_context("sdi", image_size=self.image_size)
+        masks_sdi = make_multiwavelength_regressor_masks(
+            base, rng=np.random.default_rng(3), **common
+        )
+        masks_occluded = make_multiwavelength_regressor_masks(
+            dataclasses.replace(base, mode="occluded"),
+            rng=np.random.default_rng(3), **common,
+        )
+        assert 1 in masks_sdi
+        assert not np.any(masks_occluded.get(1, np.zeros_like(companion_mask)) & companion_mask)
+        assert np.any(masks_sdi[1] & companion_mask)
+
+    def test_sdi_still_excludes_bad_pixels(self):
+        # Bad-pixel exclusion is a detector-level guard and must apply in
+        # every mode, including "sdi".
+        config = _Config(annulus_width=5, annulus_offset=0.0)
+        center = (self.image_size // 2, self.image_size // 2)
+        signal_mask = _signal_track(self.image_size, 12)
+        bad = np.zeros((self.image_size, self.image_size), dtype=bool)
+        bad[:, ::2] = True
+        base = _mw_context("sdi", image_size=self.image_size)
+        context = dataclasses.replace(base, bad_pixel_masks=[bad])
+        masks = make_multiwavelength_regressor_masks(
+            context,
+            reduction_parameters=config,
+            yx_pixel=(center[0], center[1] + 12),
+            yx_dim=(self.image_size, self.image_size),
+            yx_center=center,
+            signal_mask=signal_mask,
+            n_reference_pixels=200,
+            rng=np.random.default_rng(3),
+        )
+        assert 1 in masks
         assert not np.any(masks[1] & bad)
 
 
