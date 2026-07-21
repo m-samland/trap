@@ -1265,6 +1265,22 @@ def _bad_pixel_mask_for_wavelength(bad_pixel_mask_full, wavelength_index, data_c
     return mask
 
 
+def _valid_pixel_mask_for_wavelength(valid_pixel_mask_full, wavelength_index, data_crop_size, yx_center_full):
+    """Per-wavelength footprint (True = detector pixel carries real data)."""
+    if valid_pixel_mask_full is None:
+        return None
+    mask = np.asarray(valid_pixel_mask_full).astype("bool")
+    if mask.ndim == 3:
+        mask = mask[wavelength_index]
+    if data_crop_size is not None:
+        mask = crop_box_from_image(
+            mask,
+            data_crop_size,
+            center_yx=np.round(yx_center_full[wavelength_index]),
+        )
+    return mask
+
+
 def _prepare_wavelength_slice(
     wavelength_index,
     data_full,
@@ -1360,6 +1376,7 @@ def run_complete_reduction(
     verbose=False,
     overwrite=False,
     use_progress_bar=True,
+    valid_pixel_mask=None,
 ):
     """Runs complete TRAP reduction on data and produces contrast and
     normalized detection maps as well as contrast curves. This is the most
@@ -1556,6 +1573,8 @@ def run_complete_reduction(
         stamp_sizes_reduction=stamp_sizes_reduction,
         max_shift=max_shift,
         mas_per_pixel=(1 * u.pixel).to(u.mas, equivalencies=instrument.pixel_scale).value,
+        valid_pixel_mask=valid_pixel_mask,
+        yx_center_full=yx_center_full,
     )
     data_crop_size = runtime.data_crop_size
 
@@ -1779,6 +1798,7 @@ def run_complete_reduction(
             data_refs=data_refs,
             inverse_variance_refs=inverse_variance_refs,
             multiwavelength_state=multiwavelength_state,
+            valid_pixel_mask=valid_pixel_mask,
         )
     finally:
         if shared_store is not None:
@@ -1812,6 +1832,7 @@ def _run_reduction_loops(
     data_refs,
     inverse_variance_refs,
     multiwavelength_state,
+    valid_pixel_mask=None,
 ):
     """Component/wavelength loops of `run_complete_reduction`.
 
@@ -1845,6 +1866,15 @@ def _run_reduction_loops(
                 signal_mask_psf_size=int(stamp_sizes[wavelength_index]),
             )
 
+            # Re-crop the footprint about this wavelength's center; the mask
+            # stored by build_runtime_state was cropped around wavelength 0.
+            if valid_pixel_mask is not None:
+                from dataclasses import replace as _replace
+                valid_pixel_mask_slice = _valid_pixel_mask_for_wavelength(
+                    valid_pixel_mask, wavelength_index, data_crop_size, yx_center_full,
+                )
+                runtime = _replace(runtime, valid_pixel_mask_cropped=valid_pixel_mask_slice)
+
             multiwavelength_regressors = None
             if multiwavelength_state is not None:
                 selected = [
@@ -1866,6 +1896,12 @@ def _run_reduction_loops(
                         bad_pixel_masks=[multiwavelength_state.bad_pixel_mask_by_wavelength.get(index) for index in selected],
                         mode=multiwavelength_state.mode,
                         max_regressor_pool_size=reduction_parameters.max_regressor_pool_size,
+                        valid_pixel_masks=[
+                            _valid_pixel_mask_for_wavelength(
+                                valid_pixel_mask, index, data_crop_size, yx_center_full,
+                            )
+                            for index in selected
+                        ],
                     )
             basename = {}
             if reduction_parameters.inject_fake:
