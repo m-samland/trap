@@ -1,9 +1,9 @@
 """Tests for TrapReductionConfig / ReductionRuntimeState edge-FoV additions."""
 
+import logging
+
 import numpy as np
 import pytest
-
-import logging
 
 from trap.parameters import (
     ReductionRuntimeState,
