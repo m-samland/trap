@@ -847,6 +847,7 @@ class TrapReductionConfig:
         params_dict.pop("multiwavelength_regressors", None)
         params_dict.pop("regressor_wavelength_indices", None)
         params_dict.pop("max_regressor_pool_size", None)
+        params_dict.pop("reduction_mask_min_pixels", None)
 
         # Filter out None values, but keep explicit None defaults where needed
         filtered_params = {}
