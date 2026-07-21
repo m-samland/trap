@@ -939,6 +939,8 @@ def build_runtime_state(
     stamp_sizes_reduction: np.ndarray,
     max_shift: float,
     mas_per_pixel: Optional[float] = None,
+    valid_pixel_mask: Optional[np.ndarray] = None,
+    yx_center_full: Optional[np.ndarray] = None,
 ) -> ReductionRuntimeState:
     """Compute all derived values from user config + data properties.
 
@@ -1027,7 +1029,30 @@ def build_runtime_state(
             )
 
     # --- Category B: derived once ---
-    search_region_outer_bound = config.search_region_outer_bound
+    if config.search_region_outer_bound is None:
+        if valid_pixel_mask is None:
+            raise ValueError(
+                "search_region_outer_bound=None requires valid_pixel_mask "
+                "to derive a maximum radius."
+            )
+        if yx_center_full is None:
+            derivation_center = (
+                valid_pixel_mask.shape[0] / 2.0,
+                valid_pixel_mask.shape[1] / 2.0,
+            )
+        else:
+            derivation_center = tuple(np.asarray(yx_center_full)[0])
+        search_region_outer_bound = _derive_outer_bound(
+            valid_pixel_mask,
+            derivation_center,
+            min_pixels=config.reduction_mask_min_pixels,
+        )
+        logger.info(
+            "Auto outer bound (footprint-derived): %d px", search_region_outer_bound
+        )
+    else:
+        search_region_outer_bound = config.search_region_outer_bound
+
     if config.reduce_single_position and config.guess_position is not None:
         guess_position_separation = np.sqrt(
             config.guess_position[0] ** 2 + config.guess_position[1] ** 2
@@ -1049,10 +1074,13 @@ def build_runtime_state(
         data_crop_size = int(data_crop_size // 2 * 2 + 1)
 
         if data_crop_size > data_shape[-1]:
-            raise ValueError(
-                f"Data crop size {data_crop_size} is larger than input image "
-                f"size: {data_shape[-1]}"
+            logger.info(
+                "Requested crop %d exceeds input %d; clamping to input FoV.",
+                data_crop_size, data_shape[-1],
             )
+            data_crop_size = int(data_shape[-1])
+            if data_crop_size % 2 == 0:
+                data_crop_size -= 1
         logger.info("Auto crop size cropped data to: %s", data_crop_size)
         yx_dim = (data_crop_size, data_crop_size)
     else:
@@ -1067,6 +1095,19 @@ def build_runtime_state(
                 config.search_region.shape[-1],
             )
 
+    valid_pixel_mask_cropped = None
+    if valid_pixel_mask is not None:
+        from trap.utils import crop_box_from_image
+        mask_bool = np.asarray(valid_pixel_mask).astype("bool")
+        if data_crop_size is not None and yx_center_full is not None:
+            valid_pixel_mask_cropped = crop_box_from_image(
+                mask_bool,
+                data_crop_size,
+                center_yx=np.round(np.asarray(yx_center_full)[0]),
+            )
+        else:
+            valid_pixel_mask_cropped = mask_bool
+
     search_region = config.search_region
     if search_region is None:
         search_region = regressor_selection.make_annulus_mask(
@@ -1075,6 +1116,12 @@ def build_runtime_state(
             yx_dim=yx_dim,
             oversampling=config.oversampling,
             yx_center=None,
+        )
+    if valid_pixel_mask_cropped is not None:
+        search_region = np.logical_and(search_region, valid_pixel_mask_cropped)
+        logger.info(
+            "Scheduling %d positions inside the footprint.",
+            int(search_region.sum()),
         )
 
     ncpus = config.ncpus
@@ -1090,6 +1137,8 @@ def build_runtime_state(
         search_region=search_region,
         ncpus=ncpus,
         coronagraph_transmission_pix=coronagraph_transmission_pix,
+        valid_pixel_mask_cropped=valid_pixel_mask_cropped,
+        reduction_mask_min_pixels=config.reduction_mask_min_pixels,
         # Category C: initial values (will be overwritten by for_iteration)
         number_of_pca_regressors=config.number_of_pca_regressors,
         temporal_components_fraction=0.0,

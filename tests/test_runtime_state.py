@@ -3,10 +3,13 @@
 import numpy as np
 import pytest
 
+import logging
+
 from trap.parameters import (
     ReductionRuntimeState,
     TrapReductionConfig,
     _derive_outer_bound,
+    build_runtime_state,
 )
 
 
@@ -85,3 +88,70 @@ class TestDeriveOuterBound:
         r_high = _derive_outer_bound(mask, (cy, cx), min_pixels=8)
         assert r_low == 30
         assert r_high == 0
+
+
+def _default_stamp_sizes():
+    return np.array([19])
+
+
+class TestBuildRuntimeState:
+    def _call(self, config, data_shape, valid_pixel_mask=None, yx_center_full=None):
+        return build_runtime_state(
+            config=config,
+            data_shape=data_shape,
+            stamp_sizes=_default_stamp_sizes(),
+            stamp_sizes_reduction=_default_stamp_sizes(),
+            max_shift=0.0,
+            mas_per_pixel=None,
+            valid_pixel_mask=valid_pixel_mask,
+            yx_center_full=yx_center_full,
+        )
+
+    def test_no_footprint_reproduces_current_behavior(self):
+        config = TrapReductionConfig(search_region_outer_bound=85)
+        rs = self._call(config, data_shape=(1, 10, 401, 401))
+        assert rs.search_region_outer_bound == 85
+        assert rs.valid_pixel_mask_cropped is None
+        assert rs.search_region.shape[0] == rs.data_crop_size
+        assert rs.reduction_mask_min_pixels == config.reduction_mask_min_pixels
+
+    def test_crop_larger_than_input_is_clamped_not_raised(self, caplog):
+        config = TrapReductionConfig(search_region_outer_bound=85)
+        with caplog.at_level(logging.INFO, logger="trap.parameters"):
+            rs = self._call(config, data_shape=(1, 10, 101, 101))
+        assert rs.data_crop_size <= 101
+        assert rs.data_crop_size % 2 == 1
+        assert any("clamping" in rec.message.lower() for rec in caplog.records)
+
+    def test_auto_outer_bound_from_footprint(self):
+        H = W = 101
+        yy, xx = np.indices((H, W))
+        mask = np.hypot(yy - H // 2, xx - W // 2) <= 40
+        config = TrapReductionConfig(search_region_outer_bound=None)
+        rs = self._call(
+            config,
+            data_shape=(1, 10, H, W),
+            valid_pixel_mask=mask,
+            yx_center_full=np.array([[H / 2.0, W / 2.0]]),
+        )
+        assert 39 <= rs.search_region_outer_bound <= 40
+
+    def test_auto_outer_bound_without_footprint_raises(self):
+        config = TrapReductionConfig(search_region_outer_bound=None)
+        with pytest.raises(ValueError, match="valid_pixel_mask"):
+            self._call(config, data_shape=(1, 10, 101, 101))
+
+    def test_search_region_intersected_with_footprint(self):
+        H = W = 101
+        mask = np.zeros((H, W), dtype=bool)
+        mask[:, : W // 2] = True
+        config = TrapReductionConfig(search_region_outer_bound=40)
+        rs = self._call(
+            config,
+            data_shape=(1, 10, H, W),
+            valid_pixel_mask=mask,
+            yx_center_full=np.array([[H / 2.0, W / 2.0]]),
+        )
+        c = rs.data_crop_size
+        assert rs.valid_pixel_mask_cropped.shape == (c, c)
+        assert not (rs.search_region & ~rs.valid_pixel_mask_cropped).any()
