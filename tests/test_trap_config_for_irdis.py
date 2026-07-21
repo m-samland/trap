@@ -28,9 +28,9 @@ class TestTrapConfigForIrdis:
         cfg = trap_config_for_irdis()
         assert list(cfg.processing.wavelength_indices) == [0, 1]
 
-    def test_instrument_type_is_imaging(self):
+    def test_instrument_type_is_photometry(self):
         cfg = trap_config_for_irdis()
-        assert cfg.instrument.instrument_type == "imaging"
+        assert cfg.instrument.instrument_type == "photometry"
 
     def test_instrument_name(self):
         cfg = trap_config_for_irdis()
