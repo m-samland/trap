@@ -182,3 +182,36 @@ class TestInferFootprintFromNaN:
         cube = self._cube(ntimes=4)
         cube[0, 0, 0, :] = np.nan   # frame 0 has a NaN row, others clean
         assert _infer_footprint_from_nan(cube) is None
+
+
+class TestAssembleTrainingMatrixNaNSafety:
+    """A partial-NaN pool pixel used to make `np.linalg.svd` non-convergent.
+    `_assemble_training_matrix` now drops non-finite columns as a defensive
+    guard so downstream SVD sees only finite data.
+    """
+
+    def test_drops_columns_with_any_nan(self):
+        from trap.regression import _assemble_training_matrix
+        rng = np.random.default_rng(0)
+        data = rng.normal(size=(6, 5, 5))
+        # Two pool pixels; taint one column with a single-frame NaN.
+        pool = np.zeros(data.shape[-2:], dtype=bool)
+        pool[2, 1] = True
+        pool[2, 3] = True
+        data[3, 2, 3] = np.nan
+        tm = _assemble_training_matrix(data, pool)
+        assert tm.shape == (6, 1)
+        assert np.isfinite(tm).all()
+
+    def test_svd_survives_partial_nan_pool_pixel(self):
+        from trap.pca_regression import compute_SVD
+        from trap.regression import _assemble_training_matrix
+        rng = np.random.default_rng(1)
+        data = rng.normal(size=(8, 7, 7))
+        pool = np.zeros(data.shape[-2:], dtype=bool)
+        pool[1:6, 1:6] = True
+        data[4, 3, 3] = np.nan     # one bad column in the pool
+        tm = _assemble_training_matrix(data, pool)
+        U, _, S, V = compute_SVD(tm, n_components=None, scaling="temp-median")
+        assert np.isfinite(U).all()
+        assert np.isfinite(S).all()

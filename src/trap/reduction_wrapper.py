@@ -2204,6 +2204,20 @@ def _run_reduction_loops(
                             inverse_variance.astype("float64", copy=False),
                         )
 
+            # Per-wavelength gate: any pixel that carries a NaN in any frame of
+            # this working slice is unusable both as a regressor and as a
+            # reduction target — fold it into bad_pixel_mask so pool selection
+            # and the reduction mask both exclude it. `_infer_footprint_from_nan`
+            # only removes border-connected all-frame all-wavelength NaN and by
+            # design leaves per-slice/per-frame NaN to bad_pixel_mask.
+            _data_view = shared_arrays.resolve(data)
+            _per_wavelength_nan = np.any(~np.isfinite(_data_view), axis=0)
+            if _per_wavelength_nan.any():
+                if bad_pixel_mask is None:
+                    bad_pixel_mask = _per_wavelength_nan
+                else:
+                    bad_pixel_mask = np.logical_or(bad_pixel_mask, _per_wavelength_nan)
+
             logger.debug("PSF Size: %s", runtime.reduction_mask_psf_size)
             if reduction_parameters.reduce_single_position:
                 results = trap_one_position(

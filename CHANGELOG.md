@@ -64,6 +64,17 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   store (`tests/test_shared_arrays.py`).
 
 ### Fixed
+- Edge-of-FoV reduction no longer crashes with
+  `numpy.linalg.LinAlgError: SVD did not converge` when pool pixels carry
+  per-frame or per-wavelength NaN entries that pass the border-connected
+  `_infer_footprint_from_nan` gate (e.g. partial-NaN edges from centering
+  shifts on IFS cubes). Two layers of defense: (1) `_run_reduction_loops`
+  now OR's per-wavelength `np.any(~np.isfinite(data), axis=0)` into
+  `bad_pixel_mask` so both regressor pool and reduction mask exclude the
+  offending pixels; (2) `_assemble_training_matrix` drops non-finite
+  columns before returning, so any residual NaN leak is caught before
+  reaching `np.linalg.svd`. Downstream only uses the temporal basis, so
+  dropping training-matrix columns is safe.
 - `inject_signal` no longer raises when the injection stamp overlaps the
   array boundary — the destination slice and stamp are clipped per frame
   and frames entirely outside the array are skipped.

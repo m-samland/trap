@@ -519,7 +519,7 @@ def _assemble_training_matrix(
     else:
         training_matrix = data[data_range_to_fit][:, regressor_pool_mask]
     if not multiwavelength_masks:
-        return training_matrix
+        return _drop_nonfinite_columns(training_matrix)
     cube = shared_arrays.resolve(multiwavelength_data)
     columns = [training_matrix]
     for slice_index, mask in multiwavelength_masks.items():
@@ -527,7 +527,22 @@ def _assemble_training_matrix(
         if data_range_to_fit is not None:
             series = series[data_range_to_fit]
         columns.append(series)
-    return np.concatenate(columns, axis=1)
+    return _drop_nonfinite_columns(np.concatenate(columns, axis=1))
+
+
+def _drop_nonfinite_columns(training_matrix):
+    # Any NaN/Inf in a column propagates through matrix_scaling and makes SVD
+    # non-convergent (LAPACK gesdd). Silently drop bad columns; downstream only
+    # uses the temporal basis, not per-column identity.
+    finite_cols = np.isfinite(training_matrix).all(axis=0)
+    if finite_cols.all():
+        return training_matrix
+    dropped = int(training_matrix.shape[1] - finite_cols.sum())
+    logger.debug(
+        "Dropped %d non-finite columns from training matrix (kept %d).",
+        dropped, int(finite_cols.sum()),
+    )
+    return training_matrix[:, finite_cols]
 
 
 def run_trap_with_model_temporal(
