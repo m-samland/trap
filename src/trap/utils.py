@@ -132,20 +132,62 @@ def resize_arr(arr, newdim):
                 dx1 - dx2:dx1 + dx2 + 1]
 
 
-def _crop_box(flux_arr, boxsize, center_yx):
-    """Core crop logic operating on the last two axes."""
+def _padded_crop_box(flux_arr, boxsize, center_yx, fill_value=0):
+    """Crop the last two axes of ``flux_arr`` to ``(boxsize, boxsize)`` around
+    ``center_yx``, padding with ``fill_value`` where the requested box extends
+    past the input.
+
+    Unlike a raw numpy slice, the output shape on the last two axes is always
+    exactly ``(boxsize, boxsize)`` regardless of ``center_yx``. Positions that
+    would require reading past an edge of ``flux_arr`` come back as
+    ``fill_value``.
+    """
     if center_yx is None:
-        dx1 = flux_arr.shape[-1] // 2
-        dy1 = flux_arr.shape[-2] // 2
+        cy = flux_arr.shape[-2] // 2
+        cx = flux_arr.shape[-1] // 2
     else:
-        dx1 = center_yx[1]
-        dy1 = center_yx[0]
-    dx2 = dy2 = boxsize // 2
-    if boxsize % 2 == 0:
-        return flux_arr[..., int(dy1 - dy2):int(dy1 + dy2),
-                        int(dx1 - dx2):int(dx1 + dx2)]
-    return flux_arr[..., int(dy1 - dy2):int(dy1 + dy2 + 1),
-                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
+        cy = int(center_yx[0])
+        cx = int(center_yx[1])
+    half = int(boxsize) // 2
+    boxsize = int(boxsize)
+    y0 = cy - half
+    x0 = cx - half
+    y1 = y0 + boxsize
+    x1 = x0 + boxsize
+
+    Hin = flux_arr.shape[-2]
+    Win = flux_arr.shape[-1]
+
+    src_y0, src_y1 = max(0, y0), min(Hin, y1)
+    src_x0, src_x1 = max(0, x0), min(Win, x1)
+    dst_y0 = src_y0 - y0
+    dst_x0 = src_x0 - x0
+    dst_y1 = dst_y0 + (src_y1 - src_y0)
+    dst_x1 = dst_x0 + (src_x1 - src_x0)
+
+    out_shape = flux_arr.shape[:-2] + (boxsize, boxsize)
+    out = np.full(out_shape, fill_value, dtype=flux_arr.dtype)
+    if src_y1 > src_y0 and src_x1 > src_x0:
+        out[..., dst_y0:dst_y1, dst_x0:dst_x1] = flux_arr[..., src_y0:src_y1, src_x0:src_x1]
+    return out
+
+
+def _crop_box(flux_arr, boxsize, center_yx):
+    """Core crop logic operating on the last two axes.
+
+    Now always returns shape ``(..., boxsize, boxsize)`` on the last two
+    axes by padding with a dtype-appropriate fill value (``NaN`` for
+    floats, ``False`` for booleans, ``0`` otherwise). Callers that need a
+    specific fill value should use ``_padded_crop_box`` directly.
+    """
+    dtype = np.asarray(flux_arr).dtype
+    if np.issubdtype(dtype, np.floating):
+        fill = np.nan
+    elif dtype == bool:
+        fill = False
+    else:
+        fill = 0
+    return _padded_crop_box(flux_arr, boxsize, center_yx, fill_value=fill)
 
 
 def crop_box_from_4D_cube(flux_arr, boxsize, center_yx=None):
