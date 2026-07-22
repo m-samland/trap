@@ -1329,6 +1329,7 @@ def trap_config_for_ifs() -> TrapConfig:
             spatial_model=False,
             right_handed=False,
             search_region_inner_bound=1,
+            auto_footprint=True,
         ),
         processing=ProcessingParameters(
             wavelength_indices=range(1, 38),
@@ -1376,6 +1377,7 @@ def trap_config_for_irdis() -> TrapConfig:
             right_handed=False,
             search_region_inner_bound=1,
             yx_anamorphism=np.array([1.0062, 1.0]),
+            auto_footprint=True,
         ),
         processing=ProcessingParameters(
             wavelength_indices=range(0, 2),
