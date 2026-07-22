@@ -183,7 +183,7 @@ def _crop_box(flux_arr, boxsize, center_yx):
     dtype = np.asarray(flux_arr).dtype
     if np.issubdtype(dtype, np.floating):
         fill = np.nan
-    elif dtype == bool:
+    elif np.issubdtype(dtype, np.bool_):
         fill = False
     else:
         fill = 0

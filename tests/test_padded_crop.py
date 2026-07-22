@@ -10,7 +10,6 @@ dtype-appropriate value.
 """
 
 import numpy as np
-import pytest
 
 from trap.utils import (
     _padded_crop_box,
