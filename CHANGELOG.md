@@ -17,6 +17,14 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   (`None` triggers footprint-derived auto-derivation) and
   `reduction_mask_min_pixels: int = 30`. Callers that don't pass a footprint
   see identical behavior.
+- Opt-in auto-inference of the footprint from the input cube. When
+  `TrapReductionConfig.auto_footprint=True` and no explicit
+  `valid_pixel_mask` is passed, `run_complete_reduction` infers the mask
+  from pixels that are `NaN` in every frame at every wavelength and are
+  connected to the array border via `scipy.ndimage.label`. Interior NaN
+  speckles stay in `bad_pixel_mask` territory (unchanged). Default off so
+  callers who deliberately pad with NaN don't get their padding treated
+  as a hard exclusion.
 - **Multi-wavelength regressors for IFS (WP2)** – the temporal regressor pool
   can be enriched with time series from other wavelength slices. The speckle
   field zooms radially by `s = λ_j/λ_ref` about the star center while

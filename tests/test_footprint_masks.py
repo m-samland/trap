@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from trap.parameters import TrapReductionConfig
+from trap.reduction_wrapper import _infer_footprint_from_nan
 from trap.regressor_selection import (
     MultiwavelengthRegressors,
     make_multiwavelength_regressor_masks,
@@ -135,3 +136,49 @@ class TestTrapOnePositionThreshold:
             yx_center_injection=np.array([20.0, 20.0]),
         )
         assert result is None
+
+
+class TestInferFootprintFromNaN:
+    def _cube(self, H=21, W=21, ntimes=3, nwave=1):
+        return np.zeros((nwave, ntimes, H, W), dtype="float64")
+
+    def test_no_nan_returns_none(self):
+        assert _infer_footprint_from_nan(self._cube()) is None
+
+    def test_border_ring_detected(self):
+        cube = self._cube()
+        # Ring of NaN one pixel thick around the border, always NaN.
+        cube[..., 0, :] = np.nan
+        cube[..., -1, :] = np.nan
+        cube[..., :, 0] = np.nan
+        cube[..., :, -1] = np.nan
+        mask = _infer_footprint_from_nan(cube)
+        assert mask is not None
+        assert mask.shape == cube.shape[-2:]
+        # Border invalid, interior valid.
+        assert not mask[0, :].any() and not mask[-1, :].any()
+        assert not mask[:, 0].any() and not mask[:, -1].any()
+        assert mask[1:-1, 1:-1].all()
+
+    def test_corner_region_detected(self):
+        cube = self._cube(H=21, W=21)
+        cube[..., :5, :5] = np.nan   # bottom-left corner block
+        mask = _infer_footprint_from_nan(cube)
+        assert mask is not None
+        assert not mask[:5, :5].any()
+        assert mask[10:, 10:].all()   # far corner is still valid
+
+    def test_interior_nan_speckle_not_flagged_as_footprint(self):
+        # Isolated interior NaN pixel doesn't touch the border → footprint stays
+        # entirely True and the helper returns None (nothing to exclude at the
+        # footprint layer; use bad_pixel_mask for interior NaNs).
+        cube = self._cube()
+        cube[..., 10, 10] = np.nan
+        assert _infer_footprint_from_nan(cube) is None
+
+    def test_transient_nan_not_flagged(self):
+        # A pixel that is NaN only in some frames is NOT part of the footprint —
+        # only pixels that are NaN in every frame at every wavelength count.
+        cube = self._cube(ntimes=4)
+        cube[0, 0, 0, :] = np.nan   # frame 0 has a NaN row, others clean
+        assert _infer_footprint_from_nan(cube) is None

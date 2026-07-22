@@ -722,6 +722,7 @@ class TrapReductionConfig:
     search_region_inner_bound: int = 1
     search_region_outer_bound: Optional[int] = 85
     reduction_mask_min_pixels: int = 30
+    auto_footprint: bool = False
     oversampling: int = 1
     
     # Data preprocessing
@@ -848,6 +849,7 @@ class TrapReductionConfig:
         params_dict.pop("regressor_wavelength_indices", None)
         params_dict.pop("max_regressor_pool_size", None)
         params_dict.pop("reduction_mask_min_pixels", None)
+        params_dict.pop("auto_footprint", None)
 
         # Filter out None values, but keep explicit None defaults where needed
         filtered_params = {}

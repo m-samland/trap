@@ -1265,6 +1265,33 @@ def _bad_pixel_mask_for_wavelength(bad_pixel_mask_full, wavelength_index, data_c
     return mask
 
 
+def _infer_footprint_from_nan(data_full):
+    """Infer the detector footprint from pixels that are NaN in every frame.
+
+    Returns a boolean 2D mask (`True` = valid pixel) if ``data_full`` has a
+    border-connected all-NaN region; otherwise returns ``None``. Interior
+    NaN pixels that don't touch the array border are left in
+    ``bad_pixel_mask`` territory and stay ``True`` in the footprint.
+
+    ``data_full`` is expected to be 4D ``(n_wave, n_time, H, W)`` (the
+    normalised shape inside ``run_complete_reduction``).
+    """
+    from scipy.ndimage import label
+
+    invalid = np.all(np.isnan(data_full), axis=(0, 1))
+    if not invalid.any():
+        return None
+    labels, _ = label(invalid)
+    border_labels = np.unique(
+        np.concatenate([labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]])
+    )
+    border_labels = border_labels[border_labels != 0]
+    if border_labels.size == 0:
+        return None
+    footprint_invalid = np.isin(labels, border_labels)
+    return ~footprint_invalid
+
+
 def _valid_pixel_mask_for_wavelength(valid_pixel_mask_full, wavelength_index, data_crop_size, yx_center_full):
     """Per-wavelength footprint (True = detector pixel carries real data)."""
     if valid_pixel_mask_full is None:
@@ -1575,6 +1602,16 @@ def run_complete_reduction(
         # print("Center variation: {}".format(np.std(amplitude_modulation_full, axis=0)))
 
     # Build runtime state (replaces all mutations of reduction_parameters)
+    if valid_pixel_mask is None and reduction_parameters.auto_footprint:
+        inferred = _infer_footprint_from_nan(data_full)
+        if inferred is not None:
+            logger.info(
+                "auto_footprint: inferred footprint from all-NaN border region "
+                "(%d valid / %d total pixels).",
+                int(inferred.sum()), int(inferred.size),
+            )
+            valid_pixel_mask = inferred
+
     runtime = build_runtime_state(
         config=reduction_parameters,
         data_shape=data_full.shape,

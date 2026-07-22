@@ -115,6 +115,40 @@ class TestRunCompleteReductionFootprint:
         )
 
 
+class TestAutoFootprintInference:
+    def test_auto_footprint_masks_nan_border_positions(self, synthetic_dataset, tmp_path):
+        data, psf, pa, instrument = synthetic_dataset
+        H, W = data.shape[-2:]
+        data_with_border = data.copy()
+        # NaN out the right half of every frame; auto_footprint must detect
+        # the border-connected all-NaN region.
+        data_with_border[..., :, W // 2 :] = np.nan
+        config = _base_config(tmp_path)
+        config = config.merge(auto_footprint=True)
+        run_complete_reduction(
+            data_full=data_with_border,
+            flux_psf_full=psf.copy(),
+            pa=pa,
+            instrument=instrument,
+            reduction_parameters=config,
+            temporal_components_fraction=[0.25],
+            overwrite=True,
+            use_progress_bar=False,
+        )
+        det_files = sorted(tmp_path.glob("detection_*.fits"))
+        assert det_files, "no detection image written"
+        det = fits.getdata(det_files[0])
+        right_half = det[..., :, W // 2 + 3 :]
+        assert np.isnan(right_half).all()
+
+    def test_auto_footprint_off_by_default(self, tmp_path):
+        # Opt-in only: TrapReductionConfig must not auto-infer unless the
+        # caller asks. Callers that deliberately pad with NaN should not
+        # find their padding turned into a hard exclusion.
+        config = _base_config(tmp_path)
+        assert config.auto_footprint is False
+
+
 class TestNanSafePeakExtraction:
     def test_argmax_of_series_with_nan_ignores_nan(self):
         import pandas as pd
