@@ -156,6 +156,25 @@ class TestBuildRuntimeState:
         assert rs.valid_pixel_mask_cropped.shape == (c, c)
         assert not (rs.search_region & ~rs.valid_pixel_mask_cropped).any()
 
+    def test_center_offset_from_input_center_no_broadcast_crash(self):
+        # Regression from real IFS observation (*_bet_Pic OBS_H 2019-03-10):
+        # center=(126, 129), mask=(262, 262), crop=261. The old
+        # crop_box_from_image path computed slice [-4:257] which numpy
+        # interprets as [258:257] = empty, giving shape (0, 0) and crashing
+        # the AND with search_region. Cutout2D pads the partial overlap.
+        H = W = 262
+        mask = np.ones((H, W), dtype=bool)
+        config = TrapReductionConfig(search_region_outer_bound=85)
+        rs = self._call(
+            config,
+            data_shape=(1, 10, H, W),
+            valid_pixel_mask=mask,
+            yx_center_full=np.array([[126.0, 129.0]]),
+        )
+        c = rs.data_crop_size
+        assert rs.valid_pixel_mask_cropped.shape == (c, c)
+        assert rs.search_region.shape == (c, c)
+
     def test_off_array_center_produces_expected_shape_not_zero(self):
         # Regression: yx_center_full=(0, 0) with an even-input mask and a
         # near-full crop used to yield a (0, 0) footprint and crash the AND
