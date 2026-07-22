@@ -155,3 +155,50 @@ class TestBuildRuntimeState:
         c = rs.data_crop_size
         assert rs.valid_pixel_mask_cropped.shape == (c, c)
         assert not (rs.search_region & ~rs.valid_pixel_mask_cropped).any()
+
+    def test_off_array_center_produces_expected_shape_not_zero(self):
+        # Regression: yx_center_full=(0, 0) with an even-input mask and a
+        # near-full crop used to yield a (0, 0) footprint and crash the AND
+        # against the search_region. Now the crop pads with False and matches
+        # the expected shape.
+        H = W = 262
+        mask = np.ones((H, W), dtype=bool)
+        config = TrapReductionConfig(search_region_outer_bound=40)
+        rs = self._call(
+            config,
+            data_shape=(1, 10, H, W),
+            valid_pixel_mask=mask,
+            yx_center_full=np.array([[0.0, 0.0]]),
+        )
+        c = rs.data_crop_size
+        assert rs.valid_pixel_mask_cropped.shape == (c, c)
+        assert rs.search_region.shape == (c, c)
+
+    def test_half_pixel_center_produces_expected_shape(self):
+        # Regression: fractional centers used to trigger banker's rounding
+        # and shift the crop bounds so the shape was off by one.
+        H = W = 262
+        mask = np.ones((H, W), dtype=bool)
+        config = TrapReductionConfig(search_region_outer_bound=40)
+        rs = self._call(
+            config,
+            data_shape=(1, 10, H, W),
+            valid_pixel_mask=mask,
+            yx_center_full=np.array([[131.5, 131.5]]),
+        )
+        c = rs.data_crop_size
+        assert rs.valid_pixel_mask_cropped.shape == (c, c)
+
+    def test_nan_center_disables_footprint_gracefully(self, caplog):
+        H = W = 101
+        mask = np.ones((H, W), dtype=bool)
+        config = TrapReductionConfig(search_region_outer_bound=40)
+        with caplog.at_level(logging.WARNING, logger="trap.parameters"):
+            rs = self._call(
+                config,
+                data_shape=(1, 10, H, W),
+                valid_pixel_mask=mask,
+                yx_center_full=np.array([[np.nan, np.nan]]),
+            )
+        assert rs.valid_pixel_mask_cropped is None
+        assert any("nan" in rec.message.lower() for rec in caplog.records)

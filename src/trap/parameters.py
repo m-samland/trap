@@ -916,6 +916,39 @@ class ReductionRuntimeState:
         )
 
 
+def _crop_footprint(valid_pixel_mask, data_crop_size, yx_center_full):
+    """Crop a footprint mask to ``(data_crop_size, data_crop_size)`` centered
+    on ``yx_center_full[0]``.
+
+    Uses :class:`astropy.nddata.Cutout2D` with ``mode='partial'`` so a crop
+    that partially extends past the input is padded with ``False`` instead of
+    silently returning an empty slice. Returns ``None`` if the mask is
+    ``None``, the crop size is ``None``, or the center is not finite (in the
+    last case, logs a warning and disables the footprint intersection).
+    """
+    if valid_pixel_mask is None:
+        return None
+    mask_bool = np.asarray(valid_pixel_mask).astype("bool")
+    if data_crop_size is None or yx_center_full is None:
+        return mask_bool
+    center = np.asarray(yx_center_full)[0]
+    if not np.all(np.isfinite(center)):
+        logger.warning(
+            "valid_pixel_mask crop disabled: yx_center_full[0]=%s contains NaN/inf.",
+            tuple(center),
+        )
+        return None
+    from astropy.nddata import Cutout2D
+    cutout = Cutout2D(
+        mask_bool.astype(np.uint8),
+        position=(float(center[1]), float(center[0])),
+        size=(int(data_crop_size), int(data_crop_size)),
+        mode="partial",
+        fill_value=0,
+    )
+    return cutout.data.astype(bool)
+
+
 def _derive_outer_bound(valid_mask, yx_center, min_pixels):
     """Largest integer radius whose annulus holds >= ``min_pixels`` valid pixels.
 
@@ -1097,18 +1130,9 @@ def build_runtime_state(
                 config.search_region.shape[-1],
             )
 
-    valid_pixel_mask_cropped = None
-    if valid_pixel_mask is not None:
-        from trap.utils import crop_box_from_image
-        mask_bool = np.asarray(valid_pixel_mask).astype("bool")
-        if data_crop_size is not None and yx_center_full is not None:
-            valid_pixel_mask_cropped = crop_box_from_image(
-                mask_bool,
-                data_crop_size,
-                center_yx=np.round(np.asarray(yx_center_full)[0]),
-            )
-        else:
-            valid_pixel_mask_cropped = mask_bool
+    valid_pixel_mask_cropped = _crop_footprint(
+        valid_pixel_mask, data_crop_size, yx_center_full,
+    )
 
     search_region = config.search_region
     if search_region is None:

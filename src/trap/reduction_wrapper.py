@@ -1299,13 +1299,25 @@ def _valid_pixel_mask_for_wavelength(valid_pixel_mask_full, wavelength_index, da
     mask = np.asarray(valid_pixel_mask_full).astype("bool")
     if mask.ndim == 3:
         mask = mask[wavelength_index]
-    if data_crop_size is not None:
-        mask = crop_box_from_image(
-            mask,
-            data_crop_size,
-            center_yx=np.round(yx_center_full[wavelength_index]),
+    if data_crop_size is None:
+        return mask
+    center = np.asarray(yx_center_full)[wavelength_index]
+    if not np.all(np.isfinite(center)):
+        logger.warning(
+            "valid_pixel_mask crop disabled for wavelength %d: center=%s "
+            "contains NaN/inf.",
+            wavelength_index, tuple(center),
         )
-    return mask
+        return None
+    from astropy.nddata import Cutout2D
+    cutout = Cutout2D(
+        mask.astype(np.uint8),
+        position=(float(center[1]), float(center[0])),
+        size=(int(data_crop_size), int(data_crop_size)),
+        mode="partial",
+        fill_value=0,
+    )
+    return cutout.data.astype(bool)
 
 
 def _prepare_wavelength_slice(
