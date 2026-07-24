@@ -1240,22 +1240,27 @@ def fit_planet_parameters(
     fix_width=True,
     fix_orientation=True,
     plot=False,
+    phi_source=None,
 ):
+    """Fit A/B/C on the three detection images per the astrometry-uncertainty
+    spec:
 
-    contrast_image_parameters = fit_2d_gaussian(
-        detection_image[0],
-        yx_position=yx_position,
-        x_stddev=x_stddev,
-        y_stddev=y_stddev,
-        box_size=box_size,
-        mask_deviating=mask_deviating,
-        deviation_threshold=deviation_threshold,
-        fix_width=fix_width,
-        fix_orientation=fix_orientation,
-    )
+    - A: raw SNR image (``detection_image[2]``), fully free → authoritative
+      position, empirical widths ``x_fwhm_free``/``y_fwhm_free``, orientation
+      ``theta_free``, and LevMar centroid covariance.
+    - B: contrast image, position clamped to A's sub-pixel centroid → physical
+      contrast amplitude at the radially-unbiased location.
+    - C: norm-SNR image, position clamped to A → calibrated ``SNR_local`` at
+      A's centroid (used for the Cramér-Rao floor and validation).
 
+    Fixing B and C to A's centroid removes the radial-normalisation bias that a
+    free norm-SNR fit would suffer while keeping every downstream column. The
+    ``fix_width`` / ``fix_orientation`` arguments are retained for signature
+    compatibility but are ignored: Fit A is always free (that is the point of
+    the three-role setup).
+    """
+    # Fit A: raw SNR image, fully free.
     snr_image_parameters = fit_2d_gaussian(
-        # normalized_detection_image,
         detection_image[2],
         yx_position=yx_position,
         x_stddev=x_stddev,
@@ -1263,30 +1268,70 @@ def fit_planet_parameters(
         box_size=box_size,
         mask_deviating=mask_deviating,
         deviation_threshold=deviation_threshold,
-        fix_width=fix_width,
-        fix_orientation=fix_orientation,
+        fix_width=False,
+        fix_orientation=False,
+    )
+    fit_a_yx_orig = snr_image_parameters["yx_fit_position_orig"]
+    fit_a_start = (
+        int(round(fit_a_yx_orig[0])),
+        int(round(fit_a_yx_orig[1])),
     )
 
+    # Fit C: norm-SNR image, position clamped to Fit A, amplitude + widths free.
     norm_snr_image_parameters = fit_2d_gaussian(
         normalized_detection_image,
-        yx_position=yx_position,
+        yx_position=fit_a_start,
         x_stddev=x_stddev,
         y_stddev=y_stddev,
         box_size=box_size,
         mask_deviating=mask_deviating,
         deviation_threshold=deviation_threshold,
-        fix_width=fix_width,
-        fix_orientation=fix_orientation,
+        fix_width=False,
+        fix_orientation=False,
+        fixed_position=fit_a_yx_orig,
     )
 
-    contrast_image_results = summarize_2d_gauss_fit_result(contrast_image_parameters)
-    snr_image_results = summarize_2d_gauss_fit_result(snr_image_parameters)
-    norm_snr_image_results = summarize_2d_gauss_fit_result(norm_snr_image_parameters)
+    # Fit B: contrast image, position clamped to Fit A, amplitude + widths free.
+    contrast_image_parameters = fit_2d_gaussian(
+        detection_image[0],
+        yx_position=fit_a_start,
+        x_stddev=x_stddev,
+        y_stddev=y_stddev,
+        box_size=box_size,
+        mask_deviating=mask_deviating,
+        deviation_threshold=deviation_threshold,
+        fix_width=False,
+        fix_orientation=False,
+        fixed_position=fit_a_yx_orig,
+    )
 
-    # uncertainty_nearest = normalized_noise_map[int(yx_pos_absolute_snr[0]), int(yx_pos_absolute_snr[1])]
-    # snr_nearest = contrast / (uncertainty_nearest / 5)
+    snr_local_normalized = float(
+        norm_snr_image_parameters["parameters"].amplitude.value
+    )
 
-    # contrast = contrast_image_parameters['parameters'].amplitude.value  # fit_contrast(*xy_in_stamp)
+    if phi_source is None:
+        rhophi = image_coordinates.relative_yx_to_rhophi(
+            snr_image_parameters["yx_fit_relative"]
+        )
+        phi_source_local = float(rhophi[1]) * np.pi / 180.0
+    else:
+        phi_source_local = float(phi_source)
+
+    contrast_image_results = summarize_2d_gauss_fit_result(
+        contrast_image_parameters,
+        phi_source=phi_source_local,
+        snr_local_normalized=snr_local_normalized,
+    )
+    snr_image_results = summarize_2d_gauss_fit_result(
+        snr_image_parameters,
+        phi_source=phi_source_local,
+        snr_local_normalized=snr_local_normalized,
+    )
+    norm_snr_image_results = summarize_2d_gauss_fit_result(
+        norm_snr_image_parameters,
+        phi_source=phi_source_local,
+        snr_local_normalized=snr_local_normalized,
+    )
 
     if plot:
         plot_model_and_data(
@@ -2097,6 +2142,19 @@ class DetectionAnalysis(object):
                 inplace=False,
             )
 
+            # Seed the fit widths from the instrument PSF at this wavelength
+            # instead of the hardcoded IRDIS-H defaults; Fit A is free, so this
+            # only sets the initial guess (spec "Files touched", fit_2d_gaussian).
+            instrument = getattr(self, "instrument", None)
+            if instrument is not None and getattr(instrument, "fwhm", None) is not None:
+                fwhm_seed = instrument.fwhm[wavelength_index]
+                fwhm_seed = float(getattr(fwhm_seed, "value", fwhm_seed))
+                x_stddev_seed = fwhm_seed / 2.355
+                y_stddev_seed = fwhm_seed / 2.355
+            else:
+                x_stddev_seed = x_stddev
+                y_stddev_seed = y_stddev
+
             (
                 contrast_image_result,
                 snr_image_result,
@@ -2109,92 +2167,31 @@ class DetectionAnalysis(object):
                 ][0],
                 contrast_table=detection_products["contrast_tables"][0],
                 yx_position=candidates[["y", "x"]].values[candidate_idx],
-                x_stddev=x_stddev,
-                y_stddev=y_stddev,
+                x_stddev=x_stddev_seed,
+                y_stddev=y_stddev_seed,
                 box_size=box_size,
                 mask_deviating=mask_deviating,
                 deviation_threshold=deviation_threshold,
-                fix_width=True,
-                fix_orientation=True,
                 plot=plot,
             )
 
-            (
-                contrast_image_result_free,
-                snr_image_result_free,
-                norm_snr_image_result_free,
-            ) = fit_planet_parameters(
-                detection_image=detection_cube[detection_product_index],
-                # uncertainty_image=detection_products['uncertainty_cube'][0],
-                normalized_detection_image=detection_products[
-                    "normalized_detection_cube"
-                ][0],
-                contrast_table=detection_products["contrast_tables"][0],
-                yx_position=candidates[["y", "x"]].values[candidate_idx],
-                x_stddev=x_stddev,
-                y_stddev=y_stddev,
-                box_size=box_size,
-                mask_deviating=mask_deviating,
-                deviation_threshold=deviation_threshold,
-                fix_width=False,
-                fix_orientation=False,
-                plot=plot,
-            )
-
-            contrast_image_result = pd.merge(
+            # Fit A is already a free fit, so the "_free" columns downstream
+            # code reads are just the same quantities under the new setup.
+            for image_result in (
                 contrast_image_result,
-                contrast_image_result_free[
-                    [
-                        "amplitude",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                    ]
-                ],
-                left_index=True,
-                right_index=True,
-                how="left",
-                suffixes=[None, "_free"],
-            )
-            snr_image_result = pd.merge(
                 snr_image_result,
-                snr_image_result_free[
-                    [
-                        "amplitude",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                    ]
-                ],
-                left_index=True,
-                right_index=True,
-                how="left",
-                suffixes=[None, "_free"],
-            )
-            norm_snr_image_result = pd.merge(
                 norm_snr_image_result,
-                norm_snr_image_result_free[
-                    [
-                        "amplitude",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                    ]
-                ],
-                left_index=True,
-                right_index=True,
-                how="left",
-                suffixes=[None, "_free"],
-            )
+            ):
+                for col in (
+                    "amplitude",
+                    "x_fwhm",
+                    "y_fwhm",
+                    "theta",
+                    "good_pixels",
+                    "fwhm_area",
+                    "good_fraction",
+                ):
+                    image_result[f"{col}_free"] = image_result[col]
 
             contrast_image_result.insert(
                 loc=0, column="candidate_index", value=np.array([candidate_idx])

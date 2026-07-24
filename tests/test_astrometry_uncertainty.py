@@ -197,3 +197,45 @@ def test_summarize_2d_gauss_fit_result_populates_rt_sigmas():
         assert col in summary.columns
     assert np.isfinite(summary["radial_sigma_stat"].values[0])
     assert np.isfinite(summary["tangential_sigma_stat"].values[0])
+
+
+def test_fit_planet_parameters_uses_raw_snr_position_for_all_three():
+    """Fit A on the raw SNR image provides the centroid; Fits B (contrast)
+    and C (norm-SNR) share that centroid exactly (clamped)."""
+    size = 31
+    contrast, center = _make_isotropic_gaussian(
+        size=size, amplitude=1.0e-4, sigma=1.5, noise=1.0e-5
+    )
+    uncertainty = np.ones_like(contrast) * 1.0e-5
+    snr = contrast / uncertainty
+    detection_image = np.stack([contrast, uncertainty, snr], axis=0)
+
+    yy, xx = np.mgrid[:size, :size]
+    yx_center = (size // 2, size // 2)
+    r = np.hypot(yy - yx_center[0], xx - yx_center[1])
+    normalized_detection_image = snr / (1.0 + 0.05 * r)
+
+    contrast_table = pd.DataFrame(
+        {"sep (pix)": np.arange(size), "snr_normalization": np.ones(size)}
+    )
+
+    contrast_res, snr_res, norm_snr_res = detection.fit_planet_parameters(
+        detection_image=detection_image,
+        normalized_detection_image=normalized_detection_image,
+        contrast_table=contrast_table,
+        yx_position=(round(center[0]) + 4, round(center[1])),  # off-center → PA ≠ 0
+        x_stddev=1.5,
+        y_stddev=1.5,
+        box_size=15,
+        fix_width=False,
+        fix_orientation=False,
+        phi_source=None,
+    )
+    assert np.isclose(contrast_res["x"].values[0], snr_res["x"].values[0])
+    assert np.isclose(contrast_res["y"].values[0], snr_res["y"].values[0])
+    assert np.isclose(norm_snr_res["x"].values[0], snr_res["x"].values[0])
+    assert np.isclose(norm_snr_res["y"].values[0], snr_res["y"].values[0])
+    # Fit A carries a finite LevMar-derived σ; the clamped fits fall back to the
+    # CR floor (no position cov) with the finite SNR_local from Fit C.
+    assert np.isfinite(snr_res["radial_sigma_stat"].values[0])
+    assert np.isfinite(norm_snr_res["radial_sigma_stat"].values[0])
