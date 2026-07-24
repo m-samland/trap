@@ -1069,6 +1069,7 @@ def fit_2d_gaussian(
     fix_width=True,
     fix_orientation=True,
     plot=False,
+    fixed_position=None,
 ):
     if yx_center is None:
         yx_center = (image.shape[0] // 2.0, image.shape[1] // 2)
@@ -1126,10 +1127,43 @@ def fit_2d_gaussian(
         g_init.y_stddev.fixed = True
     if fix_orientation:
         g_init.theta.fixed = True
+    if fixed_position is not None:
+        # Clamp the centroid to a caller-supplied sub-pixel (y, x) position in
+        # original image coordinates (Fits B/C pin position to Fit A's centroid
+        # so their amplitudes are measured at the radially-unbiased location).
+        fx_cut, fy_cut = cutout.to_cutout_position(
+            (fixed_position[1], fixed_position[0])
+        )
+        g_init.x_mean = fx_cut
+        g_init.y_mean = fy_cut
+        g_init.x_mean.fixed = True
+        g_init.y_mean.fixed = True
 
-    fitter = fitting.LevMarLSQFitter()
+    def _extract_param_cov_xy(par):
+        param_cov_full = fitter.fit_info.get("param_cov", None)
+        # Free-parameter names in the order LevMar exposes them:
+        names = [n for n in par.param_names if not par.fixed[n]]
+        if (
+            param_cov_full is not None
+            and "x_mean" in names
+            and "y_mean" in names
+        ):
+            i_x = names.index("x_mean")
+            i_y = names.index("y_mean")
+            cov_xy = np.array(
+                [
+                    [param_cov_full[i_x, i_x], param_cov_full[i_x, i_y]],
+                    [param_cov_full[i_y, i_x], param_cov_full[i_y, i_y]],
+                ]
+            )
+        else:
+            cov_xy = None
+        return cov_xy, names
+
+    fitter = fitting.LevMarLSQFitter(calc_uncertainties=True)
     par = fitter(g_init, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask])
     model = par(xx, yy)
+    param_cov_xy, param_names = _extract_param_cov_xy(par)
 
     if plot:
         plt.imshow(cutout.data, origin="lower")
@@ -1154,6 +1188,7 @@ def fit_2d_gaussian(
         )
         par = fitter(g_init, xx[mask], yy[mask], cutout.data[mask])
         model = par(xx, yy)
+        param_cov_xy, param_names = _extract_param_cov_xy(par)
 
     # Cutout works with x first and y second
     xy_fit_position_orig = cutout.to_original_position(
@@ -1175,6 +1210,8 @@ def fit_2d_gaussian(
         "yx_fit_relative": yx_fit_relative,
         "mask": mask,
         "fwhm_area": fwhm_area,
+        "param_cov_xy": param_cov_xy,
+        "param_names": param_names,
     }
 
     return parameters
