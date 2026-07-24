@@ -338,3 +338,82 @@ def test_combine_channels_donor_is_highest_snr_row():
         snr_values=np.array([5.0, 20.0]),
     )
     assert np.isclose(combined["theta_free"].values[0], 2.0)
+
+
+def _fake_template_row(template_name, x_rel, y_rel, snr, sigma_r=0.2, sigma_t=0.1,
+                       candidate_id=0, wavelength_index=0, wavelength=1.6):
+    sep = float(np.hypot(x_rel, y_rel))
+    pa = float(np.degrees(np.arctan2(-x_rel, y_rel)) % 360)
+    return {
+        "candidate_id": candidate_id,
+        "template_name": template_name,
+        "x": 32.0 + x_rel,
+        "y": 32.0 + y_rel,
+        "x_relative": x_rel,
+        "y_relative": y_rel,
+        "separation": sep,
+        "position_angle": pa,
+        "x_relative_sigma": sigma_r,  # accepting axis-aligned simplification
+        "y_relative_sigma": sigma_t,
+        "xy_relative_corr": 0.0,
+        "separation_sigma": sigma_r,
+        "position_angle_sigma": float(np.degrees(sigma_t / max(sep, 1e-6))),
+        "radial_sigma_stat": sigma_r,
+        "tangential_sigma_stat": sigma_t,
+        "norm_snr_fit_free": snr,
+        "peak_pixel_snr": snr - 0.5,
+        "wavelength_index": wavelength_index,
+        "wavelength": wavelength,
+        "contrast": 1.0e-4,
+        "uncertainty": 1.0e-5,
+    }
+
+
+def test_combine_templates_picks_highest_snr_and_reports_scatter():
+    """Three templates detect the same source; best_template = highest SNR;
+    template-scatter columns are finite; single-template groups get NaN
+    scatter and disagreement=False."""
+    frames = [
+        pd.DataFrame([_fake_template_row("Tdwarf", 8.0, 0.0, snr=10.0)]),
+        pd.DataFrame([_fake_template_row("Ldwarf", 8.05, 0.02, snr=8.0)]),
+        pd.DataFrame([_fake_template_row("flat", 8.1, -0.03, snr=6.0)]),
+    ]
+    combined = detection._combine_templates_best_snr(
+        per_template_tables=frames,
+        search_radius=1.0,
+    )
+    assert combined["best_template"].values[0] == "Tdwarf"
+    assert combined["n_templates_above_threshold"].values[0] == 3
+    assert np.isfinite(combined["x_relative_sigma_template_scatter"].values[0])
+    # Single-template case:
+    combined_single = detection._combine_templates_best_snr(
+        per_template_tables=[frames[0]], search_radius=1.0,
+    )
+    assert np.isnan(combined_single["x_relative_sigma_template_scatter"].values[0])
+    assert bool(combined_single["astrometry_template_disagreement"].values[0]) is False
+
+
+def test_combine_templates_preserves_all_wavelength_rows_of_winner():
+    """The spectra output must retain every wavelength row of the winning
+    template, not collapse to a single row per source (C3)."""
+    tdwarf = pd.DataFrame(
+        [
+            _fake_template_row("Tdwarf", 8.0, 0.0, snr=10.0, wavelength_index=w, wavelength=1.0 + 0.1 * w)
+            for w in range(5)
+        ]
+    )
+    ldwarf = pd.DataFrame(
+        [
+            _fake_template_row("Ldwarf", 8.05, 0.02, snr=8.0, wavelength_index=w, wavelength=1.0 + 0.1 * w)
+            for w in range(5)
+        ]
+    )
+    combined = detection._combine_templates_best_snr(
+        per_template_tables=[tdwarf, ldwarf], search_radius=1.0,
+    )
+    # Winner is Tdwarf; all 5 of its wavelength rows survive.
+    assert len(combined) == 5
+    assert set(combined["best_template"].unique()) == {"Tdwarf"}
+    assert sorted(combined["wavelength_index"].tolist()) == [0, 1, 2, 3, 4]
+    assert combined["n_templates_above_threshold"].nunique() == 1
+    assert combined["n_templates_above_threshold"].values[0] == 2

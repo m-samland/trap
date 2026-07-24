@@ -1610,6 +1610,97 @@ def _combine_channels_rt_frame(group_rows, search_radius, snr_values=None):
     return row
 
 
+def _combine_templates_best_snr(per_template_tables, search_radius):
+    """Cross-template combination per Section 5 of the astrometry-uncertainty
+    spec. Each element of ``per_template_tables`` is one template's companion
+    table (one row per candidate *per wavelength*). Sources are grouped across
+    templates within ``search_radius`` in (x_relative, y_relative); the headline
+    per source is the highest-SNR template's row set.
+
+    Templates share the same pixel-noise realisation, so σ is *not* combined in
+    quadrature. Instead the winning template's every-wavelength rows are kept
+    verbatim (preserving the spectrum) and the across-template scatter is
+    reported in separate ``*_sigma_template_scatter`` columns, with a boolean
+    ``astrometry_template_disagreement`` flag.
+    """
+    tables = [t for t in per_template_tables if t is not None and not t.empty]
+    if not tables:
+        return pd.DataFrame()
+
+    # One representative row per (template, candidate) drives grouping and the
+    # best-SNR choice; the full wavelength rows are re-fetched for the winner.
+    reps = []
+    for table_index, table in enumerate(tables):
+        if "candidate_id" in table.columns:
+            for _, grp in table.groupby("candidate_id"):
+                rep = grp.sort_values("wavelength_index").iloc[[0]].copy()
+                rep["_table_index"] = table_index
+                reps.append(rep)
+        else:
+            rep = table.iloc[[0]].copy()
+            rep["_table_index"] = table_index
+            reps.append(rep)
+    reps = pd.concat(reps, ignore_index=True)
+
+    positions = reps[["x_relative", "y_relative"]].values.astype(float)
+    used = np.zeros(len(reps), dtype=bool)
+    output_rows = []
+    for i in range(len(reps)):
+        if used[i]:
+            continue
+        dist = np.linalg.norm(positions - positions[i], axis=1)
+        group_mask = (dist < search_radius) & (~used)
+        used[group_mask] = True
+        group = reps[group_mask]
+
+        best_pos = int(np.nanargmax(group["norm_snr_fit_free"].values))
+        best_rep = group.iloc[best_pos]
+        best_table = tables[int(best_rep["_table_index"])]
+        best_template_name = best_rep["template_name"]
+
+        if "candidate_id" in best_rep.index:
+            best_candidate_id = best_rep["candidate_id"]
+            winner_rows = best_table[
+                best_table["candidate_id"] == best_candidate_id
+            ].copy()
+        else:
+            winner_rows = best_table.copy()
+
+        n = len(group)
+        if n >= 2:
+            scatter_x = float(group["x_relative"].std(ddof=1))
+            scatter_y = float(group["y_relative"].std(ddof=1))
+            scatter_sep = float(group["separation"].std(ddof=1))
+            scatter_pa = float(group["position_angle"].std(ddof=1))
+        else:
+            scatter_x = np.nan
+            scatter_y = np.nan
+            scatter_sep = np.nan
+            scatter_pa = np.nan
+
+        winner_rows["best_template"] = best_template_name
+        winner_rows["n_templates_above_threshold"] = int(n)
+        winner_rows["x_relative_sigma_template_scatter"] = scatter_x
+        winner_rows["y_relative_sigma_template_scatter"] = scatter_y
+        winner_rows["separation_sigma_template_scatter"] = scatter_sep
+        winner_rows["position_angle_sigma_template_scatter"] = scatter_pa
+
+        # Disagreement: template scatter exceeds 2× the headline σ on either
+        # axis (only defined for n ≥ 2).
+        if n >= 2:
+            headline_x = float(winner_rows["x_relative_sigma"].values[0])
+            headline_y = float(winner_rows["y_relative_sigma"].values[0])
+            disagree = (scatter_x > 2.0 * headline_x) or (scatter_y > 2.0 * headline_y)
+        else:
+            disagree = False
+        winner_rows["astrometry_template_disagreement"] = bool(disagree)
+        output_rows.append(winner_rows)
+
+    combined = pd.concat(output_rows, ignore_index=True)
+    combined = combined.drop(columns=["_table_index"], errors="ignore")
+    return combined.sort_values("separation", ignore_index=True)
+
+
 class DetectionAnalysis(object):
     """Class for analyzing TRAP detection results and candidate characterization.
     
@@ -3043,6 +3134,9 @@ class DetectionAnalysis(object):
                 "separation_sigma",
                 "position_angle",
                 "position_angle_sigma",
+                "xy_relative_corr",
+                "radial_sigma_stat",
+                "tangential_sigma_stat",
                 "channels_above_threshold",
                 "theta_free",
                 "x_fwhm",
@@ -4110,117 +4204,52 @@ class DetectionAnalysis(object):
                 logger.warning("%s not found.", filename)
 
         if combined_detection_products:  # Check if list is not empty
-            combined_companion_table = pd.concat(combined_detection_products, ignore_index=True)
-            unique_candidate_indices = []
-            final_x_positions = []
-            rejected = []
-            unique_x_relative, unique_indices = np.unique(
-                combined_companion_table["x_relative"], return_index=True
+            best_companion_matches = _combine_templates_best_snr(
+                per_template_tables=combined_detection_products,
+                search_radius=search_radius,
             )
-            for idx, _ in enumerate(unique_x_relative):
-                pos1 = (
-                    combined_companion_table.iloc[unique_indices]
-                    .iloc[idx][["x_relative", "y_relative"]]
-                    .values.astype("float64")
-                )
-                pos2 = combined_companion_table.iloc[unique_indices][["x_relative", "y_relative"]].values
-                dist = linalg.norm(pos1 - pos2, axis=1)
-                mask = dist < search_radius
-                if np.sum(mask) == 1:
-                    unique_candidate_indices.append(idx)
-                    final_x_positions.append(unique_x_relative[idx])
-                else:
-                    if idx not in unique_candidate_indices and idx not in rejected:
-                        _peak_column = (
-                            combined_companion_table.iloc[unique_indices][mask]["peak_pixel_snr"].to_numpy()
-                        )
-                        if np.isnan(_peak_column).all():
-                            continue
-                        temp_candidate_index = int(np.nanargmax(_peak_column))
-                        x_position = combined_companion_table.iloc[unique_indices][mask].iloc[
-                            temp_candidate_index
-                        ]["x_relative"]
-                        candidate_index = np.where(
-                            combined_companion_table.iloc[unique_indices]["x_relative"] == x_position
-                        )[0][0]
-                        mask[candidate_index] = False
-                        rejected = rejected + list(np.argwhere(mask)[:, 0])
-                        if (
-                            candidate_index not in unique_candidate_indices
-                            and candidate_index not in rejected
-                        ):
-                            unique_candidate_indices.append(candidate_index)
-                            final_x_positions.append(x_position)
 
-            best_companion_matches = combined_companion_table[
-                combined_companion_table["x_relative"].isin(final_x_positions)
-            ].sort_values("separation", ignore_index=True)
-
+            # Assign a stable candidate_id per unique source (ordered by separation).
             for idx, separation in enumerate(
                 np.unique(best_companion_matches["separation"])
             ):
                 mask = best_companion_matches["separation"] == separation
-                n = np.sum(mask)
+                n = int(np.sum(mask))
                 best_companion_matches.loc[mask, "candidate_id"] = np.array([idx]).repeat(n)
 
+            spectra_cols = [
+                "candidate_id", "x", "y",
+                "x_relative", "x_relative_sigma", "y_relative", "y_relative_sigma",
+                "xy_relative_corr", "separation", "separation_sigma",
+                "position_angle", "position_angle_sigma",
+                "radial_sigma_stat", "tangential_sigma_stat",
+                "template_name", "best_template", "n_templates_above_threshold",
+                "astrometry_template_disagreement",
+                "x_relative_sigma_template_scatter", "y_relative_sigma_template_scatter",
+                "separation_sigma_template_scatter", "position_angle_sigma_template_scatter",
+                "norm_snr_fit_free", "peak_pixel_snr",
+                "wavelength_index", "wavelength", "contrast", "uncertainty",
+            ]
+            spectra_present = [
+                c for c in spectra_cols if c in best_companion_matches.columns
+            ]
             best_companion_matches_spectra = best_companion_matches[
-                [
-                    "candidate_id",
-                    "x",
-                    "y",
-                    "x_relative",
-                    "x_relative_sigma",
-                    "y_relative",
-                    "y_relative_sigma",
-                    "separation",
-                    "separation_sigma",
-                    "position_angle",
-                    "position_angle_sigma",
-                    # 'channels_above_threshold',
-                    "template_name",
-                    "norm_snr_fit_free",
-                    "peak_pixel_snr",
-                    "wavelength_index",
-                    "wavelength",
-                    "contrast",
-                    "uncertainty",
-                ]
-            ]
+                spectra_present
+            ].sort_values(["candidate_id", "wavelength"], ignore_index=True)
 
-            best_companion_matches_short = best_companion_matches[
-                best_companion_matches["wavelength_index"] == 0
-            ]
-            best_companion_matches_short = best_companion_matches_short[
-                [
-                    "candidate_id",
-                    "x",
-                    "y",
-                    "x_relative",
-                    "x_relative_sigma",
-                    "y_relative",
-                    "y_relative_sigma",
-                    "separation",
-                    "separation_sigma",
-                    "position_angle",
-                    "position_angle_sigma",
-                    # 'channels_above_threshold',
-                    "template_name",
-                    "norm_snr_fit_free",
-                    "peak_pixel_snr",
-                ]
-            ]
-            best_companion_matches_spectra = best_companion_matches_spectra.sort_values(
-                ["candidate_id", "wavelength"], ignore_index=True
+            per_wavelength = {"wavelength_index", "wavelength", "contrast", "uncertainty"}
+            short_cols = [c for c in spectra_present if c not in per_wavelength]
+            best_companion_matches_short = (
+                best_companion_matches[best_companion_matches["wavelength_index"] == 0][
+                    short_cols
+                ].sort_values(["candidate_id"], ignore_index=True)
             )
+
             best_companion_matches_spectra.to_csv(
                 os.path.join(
                     output_dir_matching, f"overall_{prefix}companion_detections_spectra.csv"
                 ),
                 index=False,
-            )
-
-            best_companion_matches_short = best_companion_matches_short.sort_values(
-                ["candidate_id"], ignore_index=True
             )
             best_companion_matches_short.to_csv(
                 os.path.join(output_dir_matching, f"overall_{prefix}companion_detections.csv"),
