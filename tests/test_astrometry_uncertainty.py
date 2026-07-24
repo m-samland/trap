@@ -164,3 +164,36 @@ def test_rt_sigmas_falls_back_to_cr_when_fit_cov_none():
     assert np.isclose(result["sigma_r_stat"], 3.0 / 10.0)
     assert np.isclose(result["sigma_t_stat"], 5.0 / 10.0)
     assert result["rho_rt"] == 0.0
+
+
+def test_summarize_2d_gauss_fit_result_populates_rt_sigmas():
+    size = 31
+    image, center = _make_isotropic_gaussian(size=size, amplitude=100.0, sigma=1.5, noise=0.3)
+    yx_center = (size // 2, size // 2)
+    # Place candidate off-center so PA is nonzero
+    yx_position = (size // 2 + 5, size // 2)
+    fit_result = detection.fit_2d_gaussian(
+        image,
+        yx_position=yx_position,
+        yx_center=yx_center,
+        x_stddev=1.5,
+        y_stddev=1.5,
+        box_size=15,
+        fix_width=False,
+        fix_orientation=False,
+    )
+    summary = detection.summarize_2d_gauss_fit_result(
+        fit_result, phi_source=0.0, snr_local_normalized=50.0,
+    )
+    for col in (
+        "radial_sigma_stat",
+        "tangential_sigma_stat",
+        "rt_corr_stat",
+        "radial_sigma_fit",
+        "tangential_sigma_fit",
+        "radial_sigma_cr",
+        "tangential_sigma_cr",
+    ):
+        assert col in summary.columns
+    assert np.isfinite(summary["radial_sigma_stat"].values[0])
+    assert np.isfinite(summary["tangential_sigma_stat"].values[0])

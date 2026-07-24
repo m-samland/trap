@@ -1380,7 +1380,9 @@ def _compute_rt_frame_sigmas(
     }
 
 
-def summarize_2d_gauss_fit_result(result_dictionary):
+def summarize_2d_gauss_fit_result(
+    result_dictionary, phi_source=None, snr_local_normalized=None
+):
     fitted_parameters = {
         "x": [],
         "y": [],
@@ -1423,6 +1425,25 @@ def summarize_2d_gauss_fit_result(result_dictionary):
     fitted_parameters["good_fraction"].append(
         np.sum(result_dictionary["mask"]) / result_dictionary["fwhm_area"]
     )
+
+    rt = _compute_rt_frame_sigmas(
+        x_fwhm_free=result_dictionary["parameters"].x_stddev.value * 2.355,
+        y_fwhm_free=result_dictionary["parameters"].y_stddev.value * 2.355,
+        theta_free=result_dictionary["parameters"].theta.value,
+        phi_source=(0.0 if phi_source is None else phi_source),
+        param_cov_xy=result_dictionary.get("param_cov_xy", None),
+        snr_local_normalized=(
+            np.nan if snr_local_normalized is None else snr_local_normalized
+        ),
+    )
+    fitted_parameters["radial_sigma_stat"] = [rt["sigma_r_stat"]]
+    fitted_parameters["tangential_sigma_stat"] = [rt["sigma_t_stat"]]
+    fitted_parameters["rt_corr_stat"] = [rt["rho_rt"]]
+    fitted_parameters["radial_sigma_fit"] = [rt["sigma_r_fit"]]
+    fitted_parameters["tangential_sigma_fit"] = [rt["sigma_t_fit"]]
+    fitted_parameters["radial_sigma_cr"] = [rt["sigma_r_cr"]]
+    fitted_parameters["tangential_sigma_cr"] = [rt["sigma_t_cr"]]
+
     fitted_parameters = pd.DataFrame(fitted_parameters)
     return fitted_parameters
 
