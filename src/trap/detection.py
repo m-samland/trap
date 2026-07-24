@@ -1299,6 +1299,87 @@ def fit_planet_parameters(
     return contrast_image_results, snr_image_results, norm_snr_image_results
 
 
+def _compute_rt_frame_sigmas(
+    x_fwhm_free,
+    y_fwhm_free,
+    theta_free,
+    phi_source,
+    param_cov_xy,
+    snr_local_normalized,
+    eps_snr=1.0,
+):
+    """Compute source-aligned (radial, tangential) statistical σ per Section 3
+    of the astrometry-uncertainty spec.
+
+    Parameters
+    ----------
+    x_fwhm_free, y_fwhm_free : float
+        Empirical FWHMs from a free 2D Gaussian fit on the SNR image, in pixels.
+    theta_free : float
+        Fitted orientation, radians (astropy Gaussian2D convention).
+    phi_source : float
+        Source-star direction in the fit frame, radians (as computed at fit
+        init in `fit_2d_gaussian`).
+    param_cov_xy : ndarray or None
+        2×2 LevMar covariance of the centroid (x_mean, y_mean), or None if the
+        fit's covariance was unavailable/singular.
+    snr_local_normalized : float
+        Calibrated SNR at the source position (amplitude of a norm-SNR fit).
+    eps_snr : float
+        Floor on SNR to avoid division by zero.
+
+    Returns
+    -------
+    dict with keys sigma_r_stat, sigma_t_stat, rho_rt, sigma_r_fit,
+    sigma_t_fit, sigma_r_cr, sigma_t_cr. All in pixels.
+    """
+    sigma_x_free = x_fwhm_free / 2.355
+    sigma_y_free = y_fwhm_free / 2.355
+    delta = theta_free - phi_source
+    cos_d, sin_d = np.cos(delta), np.sin(delta)
+    sigma_psf_r = np.sqrt((sigma_x_free * cos_d) ** 2 + (sigma_y_free * sin_d) ** 2)
+    sigma_psf_t = np.sqrt((sigma_x_free * sin_d) ** 2 + (sigma_y_free * cos_d) ** 2)
+
+    snr_eff = max(snr_local_normalized, eps_snr)
+    sigma_r_cr = sigma_psf_r / snr_eff
+    sigma_t_cr = sigma_psf_t / snr_eff
+
+    if param_cov_xy is not None and np.all(np.isfinite(param_cov_xy)):
+        cos_p, sin_p = np.cos(phi_source), np.sin(phi_source)
+        R = np.array([[cos_p, -sin_p], [sin_p, cos_p]])
+        c_rt = R.T @ param_cov_xy @ R
+        var_r, var_t = c_rt[0, 0], c_rt[1, 1]
+        if var_r > 0 and var_t > 0:
+            sigma_r_fit = np.sqrt(var_r)
+            sigma_t_fit = np.sqrt(var_t)
+            rho_rt_fit = c_rt[0, 1] / (sigma_r_fit * sigma_t_fit)
+        else:
+            sigma_r_fit = np.nan
+            sigma_t_fit = np.nan
+            rho_rt_fit = np.nan
+    else:
+        sigma_r_fit = np.nan
+        sigma_t_fit = np.nan
+        rho_rt_fit = np.nan
+
+    sigma_r_stat = sigma_r_cr if np.isnan(sigma_r_fit) else max(sigma_r_fit, sigma_r_cr)
+    sigma_t_stat = sigma_t_cr if np.isnan(sigma_t_fit) else max(sigma_t_fit, sigma_t_cr)
+
+    from_fit_r = (not np.isnan(sigma_r_fit)) and sigma_r_fit >= sigma_r_cr
+    from_fit_t = (not np.isnan(sigma_t_fit)) and sigma_t_fit >= sigma_t_cr
+    rho_rt = rho_rt_fit if (from_fit_r and from_fit_t) else 0.0
+
+    return {
+        "sigma_r_stat": sigma_r_stat,
+        "sigma_t_stat": sigma_t_stat,
+        "rho_rt": rho_rt,
+        "sigma_r_fit": sigma_r_fit,
+        "sigma_t_fit": sigma_t_fit,
+        "sigma_r_cr": sigma_r_cr,
+        "sigma_t_cr": sigma_t_cr,
+    }
+
+
 def summarize_2d_gauss_fit_result(result_dictionary):
     fitted_parameters = {
         "x": [],

@@ -94,3 +94,73 @@ def test_fit_2d_gaussian_fixed_position_clamps_centroid():
     # Position was held fixed, so it is not a free parameter and has no cov row
     assert "x_mean" not in result["param_names"]
     assert "y_mean" not in result["param_names"]
+
+
+def test_rt_sigmas_axis_aligned_recovers_input_widths():
+    """phi_source = 0 → (r, t) frame == (y, x) frame; verify identity."""
+    x_fwhm_free = 3.0 * 2.355  # sigma_x = 3.0
+    y_fwhm_free = 5.0 * 2.355  # sigma_y = 5.0
+    theta_free = 0.0
+    phi_source = 0.0
+    param_cov_xy = np.array([[0.04, 0.0], [0.0, 0.09]])  # sigma_x_fit=0.2, sigma_y_fit=0.3
+    snr = 100.0
+    result = detection._compute_rt_frame_sigmas(
+        x_fwhm_free=x_fwhm_free,
+        y_fwhm_free=y_fwhm_free,
+        theta_free=theta_free,
+        phi_source=phi_source,
+        param_cov_xy=param_cov_xy,
+        snr_local_normalized=snr,
+        eps_snr=1.0,
+    )
+    # PSF widths in (r, t) at Δ=0: σ_PSF_r = σx_free = 3.0, σ_PSF_t = σy_free = 5.0
+    # CR floor at SNR=100: σ_r_CR = 3.0/100, σ_t_CR = 5.0/100
+    assert np.isclose(result["sigma_r_cr"], 3.0 / 100.0)
+    assert np.isclose(result["sigma_t_cr"], 5.0 / 100.0)
+    # Fit cov is diagonal → rotation by 0 leaves it diagonal
+    assert np.isclose(result["sigma_r_fit"], np.sqrt(0.04))
+    assert np.isclose(result["sigma_t_fit"], np.sqrt(0.09))
+    # Both fit values exceed the CR floor (0.2 > 0.03, 0.3 > 0.05)
+    assert np.isclose(result["sigma_r_stat"], np.sqrt(0.04))
+    assert np.isclose(result["sigma_t_stat"], np.sqrt(0.09))
+    # Correlation coefficient survives (both axes from fit; ρ was 0)
+    assert np.isclose(result["rho_rt"], 0.0)
+
+
+def test_rt_sigmas_45deg_rotated_correlates_xy():
+    """Source-star vector at 45° → isotropic PSF gives σ_r=σ_t and an
+    isotropic centroid cov stays diagonal in the (r, t) frame."""
+    x_fwhm_free = 4.0 * 2.355
+    y_fwhm_free = 4.0 * 2.355  # isotropic PSF → σ_PSF_r = σ_PSF_t regardless of Δ
+    theta_free = 0.0
+    phi_source = np.pi / 4
+    # Isotropic centroid cov: any rotation leaves diag identical, off-diag 0
+    param_cov_xy = np.diag([0.05, 0.05])
+    snr = 20.0
+    result = detection._compute_rt_frame_sigmas(
+        x_fwhm_free=x_fwhm_free,
+        y_fwhm_free=y_fwhm_free,
+        theta_free=theta_free,
+        phi_source=phi_source,
+        param_cov_xy=param_cov_xy,
+        snr_local_normalized=snr,
+    )
+    assert np.isclose(result["sigma_r_stat"], np.sqrt(0.05))
+    assert np.isclose(result["sigma_t_stat"], np.sqrt(0.05))
+    assert np.isclose(result["rho_rt"], 0.0, atol=1e-9)
+
+
+def test_rt_sigmas_falls_back_to_cr_when_fit_cov_none():
+    result = detection._compute_rt_frame_sigmas(
+        x_fwhm_free=3.0 * 2.355,
+        y_fwhm_free=5.0 * 2.355,
+        theta_free=0.0,
+        phi_source=0.0,
+        param_cov_xy=None,
+        snr_local_normalized=10.0,
+    )
+    assert np.isnan(result["sigma_r_fit"])
+    assert np.isnan(result["sigma_t_fit"])
+    assert np.isclose(result["sigma_r_stat"], 3.0 / 10.0)
+    assert np.isclose(result["sigma_t_stat"], 5.0 / 10.0)
+    assert result["rho_rt"] == 0.0
