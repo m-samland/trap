@@ -1310,10 +1310,11 @@ def fit_planet_parameters(
     )
 
     if phi_source is None:
-        rhophi = image_coordinates.relative_yx_to_rhophi(
-            snr_image_parameters["yx_fit_relative"]
-        )
-        phi_source_local = float(rhophi[1]) * np.pi / 180.0
+        # Math-angle of the source vector (radial = +x at α=0), matching the
+        # (r, t) rotation convention in `_compute_rt_frame_sigmas` — not the
+        # astronomical position angle.
+        y_rel, x_rel = snr_image_parameters["yx_fit_relative"]
+        phi_source_local = float(np.arctan2(y_rel, x_rel))
     else:
         phi_source_local = float(phi_source)
 
@@ -1491,6 +1492,122 @@ def summarize_2d_gauss_fit_result(
 
     fitted_parameters = pd.DataFrame(fitted_parameters)
     return fitted_parameters
+
+
+def _combine_channels_rt_frame(group_rows, search_radius, snr_values=None):
+    """Inverse-variance combination of per-channel (r, t) σ with a PDG scale
+    factor, per Section 4 of the astrometry-uncertainty spec.
+
+    ``group_rows`` is a DataFrame with one row per channel that detected this
+    candidate (already grouped upstream). Position and σ columns are combined;
+    all other columns are copied from the highest-SNR channel so the resulting
+    headline row is internally consistent (shape params, good-fraction, etc.).
+    ``snr_values`` optionally supplies the per-row ranking SNR (calibrated
+    norm-SNR amplitude); when omitted the raw-SNR fit ``amplitude`` is used.
+
+    Returns a single-row DataFrame with the combined position, σ columns, and
+    χ²_red diagnostics.
+    """
+    group_rows = group_rows.reset_index(drop=True)
+    n = len(group_rows)
+
+    x_rel = group_rows["x_relative"].values.astype(float)
+    y_rel = group_rows["y_relative"].values.astype(float)
+    sigma_r = group_rows["radial_sigma_stat"].values.astype(float)
+    sigma_t = group_rows["tangential_sigma_stat"].values.astype(float)
+    # Rotation uses the math-angle of the source vector (radial = +x at α=0),
+    # matching the (r, t) convention in `_compute_rt_frame_sigmas`. The
+    # astronomical position_angle is emitted separately for output.
+    alpha = np.arctan2(y_rel, x_rel)
+
+    if snr_values is None:
+        snr_values = group_rows["amplitude"].values.astype(float)
+    else:
+        snr_values = np.asarray(snr_values, dtype=float)
+    donor = int(np.nanargmax(snr_values))
+
+    # Weighted mean position in (x, y): weights use the tighter (tangential)
+    # axis, combining per-channel frames that differ only slightly in angle.
+    w = 1.0 / np.maximum(sigma_t**2, 1e-12)
+    x_bar = float(np.sum(w * x_rel) / np.sum(w))
+    y_bar = float(np.sum(w * y_rel) / np.sum(w))
+    sep_bar = float(np.hypot(x_bar, y_bar))
+    alpha_bar = float(np.arctan2(y_bar, x_bar))
+    pa_bar = float(np.degrees(np.arctan2(-x_bar, y_bar)) % 360.0)
+
+    cos_p, sin_p = np.cos(alpha_bar), np.sin(alpha_bar)
+    R = np.array([[cos_p, -sin_p], [sin_p, cos_p]])
+
+    # Rotate each channel's (r, t) covariance into the combined (r, t) frame.
+    var_r_list, var_t_list = [], []
+    for k in range(n):
+        c_rt_k = np.diag([sigma_r[k] ** 2, sigma_t[k] ** 2])
+        cos_k, sin_k = np.cos(alpha[k]), np.sin(alpha[k])
+        R_k = np.array([[cos_k, -sin_k], [sin_k, cos_k]])
+        c_xy_k = R_k @ c_rt_k @ R_k.T
+        c_rt_bar_k = R.T @ c_xy_k @ R
+        var_r_list.append(c_rt_bar_k[0, 0])
+        var_t_list.append(c_rt_bar_k[1, 1])
+    var_r_arr = np.array(var_r_list)
+    var_t_arr = np.array(var_t_list)
+
+    w_r = 1.0 / np.maximum(var_r_arr, 1e-12)
+    w_t = 1.0 / np.maximum(var_t_arr, 1e-12)
+    var_r_formal = 1.0 / np.sum(w_r)
+    var_t_formal = 1.0 / np.sum(w_t)
+
+    dx = x_rel - x_bar
+    dy = y_rel - y_bar
+    dr_k = dx * cos_p + dy * sin_p
+    dt_k = -dx * sin_p + dy * cos_p
+
+    if n > 1:
+        chi2_red_r = float(np.sum(w_r * dr_k**2) / (n - 1))
+        chi2_red_t = float(np.sum(w_t * dt_k**2) / (n - 1))
+        scale_r = max(1.0, np.sqrt(chi2_red_r))
+        scale_t = max(1.0, np.sqrt(chi2_red_t))
+    else:
+        chi2_red_r = np.nan
+        chi2_red_t = np.nan
+        scale_r = 1.0
+        scale_t = 1.0
+
+    sigma_r_combined = np.sqrt(var_r_formal) * scale_r
+    sigma_t_combined = np.sqrt(var_t_formal) * scale_t
+
+    c_rt_combined = np.array(
+        [[sigma_r_combined**2, 0.0], [0.0, sigma_t_combined**2]]
+    )
+    c_xy_combined = R @ c_rt_combined @ R.T
+    sigma_x_combined = float(np.sqrt(c_xy_combined[0, 0]))
+    sigma_y_combined = float(np.sqrt(c_xy_combined[1, 1]))
+    rho_xy_combined = float(
+        c_xy_combined[0, 1] / (sigma_x_combined * sigma_y_combined)
+    )
+
+    row = group_rows.iloc[[donor]].copy()
+    # Recompute the absolute position from the donor's own image center offset.
+    x_center_abs = float(group_rows["x"].values[donor] - x_rel[donor])
+    y_center_abs = float(group_rows["y"].values[donor] - y_rel[donor])
+    row["x"] = x_center_abs + x_bar
+    row["y"] = y_center_abs + y_bar
+    row["x_relative"] = x_bar
+    row["y_relative"] = y_bar
+    row["separation"] = sep_bar
+    row["position_angle"] = pa_bar
+    row["radial_sigma_stat"] = sigma_r_combined
+    row["tangential_sigma_stat"] = sigma_t_combined
+    row["separation_sigma"] = sigma_r_combined
+    row["position_angle_sigma"] = float(
+        np.degrees(sigma_t_combined / max(sep_bar, 1e-6))
+    )
+    row["x_relative_sigma"] = sigma_x_combined
+    row["y_relative_sigma"] = sigma_y_combined
+    row["xy_relative_corr"] = rho_xy_combined
+    row["chi2_red_radial"] = chi2_red_r
+    row["chi2_red_tangential"] = chi2_red_t
+    row["channels_above_threshold"] = n
+    return row
 
 
 class DetectionAnalysis(object):
@@ -2394,210 +2511,55 @@ class DetectionAnalysis(object):
             plot=False,
         )
         
-        unique_candidate_indices = []
-        rejected = []
-        final_position_table = []
-        weighted_average_key_list = [
-            "x",
-            "y",
-            "x_relative",
-            "y_relative",
-            "separation",
-            "position_angle",
-            "x_fwhm",
-            "y_fwhm",
-            "theta",
-            "good_pixels",
-            "fwhm_area",
-            "good_fraction",
-            "x_fwhm_free",
-            "y_fwhm_free",
-            "theta_free",
-            "good_pixels_free",
-            "fwhm_area_free",
-            "good_fraction_free",
-        ]
-        for idx in range(len(candidates)):
-            pos1 = (
-                candidates_fit["snr_image"]
-                .iloc[idx][["x_relative", "y_relative"]]
-                .values
-            )
-            pos2 = candidates_fit["snr_image"][["x_relative", "y_relative"]].values
-            dist = linalg.norm(pos1 - pos2, axis=1)
-
-            mask = dist < search_radius
-            if np.sum(mask) == 1:
-                unique_candidate_indices.append(idx)
-                # If candidate is only detected in one channel, uncertainty is NaN
-                entry = (
-                    candidates_fit["snr_image"]
-                    .iloc[idx][weighted_average_key_list]
-                    .to_frame()
-                    .T
-                )
-                entry.insert(loc=3, column="x_relative_sigma", value=np.nan)
-                entry.insert(loc=5, column="y_relative_sigma", value=np.nan)
-                entry.insert(loc=7, column="separation_sigma", value=np.nan)
-                entry.insert(loc=9, column="position_angle_sigma", value=np.nan)
-                entry.insert(
-                    loc=10, column="channels_above_threshold", value=np.array([1])
-                )
-                final_position_table.append(entry)
-            else:
-                # Find wavelength with highest SNR
-                if idx not in unique_candidate_indices and idx not in rejected:
-                    # Perform weighted average of columns
-                    df = candidates_fit["snr_image"][mask]
-                    snr = candidates_fit["norm_snr_image"]["amplitude"][mask]
-                    df.insert(loc=0, column="snr", value=snr)
-                    df.insert(loc=1, column="group", value=np.ones(len(df)))
-
-                    # Sigma clipping for position
-                    # from astropy.stats import sigma_clip, mad_std
-                    # filtered_data1 = sigma_clip(df['separation'], sigma=3.5, maxiters=3,
-                    #                             cenfunc=np.median, stdfunc=mad_std)
-                    # filtered_data2 = sigma_clip(df['position_angle'], sigma=3.5,
-                    #                             maxiters=3, cenfunc=np.median, stdfunc=mad_std)
-
-                    # Make new data frame of average weighted by SNR
-                    def weighted_average(grp, weight_column="snr"):
-                        return (
-                            grp._get_numeric_data()
-                            .multiply(grp[weight_column], axis=0)
-                            .sum()
-                            / grp[weight_column].sum()
-                        )
-
-                    weighted_agg = df.groupby("group").apply(weighted_average, include_groups=False)
-                    weighted_agg = weighted_agg[weighted_average_key_list]
-
-                    # Compute uncertainty based on standard deviation
-                    std_dev_df = df.groupby("group").apply(np.std, axis=0, include_groups=False)
-                    weighted_agg.insert(
-                        loc=3,
-                        column="x_relative_sigma",
-                        value=std_dev_df["x_relative"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=5,
-                        column="y_relative_sigma",
-                        value=std_dev_df["y_relative"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=7,
-                        column="separation_sigma",
-                        value=std_dev_df["separation"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=9,
-                        column="position_angle_sigma",
-                        value=std_dev_df["position_angle"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=10,
-                        column="channels_above_threshold",
-                        value=np.array([len(df)]),
-                    )
-
-                    # Get candidate id of channel with highest SNR
-                    temp_idx = np.nanargmax(
-                        candidates_fit["norm_snr_image"][mask]["amplitude"]
-                    )
-                    candidate_index = int(
-                        candidates_fit["snr_image"][mask].iloc[temp_idx][
-                            "candidate_index"
-                        ]
-                    )
-                    # Set in mask, such that it won't be used in next iteration
-                    mask[candidate_index] = False
-                    rejected = rejected + list(np.argwhere(mask)[:, 0])
-
-                    # Add to our final position table
-                    final_position_table_key_list = [
-                        "x",
-                        "y",
-                        "x_relative",
-                        "x_relative_sigma",
-                        "y_relative",
-                        "y_relative_sigma",
-                        "separation",
-                        "separation_sigma",
-                        "position_angle",
-                        "position_angle_sigma",
-                        "channels_above_threshold",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                        "x_fwhm_free",
-                        "y_fwhm_free",
-                        "theta_free",
-                        "good_pixels_free",
-                        "fwhm_area_free",
-                        "good_fraction_free",
-                    ]
-                    if (
-                        candidate_index not in unique_candidate_indices
-                        and candidate_index not in rejected
-                    ):
-                        unique_candidate_indices.append(candidate_index)
-                        final_position_table.append(
-                            weighted_agg[final_position_table_key_list]
-                        )
-
-        final_position_table = pd.concat(final_position_table, ignore_index=True)
-
-        # Filter out duplicates from candidate table, only retain one row entry per candidate
-        candidates = candidates.iloc[unique_candidate_indices].sort_values("separation")
-        candidates_fit["contrast_image"] = (
-            candidates_fit["contrast_image"]
-            .iloc[unique_candidate_indices]
-            .sort_values("separation", ignore_index=True)
+        # Group per-wavelength detections of the same source (within
+        # search_radius) and combine them in the source-aligned (r, t) frame
+        # per Section 4 of the astrometry-uncertainty spec. Positional indexing
+        # throughout so a non-range candidate index never aliases a position.
+        snr_table = candidates_fit["snr_image"].reset_index(drop=True)
+        norm_amp = (
+            candidates_fit["norm_snr_image"]["amplitude"]
+            .reset_index(drop=True)
+            .values.astype(float)
         )
-        candidates_fit["snr_image"] = (
-            candidates_fit["snr_image"].iloc[unique_candidate_indices].reset_index()
+        positions = snr_table[["x_relative", "y_relative"]].values.astype(float)
+
+        assigned = np.zeros(len(snr_table), dtype=bool)
+        unique_candidate_indices = []
+        combined_rows = []
+        for idx in range(len(snr_table)):
+            if assigned[idx]:
+                continue
+            dist = linalg.norm(positions[idx] - positions, axis=1)
+            group_mask = (dist < search_radius) & (~assigned)
+            group_positions = np.where(group_mask)[0]
+            group_rows = snr_table.iloc[group_positions]
+            group_snr = norm_amp[group_positions]
+
+            combined = _combine_channels_rt_frame(
+                group_rows, search_radius=search_radius, snr_values=group_snr
+            )
+            # Keep the highest-SNR channel as the surviving row in the sibling
+            # (contrast / norm-SNR) tables.
+            keeper = int(group_positions[int(np.nanargmax(group_snr))])
+            unique_candidate_indices.append(keeper)
+            assigned[group_positions] = True
+            combined_rows.append(combined)
+
+        final_position_table = pd.concat(combined_rows, ignore_index=True)
+
+        # Order all tables consistently by the combined separation.
+        order = np.argsort(final_position_table["separation"].values, kind="stable")
+        final_position_table = final_position_table.iloc[order].reset_index(drop=True)
+        kept = [unique_candidate_indices[i] for i in order]
+
+        candidates = candidates.iloc[kept].reset_index(drop=True)
+        candidates_fit["contrast_image"] = (
+            candidates_fit["contrast_image"].iloc[kept].reset_index(drop=True)
         )
         candidates_fit["norm_snr_image"] = (
-            candidates_fit["norm_snr_image"]
-            .iloc[unique_candidate_indices]
-            .sort_values("separation", ignore_index=True)
+            candidates_fit["norm_snr_image"].iloc[kept].reset_index(drop=True)
         )
-
-        candidates_fit["snr_image"][weighted_average_key_list] = final_position_table[
-            weighted_average_key_list
-        ]
-        candidates_fit["snr_image"].insert(
-            loc=6,
-            column="x_relative_sigma",
-            value=final_position_table["x_relative_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=8,
-            column="y_relative_sigma",
-            value=final_position_table["y_relative_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=10,
-            column="separation_sigma",
-            value=final_position_table["separation_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=12,
-            column="position_angle_sigma",
-            value=final_position_table["position_angle_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=13,
-            column="channels_above_threshold",
-            value=final_position_table["channels_above_threshold"].values,
-        )
-
-        candidates_fit["snr_image"].sort_values(
-            "separation", ignore_index=True, inplace=True
-        )
+        candidates_fit["snr_image"] = final_position_table
 
         self.candidates = candidates
         self.candidates_fit = candidates_fit

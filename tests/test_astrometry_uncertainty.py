@@ -239,3 +239,102 @@ def test_fit_planet_parameters_uses_raw_snr_position_for_all_three():
     # CR floor (no position cov) with the finite SNR_local from Fit C.
     assert np.isfinite(snr_res["radial_sigma_stat"].values[0])
     assert np.isfinite(norm_snr_res["radial_sigma_stat"].values[0])
+
+
+def _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1, amplitude=10.0):
+    """Emulate one row of candidates_fit['snr_image'] after Task 5."""
+    sep = np.hypot(x_rel, y_rel)
+    pa = float(np.degrees(np.arctan2(-x_rel, y_rel)) % 360)
+    return pd.DataFrame(
+        [
+            {
+                "candidate_index": 0,
+                "wavelength_index": 0,
+                "x": 32.0 + x_rel,
+                "y": 32.0 + y_rel,
+                "x_relative": x_rel,
+                "y_relative": y_rel,
+                "separation": sep,
+                "position_angle": pa,
+                "amplitude": amplitude,
+                "x_fwhm": 3.4,
+                "y_fwhm": 3.4,
+                "theta": np.pi / 2,
+                "good_pixels": 40,
+                "fwhm_area": 40.0,
+                "good_fraction": 1.0,
+                "amplitude_free": amplitude,
+                "x_fwhm_free": 3.4,
+                "y_fwhm_free": 3.4,
+                "theta_free": np.pi / 2,
+                "good_pixels_free": 40,
+                "fwhm_area_free": 40.0,
+                "good_fraction_free": 1.0,
+                "radial_sigma_stat": radial_sigma,
+                "tangential_sigma_stat": tangential_sigma,
+                "rt_corr_stat": 0.0,
+                "radial_sigma_fit": radial_sigma,
+                "tangential_sigma_fit": tangential_sigma,
+                "radial_sigma_cr": radial_sigma * 0.5,
+                "tangential_sigma_cr": tangential_sigma * 0.5,
+            }
+        ]
+    )
+
+
+def test_combine_channels_single_channel_gets_finite_sigma():
+    fit_row = _one_channel_snr_row(x_rel=8.0, y_rel=0.0)
+    combined = detection._combine_channels_rt_frame(
+        group_rows=fit_row,
+        search_radius=15.0,
+    )
+    assert np.isfinite(combined["separation_sigma"].values[0])
+    assert np.isfinite(combined["position_angle_sigma"].values[0])
+    assert np.isnan(combined["chi2_red_radial"].values[0])
+    assert combined["channels_above_threshold"].values[0] == 1
+
+
+def test_combine_channels_two_agree_shrinks_sigma():
+    r1 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2["wavelength_index"] = 1
+    r2["candidate_index"] = 1
+    combined = detection._combine_channels_rt_frame(
+        pd.concat([r1, r2], ignore_index=True),
+        search_radius=15.0,
+    )
+    assert combined["radial_sigma_stat"].values[0] < 0.2
+    assert combined["tangential_sigma_stat"].values[0] < 0.1
+    assert combined["chi2_red_radial"].values[0] < 1.5
+    assert combined["channels_above_threshold"].values[0] == 2
+
+
+def test_combine_channels_two_disagree_inflates_sigma():
+    """Two channels 1 px apart in x (radial at PA=90°): scale factor > 1 and
+    combined radial σ inflated accordingly."""
+    r1 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2 = _one_channel_snr_row(x_rel=8.0 + 1.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2["wavelength_index"] = 1
+    r2["candidate_index"] = 1
+    combined = detection._combine_channels_rt_frame(
+        pd.concat([r1, r2], ignore_index=True),
+        search_radius=15.0,
+    )
+    assert combined["chi2_red_radial"].values[0] > 4.0
+    assert combined["radial_sigma_stat"].values[0] > 0.2
+
+
+def test_combine_channels_donor_is_highest_snr_row():
+    """Non-position columns come from the highest-SNR channel, not row 0."""
+    r1 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, amplitude=5.0)
+    r1["theta_free"] = 1.0
+    r2 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, amplitude=20.0)
+    r2["theta_free"] = 2.0
+    r2["wavelength_index"] = 1
+    r2["candidate_index"] = 1
+    combined = detection._combine_channels_rt_frame(
+        pd.concat([r1, r2], ignore_index=True),
+        search_radius=15.0,
+        snr_values=np.array([5.0, 20.0]),
+    )
+    assert np.isclose(combined["theta_free"].values[0], 2.0)
