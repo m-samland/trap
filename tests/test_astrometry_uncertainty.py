@@ -393,6 +393,150 @@ def test_combine_templates_picks_highest_snr_and_reports_scatter():
     assert bool(combined_single["astrometry_template_disagreement"].values[0]) is False
 
 
+def _collapse_overall_row(candidate_id, x_rel, y_rel, wavelength_index, sr=0.34, st=0.28):
+    sep = float(np.hypot(x_rel, y_rel))
+    pa = float(np.degrees(np.arctan2(-x_rel, y_rel)) % 360)
+    return {
+        "candidate_id": candidate_id,
+        "x": 80.0 + x_rel,
+        "y": 80.0 + y_rel,
+        "x_relative": x_rel,
+        "y_relative": y_rel,
+        "separation": sep,
+        "position_angle": pa,
+        "x_relative_sigma": sr,
+        "y_relative_sigma": st,
+        "xy_relative_corr": 0.1,
+        "separation_sigma": sr,
+        "position_angle_sigma": float(np.degrees(st / max(sep, 1e-6))),
+        "radial_sigma_stat": sr,
+        "tangential_sigma_stat": st,
+        "channels_above_threshold": 1,
+        "wavelength_index": wavelength_index,
+        "norm_snr_fit_free": 6.4,
+    }
+
+
+def _per_channel_row(x_rel, y_rel, sr=0.58, st=0.20, channels=1):
+    sep = float(np.hypot(x_rel, y_rel))
+    pa = float(np.degrees(np.arctan2(-x_rel, y_rel)) % 360)
+    return {
+        "x": 80.0 + x_rel,
+        "y": 80.0 + y_rel,
+        "x_relative": x_rel,
+        "y_relative": y_rel,
+        "separation": sep,
+        "position_angle": pa,
+        "x_relative_sigma": sr,
+        "y_relative_sigma": st,
+        "xy_relative_corr": 0.0,
+        "separation_sigma": sr,
+        "position_angle_sigma": float(np.degrees(st / max(sep, 1e-6))),
+        "radial_sigma_stat": sr,
+        "tangential_sigma_stat": st,
+        "channels_above_threshold": channels,
+    }
+
+
+def test_override_uses_per_channel_position_when_within_radius():
+    """A per-channel detection near a source replaces the collapse position/σ
+    on all of that source's wavelength rows, and flags astrometry_source."""
+    overall = pd.DataFrame(
+        [
+            _collapse_overall_row(0, -9.17, -36.76, wavelength_index=0),
+            _collapse_overall_row(0, -9.17, -36.76, wavelength_index=1),
+        ]
+    )
+    per_channel = pd.DataFrame([_per_channel_row(-8.55, -36.12, channels=1)])
+    out = detection._override_astrometry_from_per_channel(
+        overall, per_channel, search_radius=3.0
+    )
+    assert (out["astrometry_source"] == "per_channel").all()
+    assert np.allclose(out["x_relative"], -8.55)
+    assert np.allclose(out["y_relative"], -36.12)
+    assert np.allclose(out["radial_sigma_stat"], 0.58)
+    # detection significance is left untouched
+    assert np.allclose(out["norm_snr_fit_free"], 6.4)
+
+
+def test_override_falls_back_to_collapse_when_no_per_channel():
+    overall = pd.DataFrame([_collapse_overall_row(0, -9.17, -36.76, wavelength_index=0)])
+    out = detection._override_astrometry_from_per_channel(
+        overall, None, search_radius=3.0
+    )
+    assert (out["astrometry_source"] == "collapse").all()
+    assert np.allclose(out["x_relative"], -9.17)
+
+
+def test_override_ignores_per_channel_source_outside_radius():
+    overall = pd.DataFrame([_collapse_overall_row(0, -9.17, -36.76, wavelength_index=0)])
+    far = pd.DataFrame([_per_channel_row(20.0, 20.0)])
+    out = detection._override_astrometry_from_per_channel(
+        overall, far, search_radius=3.0
+    )
+    assert (out["astrometry_source"] == "collapse").all()
+    assert np.allclose(out["x_relative"], -9.17)
+
+
+class _StubTemplate:
+    """Stand-in for a SpectralTemplate carrying only the two attributes the
+    cross-template combination reads."""
+
+    def __init__(self, companion_table, validated_companion_table):
+        self.companion_table = companion_table
+        self.validated_companion_table = validated_companion_table
+
+
+def _fake_template_table(template_name, x_rel, y_rel, snr, candidate_id=0, n_wave=2):
+    rows = [
+        _fake_template_row(
+            template_name,
+            x_rel,
+            y_rel,
+            snr,
+            candidate_id=candidate_id,
+            wavelength_index=w,
+            wavelength=2.11 + 0.14 * w,
+        )
+        for w in range(n_wave)
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_combine_template_tables_ignores_stale_on_disk_files(tmp_path):
+    """The cross-template combination must use the in-memory per-template tables
+    from the current run, never re-read per-template CSVs from disk. A stale
+    file left by a previous run (a template that found nothing this run keeps
+    its old file) would otherwise be ingested and contaminate the combination.
+    """
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+    analysis.reduction_parameters = SimpleNamespace(result_folder=str(tmp_path))
+    # This run: only T-type detected; flat found nothing (table is None).
+    tt = _fake_template_table("T-type", 8.0, 0.0, snr=10.0)
+    analysis.templates = OrderedDict()
+    analysis.templates["T-type"] = _StubTemplate(tt, tt)
+    analysis.templates["flat"] = _StubTemplate(None, None)
+
+    matching_dir = tmp_path / "template_matching"
+    matching_dir.mkdir()
+    # A STALE flat detection from a previous run, at a different position and a
+    # deceptively high SNR. It must NOT enter the combination.
+    stale = _fake_template_table("flat", 20.0, 20.0, snr=99.0)
+    stale.to_csv(matching_dir / "validated_companion_table_flat.csv", index=False)
+
+    analysis.combine_template_matched_companion_tables(
+        search_radius=3.0, validated_only=True
+    )
+
+    overall = pd.read_csv(matching_dir / "overall_validated_companion_detections.csv")
+    assert set(overall["best_template"].unique()) == {"T-type"}
+    assert int(overall["n_templates_above_threshold"].max()) == 1
+    assert not overall["astrometry_template_disagreement"].any()
+
+
 def test_combine_templates_preserves_all_wavelength_rows_of_winner():
     """The spectra output must retain every wavelength row of the winning
     template, not collapse to a single row per source (C3)."""

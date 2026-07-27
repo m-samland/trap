@@ -1701,6 +1701,67 @@ def _combine_templates_best_snr(per_template_tables, search_radius):
     return combined.sort_values("separation", ignore_index=True)
 
 
+_PER_CHANNEL_OVERRIDE_COLS = [
+    "x",
+    "y",
+    "x_relative",
+    "y_relative",
+    "separation",
+    "position_angle",
+    "x_relative_sigma",
+    "y_relative_sigma",
+    "xy_relative_corr",
+    "separation_sigma",
+    "position_angle_sigma",
+    "radial_sigma_stat",
+    "tangential_sigma_stat",
+    "channels_above_threshold",
+]
+
+
+def _override_astrometry_from_per_channel(
+    overall_table, per_channel_table, search_radius
+):
+    """Make per-channel astrometry the reported position/σ of each source.
+
+    The spectral collapse maximises detection SNR, not astrometric accuracy: it
+    folds in channels with no signal at the source, whose speckle structure
+    biases the centroid (on 51 Eri the collapse sits ~9 mas / 2.6σ off GRAVITY
+    while the single detected channel is within 0.7 mas). Channels that
+    individually clear the detection threshold give an unbiased position, so the
+    per-channel inverse-variance combination drives the reported astrometry when
+    it exists within ``search_radius`` of a source; the collapse is used only as
+    a fallback (``astrometry_source == "collapse"``). Detection significance,
+    spectrum and template diagnostics are left untouched.
+    """
+    out = overall_table.copy()
+    out["astrometry_source"] = "collapse"
+    if per_channel_table is None or len(per_channel_table) == 0:
+        return out
+
+    pc = per_channel_table.reset_index(drop=True)
+    pc_pos = pc[["x_relative", "y_relative"]].values.astype(float)
+    cols = [c for c in _PER_CHANNEL_OVERRIDE_COLS if c in pc.columns and c in out.columns]
+
+    if "candidate_id" in out.columns:
+        groups = list(out.groupby("candidate_id").groups.values())
+    else:
+        groups = [out.index]
+
+    for idx in groups:
+        rep = out.loc[idx[0]]
+        dist = np.hypot(
+            pc_pos[:, 0] - float(rep["x_relative"]),
+            pc_pos[:, 1] - float(rep["y_relative"]),
+        )
+        j = int(np.argmin(dist))
+        if dist[j] <= search_radius:
+            for c in cols:
+                out.loc[idx, c] = pc.iloc[j][c]
+            out.loc[idx, "astrometry_source"] = "per_channel"
+    return out
+
+
 class DetectionAnalysis(object):
     """Class for analyzing TRAP detection results and candidate characterization.
     
@@ -4172,6 +4233,43 @@ class DetectionAnalysis(object):
             show=False,
         )
 
+    def measure_per_channel_astrometry(
+        self,
+        wavelength_indices=None,
+        candidate_threshold=4.75,
+        search_radius=15,
+        mask_deviating=False,
+    ):
+        """Detect and fit the companion in each wavelength channel separately,
+        then combine the channels that individually clear ``candidate_threshold``
+        in the source-aligned (r, t) frame.
+
+        Template-independent — it runs on the per-channel detection maps
+        (`self.detection_cube`), so it is the astrometrically-clean alternative
+        to the spectral collapse used for detection. Returns the combined
+        per-source table (one row per source, `_combine_channels_rt_frame`
+        applied) or ``None`` when no channel yields a candidate above threshold.
+        """
+        if wavelength_indices is None:
+            wavelength_indices = self.wavelength_indices
+        candidates = self.find_candidates_all_wavelengths(
+            wavelength_indices=wavelength_indices,
+            candidate_threshold=candidate_threshold,
+            iterative_search_exclusion_radius=search_radius,
+        )
+        if candidates is None or len(candidates) == 0:
+            return None
+        _, candidates_fit = self.complete_candidate_table(
+            candidates=candidates,
+            wavelength_indices=wavelength_indices,
+            candidate_threshold=candidate_threshold,
+            search_radius=search_radius,
+            mask_deviating=mask_deviating,
+        )
+        if candidates_fit is None:
+            return None
+        return candidates_fit["snr_image"]
+
     def combine_template_matched_companion_tables(self, search_radius=15, validated_only=True):
         """
         Combines the template-matched companion tables into a single table.
@@ -4189,19 +4287,22 @@ class DetectionAnalysis(object):
         else:
             prefix = ""
 
+        # Combine the in-memory per-template tables populated by
+        # match_all_templates in this run. Re-reading the per-template CSVs from
+        # disk would silently ingest a stale table from a previous run — a
+        # template that finds nothing this run keeps its old file — which
+        # contaminates the cross-template scatter diagnostics with detections
+        # from another run.
         combined_detection_products = []
         for key in self.templates:
-            try:
-                filename = os.path.join(
-                        output_dir_matching,
-                        f"{prefix}companion_table_{key}.csv",
-                    )
-                companion_table = pd.read_csv(filename)
-                # Only add non-empty DataFrames
-                if not companion_table.empty:
-                    combined_detection_products.append(companion_table)
-            except FileNotFoundError:
-                logger.warning("%s not found.", filename)
+            template = self.templates[key]
+            companion_table = (
+                template.validated_companion_table
+                if validated_only
+                else template.companion_table
+            )
+            if companion_table is not None and not companion_table.empty:
+                combined_detection_products.append(companion_table)
 
         if combined_detection_products:  # Check if list is not empty
             best_companion_matches = _combine_templates_best_snr(
@@ -4217,12 +4318,22 @@ class DetectionAnalysis(object):
                 n = int(np.sum(mask))
                 best_companion_matches.loc[mask, "candidate_id"] = np.array([idx]).repeat(n)
 
+            # The template collapse is optimal for detection SNR, not astrometry.
+            # Where a source is detected in individual channels, its per-channel
+            # inverse-variance position/σ replaces the collapse position (which a
+            # signal-free channel can bias); the collapse remains as fallback.
+            best_companion_matches = _override_astrometry_from_per_channel(
+                best_companion_matches,
+                getattr(self, "per_channel_astrometry", None),
+                search_radius=search_radius,
+            )
+
             spectra_cols = [
                 "candidate_id", "x", "y",
                 "x_relative", "x_relative_sigma", "y_relative", "y_relative_sigma",
                 "xy_relative_corr", "separation", "separation_sigma",
                 "position_angle", "position_angle_sigma",
-                "radial_sigma_stat", "tangential_sigma_stat",
+                "radial_sigma_stat", "tangential_sigma_stat", "astrometry_source",
                 "template_name", "best_template", "n_templates_above_threshold",
                 "astrometry_template_disagreement",
                 "x_relative_sigma_template_scatter", "y_relative_sigma_template_scatter",
@@ -4494,6 +4605,25 @@ class DetectionAnalysis(object):
         )
         
         self.plot_template_matched_contrasts()
+
+        # Per-channel astrometry (template-independent) drives the reported
+        # position/σ; the template collapse is optimal for detection SNR, not
+        # for astrometry. Measured once here and merged into both overall tables.
+        self.per_channel_astrometry = self.measure_per_channel_astrometry(
+            wavelength_indices=wavelength_indices,
+            candidate_threshold=candidate_threshold,
+            search_radius=search_radius,
+        )
+        if self.per_channel_astrometry is not None:
+            output_dir_matching = os.path.join(
+                self.reduction_parameters.result_folder, "template_matching/"
+            )
+            os.makedirs(output_dir_matching, exist_ok=True)
+            self.per_channel_astrometry.to_csv(
+                os.path.join(output_dir_matching, "per_channel_astrometry.csv"),
+                index=False,
+            )
+
         self.combine_template_matched_companion_tables(search_radius=search_radius, validated_only=True)
         self.combine_template_matched_companion_tables(search_radius=search_radius, validated_only=False)
 

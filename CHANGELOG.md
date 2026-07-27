@@ -6,6 +6,17 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ## [Unreleased]
 
 ### Added
+- **Per-channel astrometry, reported as primary.** The spectral collapse used for
+  template detection maximises SNR but is astrometrically biased (it folds in channels
+  with no signal at the source). `DetectionAnalysis.measure_per_channel_astrometry` now
+  detects and fits the companion in each wavelength channel and combines the channels
+  above `candidate_threshold` in the source-aligned (r, t) frame
+  (`_combine_channels_rt_frame`). `combine_template_matched_companion_tables` reports this
+  per-channel position/σ when available (new `astrometry_source` column = `per_channel`),
+  falling back to the collapse otherwise (`collapse`); detection significance,
+  `best_template`, and the spectrum still come from the collapse. A
+  `per_channel_astrometry.csv` is written alongside the per-template tables. (Validation
+  numbers: `spherical/tests/data/51eri_astrometry_benchmark.md`.)
 - **Edge-of-FoV reduction** – `run_complete_reduction` accepts a
   `valid_pixel_mask` (2D `H×W` or 3D `n_wave×H×W`) describing which detector
   pixels carry real data. Positions outside the footprint are excluded from
@@ -64,6 +75,18 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   store (`tests/test_shared_arrays.py`).
 
 ### Fixed
+- **Cross-template combination no longer ingests stale per-template CSVs.**
+  `combine_template_matched_companion_tables` rebuilt the "overall" companion
+  table by re-reading `{prefix}companion_table_{template}.csv` from disk for
+  every template. A template that found nothing in the current run keeps its
+  file from a previous run, so a stale detection (possibly from a different
+  config or epoch) was silently merged into the fresh output — inflating
+  `n_templates_above_threshold`, fabricating `*_sigma_template_scatter`, and
+  tripping `astrometry_template_disagreement`. It now combines the in-memory
+  `self.templates[key].validated_companion_table` / `.companion_table`
+  populated by `match_all_templates` this run, so only current-run templates
+  contribute. (Found via a 51 Eri DB_K12 astrometry benchmark where a stale
+  `flat` table from a prior run contaminated the fresh `T-type` detection.)
 - Edge-of-FoV reduction no longer crashes with
   `numpy.linalg.LinAlgError: SVD did not converge` when pool pixels carry
   per-frame or per-wavelength NaN entries that pass the border-connected
