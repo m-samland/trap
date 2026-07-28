@@ -41,6 +41,16 @@ from trap.utils import (
     shuffle_and_equalize_relative_positions,
 )
 
+_LOKY_IDLE_WORKER_TIMEOUT = 3600
+"""Seconds a loky worker may sit idle before it shuts itself down.
+
+joblib's default is 300 s. One pool is reused across every wavelength channel and
+the chunks are equalised by size, not runtime, so a worker that runs out of
+positions early can idle past 300 s while the tail chunks finish. loky then
+reaps it and emits "A worker stopped while some jobs were given to the executor"
+— harmless (it respawns a replacement and no work is lost) but alarming in a log.
+"""
+
 logger = logging.getLogger(__name__)
 
 def trap_one_position(
@@ -810,7 +820,11 @@ def run_trap_search(
                     "inverse_variance", inverse_variance
                 )
         try:
-            with parallel_config(backend="loky", inner_max_num_threads=1):
+            with parallel_config(
+                backend="loky",
+                inner_max_num_threads=1,
+                idle_worker_timeout=_LOKY_IDLE_WORKER_TIMEOUT,
+            ):
                 result_generator = Parallel(n_jobs=ncpus, return_as="generator")(
                     delayed(trap_search_region)(
                         region,
@@ -1025,7 +1039,11 @@ def multi_position_cross_validation(
                     "inverse_variance", inverse_variance
                 )
         try:
-            with parallel_config(backend="loky", inner_max_num_threads=1):
+            with parallel_config(
+                backend="loky",
+                inner_max_num_threads=1,
+                idle_worker_timeout=_LOKY_IDLE_WORKER_TIMEOUT,
+            ):
                 result_generator = Parallel(n_jobs=ncpus, return_as="generator")(
                     delayed(trap_search_region)(
                         coords,
