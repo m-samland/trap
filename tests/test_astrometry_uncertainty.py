@@ -295,6 +295,28 @@ def test_combine_channels_single_channel_gets_finite_sigma():
 
 
 def test_combine_channels_two_agree_shrinks_sigma():
+    """With demonstrated independence the formal 1/sum(1/sigma^2) shrinkage applies."""
+    r1 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2["wavelength_index"] = 1
+    r2["candidate_index"] = 1
+    combined = detection._combine_channels_rt_frame(
+        pd.concat([r1, r2], ignore_index=True),
+        search_radius=15.0,
+        independent_channels=True,
+    )
+    assert combined["radial_sigma_stat"].values[0] < 0.2
+    assert combined["tangential_sigma_stat"].values[0] < 0.1
+    assert combined["chi2_red_radial"].values[0] < 1.5
+    assert combined["channels_above_threshold"].values[0] == 2
+
+
+def test_combine_channels_sigma_floored_at_best_channel_by_default():
+    """Speckle-correlated channels must not buy a sqrt(n) sigma reduction.
+
+    Two identical channels would formally shrink sigma by sqrt(2); by default the
+    combined sigma is floored at the best contributing channel's sigma.
+    """
     r1 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
     r2 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
     r2["wavelength_index"] = 1
@@ -303,10 +325,49 @@ def test_combine_channels_two_agree_shrinks_sigma():
         pd.concat([r1, r2], ignore_index=True),
         search_radius=15.0,
     )
-    assert combined["radial_sigma_stat"].values[0] < 0.2
-    assert combined["tangential_sigma_stat"].values[0] < 0.1
-    assert combined["chi2_red_radial"].values[0] < 1.5
-    assert combined["channels_above_threshold"].values[0] == 2
+    assert np.isclose(combined["radial_sigma_stat"].values[0], 0.2)
+    assert np.isclose(combined["tangential_sigma_stat"].values[0], 0.1)
+    assert np.isclose(combined["separation_sigma"].values[0], 0.2)
+    # position stays the inverse-variance mean; only sigma is floored
+    assert np.isclose(combined["x_relative"].values[0], 8.0)
+
+
+def test_combine_channels_floor_uses_best_not_worst_channel():
+    """A precise channel combined with a poor one keeps the precise channel's sigma."""
+    r1 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=1.0, tangential_sigma=0.5)
+    r2["wavelength_index"] = 1
+    r2["candidate_index"] = 1
+    combined = detection._combine_channels_rt_frame(
+        pd.concat([r1, r2], ignore_index=True),
+        search_radius=15.0,
+    )
+    assert np.isclose(combined["radial_sigma_stat"].values[0], 0.2)
+
+
+def test_combine_channels_floor_does_not_suppress_disagreement_inflation():
+    """The floor is a lower bound only: a chi2 > 1 scale-up must still survive."""
+    r1 = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2 = _one_channel_snr_row(x_rel=9.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    r2["wavelength_index"] = 1
+    r2["candidate_index"] = 1
+    combined = detection._combine_channels_rt_frame(
+        pd.concat([r1, r2], ignore_index=True),
+        search_radius=15.0,
+    )
+    assert combined["radial_sigma_stat"].values[0] > 0.2
+
+
+def test_combine_channels_single_channel_unaffected_by_floor():
+    """n=1: the floor is the channel itself, so nothing changes."""
+    fit_row = _one_channel_snr_row(x_rel=8.0, y_rel=0.0, radial_sigma=0.2, tangential_sigma=0.1)
+    floored = detection._combine_channels_rt_frame(fit_row, search_radius=15.0)
+    free = detection._combine_channels_rt_frame(
+        fit_row, search_radius=15.0, independent_channels=True
+    )
+    assert np.isclose(
+        floored["radial_sigma_stat"].values[0], free["radial_sigma_stat"].values[0]
+    )
 
 
 def test_combine_channels_two_disagree_inflates_sigma():
@@ -476,6 +537,53 @@ def test_override_ignores_per_channel_source_outside_radius():
     )
     assert (out["astrometry_source"] == "collapse").all()
     assert np.allclose(out["x_relative"], -9.17)
+
+
+def test_override_rejected_when_too_few_channels_contribute():
+    """51 Eri IFS: 2 of 37 channels clear threshold, so the collapse is kept.
+
+    The per-channel position there is a noise-selected subset that discards ~95%
+    of the signal and lands further from the interferometric truth than the
+    collapse; the coverage gate is what stops it being reported.
+    """
+    overall = pd.DataFrame([_collapse_overall_row(0, -14.40, -58.86, wavelength_index=0)])
+    per_channel = pd.DataFrame([_per_channel_row(-13.24, -58.53, channels=2)])
+    out = detection._override_astrometry_from_per_channel(
+        overall, per_channel, search_radius=3.0, n_channels_total=37
+    )
+    assert (out["astrometry_source"] == "collapse").all()
+    assert np.allclose(out["x_relative"], -14.40)
+
+
+def test_override_accepted_for_dbi_single_good_channel():
+    """51 Eri IRDIS: 1 of 2 channels is half the data and clears the gate."""
+    overall = pd.DataFrame([_collapse_overall_row(0, -9.17, -36.76, wavelength_index=0)])
+    per_channel = pd.DataFrame([_per_channel_row(-8.55, -36.12, channels=1)])
+    out = detection._override_astrometry_from_per_channel(
+        overall, per_channel, search_radius=3.0, n_channels_total=2
+    )
+    assert (out["astrometry_source"] == "per_channel").all()
+    assert np.allclose(out["x_relative"], -8.55)
+
+
+def test_override_gate_disabled_without_n_channels_total():
+    """Callers that don't say how many channels were reduced keep the old behaviour."""
+    overall = pd.DataFrame([_collapse_overall_row(0, -14.40, -58.86, wavelength_index=0)])
+    per_channel = pd.DataFrame([_per_channel_row(-13.24, -58.53, channels=2)])
+    out = detection._override_astrometry_from_per_channel(
+        overall, per_channel, search_radius=3.0
+    )
+    assert (out["astrometry_source"] == "per_channel").all()
+
+
+def test_override_gate_fraction_is_configurable():
+    overall = pd.DataFrame([_collapse_overall_row(0, -14.40, -58.86, wavelength_index=0)])
+    per_channel = pd.DataFrame([_per_channel_row(-13.24, -58.53, channels=2)])
+    out = detection._override_astrometry_from_per_channel(
+        overall, per_channel, search_radius=3.0,
+        n_channels_total=37, min_channel_fraction=0.05,
+    )
+    assert (out["astrometry_source"] == "per_channel").all()
 
 
 class _StubTemplate:

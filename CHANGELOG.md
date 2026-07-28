@@ -5,6 +5,51 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Changed
+- **Per-channel astrometry now has to earn the override, and cannot shrink σ for
+  free.** Two guards on the machinery added below, both prompted by the first
+  end-to-end IFS run (51 Eri OBS_H 2015-09-24):
+  - `_override_astrometry_from_per_channel` takes `n_channels_total` and
+    `min_channel_fraction` (default `0.5`, exposed as
+    `DetectionParameters.per_channel_min_channel_fraction`) and keeps the
+    template-collapse position when too few channels contribute. The override was
+    designed for 2-channel DBI, where one signal-free channel really does drag the
+    collapse ~9 mas off GRAVITY. On a 39-channel IFS cube only 2 of 37 channels
+    clear `candidate_threshold`, so the "cleaner" position discards ~95% of the
+    signal (the whole J-band peak included) and is selected by the very noise that
+    promoted those channels; the collapse lands 4.4 mas closer to the
+    interferometric truth. 1 of 2 channels (0.5) still passes; 2 of 37 (0.054) does
+    not. `per_channel_astrometry.csv` is written either way.
+  - `_combine_channels_rt_frame` takes `independent_channels` (default `False`,
+    exposed as `DetectionParameters.per_channel_independent_channels`) and floors
+    the combined σ at the best contributing channel's σ. Speckle residuals are
+    strongly correlated between neighbouring wavelength channels — on 51 Eri IFS
+    the 37-channel template collapse reaches a *lower* normalised SNR (6.19) than
+    its single best channel (6.30), i.e. the multiplex gain is ~0 — so the formal
+    `1/Σ(1/σ²)` shrinkage was claiming a √n improvement that does not exist. It
+    previously reported σ_ρ = 0.371 px from 2 channels against 0.515 px from the
+    37-channel collapse. χ²_red ≪ 1 in the diagnostics is the signature.
+    Set `True` to restore the old behaviour. (10 new tests.)
+- **`trap_config_for_ifs()` sets `yx_anamorphism=[1.0059, 1.0011]`.** The SPHERE
+  common-path cylindrical mirrors distort all three science subsystems, not just
+  IRDIS (Maire et al. 2016); the values match the correction Vigan's `sphere`
+  package applies in `sph_ifs_combine_data`. TRAP compensates in the forward model
+  rather than interpolating the data, so the spherical IFS conversion must keep
+  leaving the cubes uncorrected. Omitting it understated the separation of a source
+  near the detector y axis by up to ~0.6% — 0.30 px / 2.2 mas for 51 Eri b, after
+  accounting for the 43° of field rotation that partly averages it out.
+
+### Fixed
+- **The joblib/loky "A worker stopped while some jobs were given to the executor"
+  warning during reduction.** Both `parallel_config` blocks in
+  `reduction_wrapper` now pass `idle_worker_timeout=3600` (joblib's default is
+  300 s). One loky pool is reused across every wavelength channel and chunks are
+  equalised by size rather than runtime, so a worker that runs out of positions
+  early could idle past the timeout while the tail chunks finished; loky then
+  reaped it and warned. The warning was always harmless — it is emitted only on a
+  *graceful* worker exit, loky respawns a replacement and no work is lost (an OOM
+  kill raises `TerminatedWorkerError` instead) — but it is alarming in a log.
+
 ### Added
 - **Per-channel astrometry, reported as primary.** The spectral collapse used for
   template detection maximises SNR but is astrometrically biased (it folds in channels

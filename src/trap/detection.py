@@ -1494,7 +1494,9 @@ def summarize_2d_gauss_fit_result(
     return fitted_parameters
 
 
-def _combine_channels_rt_frame(group_rows, search_radius, snr_values=None):
+def _combine_channels_rt_frame(
+    group_rows, search_radius, snr_values=None, independent_channels=False
+):
     """Inverse-variance combination of per-channel (r, t) σ with a PDG scale
     factor, per Section 4 of the astrometry-uncertainty spec.
 
@@ -1504,6 +1506,16 @@ def _combine_channels_rt_frame(group_rows, search_radius, snr_values=None):
     headline row is internally consistent (shape params, good-fraction, etc.).
     ``snr_values`` optionally supplies the per-row ranking SNR (calibrated
     norm-SNR amplitude); when omitted the raw-SNR fit ``amplitude`` is used.
+
+    ``independent_channels`` controls whether the formal ``1/Σ(1/σ²)`` shrinkage
+    is trusted. Speckle residuals are strongly correlated between neighbouring
+    wavelength channels — on 51 Eri IFS the 37-channel template collapse reaches
+    a *lower* normalised SNR than its single best channel, i.e. the multiplex
+    gain is ~0 — so combining channels as if independent understates σ by up to
+    √n. With the default ``False`` the combined σ is floored at the best
+    contributing channel's σ, which is the most that can be claimed without
+    demonstrating independence. χ²_red ≪ 1 in the returned diagnostics is the
+    signature of correlated inputs.
 
     Returns a single-row DataFrame with the combined position, σ columns, and
     χ²_red diagnostics.
@@ -1574,6 +1586,10 @@ def _combine_channels_rt_frame(group_rows, search_radius, snr_values=None):
 
     sigma_r_combined = np.sqrt(var_r_formal) * scale_r
     sigma_t_combined = np.sqrt(var_t_formal) * scale_t
+
+    if not independent_channels:
+        sigma_r_combined = max(sigma_r_combined, float(np.sqrt(np.min(var_r_arr))))
+        sigma_t_combined = max(sigma_t_combined, float(np.sqrt(np.min(var_t_arr))))
 
     c_rt_combined = np.array(
         [[sigma_r_combined**2, 0.0], [0.0, sigma_t_combined**2]]
@@ -1720,19 +1736,37 @@ _PER_CHANNEL_OVERRIDE_COLS = [
 
 
 def _override_astrometry_from_per_channel(
-    overall_table, per_channel_table, search_radius
+    overall_table,
+    per_channel_table,
+    search_radius,
+    n_channels_total=None,
+    min_channel_fraction=0.5,
 ):
-    """Make per-channel astrometry the reported position/σ of each source.
+    """Make per-channel astrometry the reported position/σ of each source, when
+    it rests on enough of the data to be an improvement.
 
     The spectral collapse maximises detection SNR, not astrometric accuracy: it
     folds in channels with no signal at the source, whose speckle structure
-    biases the centroid (on 51 Eri the collapse sits ~9 mas / 2.6σ off GRAVITY
-    while the single detected channel is within 0.7 mas). Channels that
-    individually clear the detection threshold give an unbiased position, so the
-    per-channel inverse-variance combination drives the reported astrometry when
-    it exists within ``search_radius`` of a source; the collapse is used only as
-    a fallback (``astrometry_source == "collapse"``). Detection significance,
-    spectrum and template diagnostics are left untouched.
+    biases the centroid. On 51 Eri **IRDIS** (2 channels) that is a real defect —
+    the collapse sits ~9 mas / 2.6σ off GRAVITY because the signal-free K2
+    channel carries a large weight, while the single detected channel (K1) is
+    within 0.7 mas.
+
+    That reasoning does **not** extend to a many-channel IFS cube, and applying
+    it there makes the astrometry worse. On 51 Eri IFS only 2 of 37 channels
+    clear ``candidate_threshold``, so the "cleaner" position discards ~95% of the
+    signal (including the entire J-band peak) and is selected by the very noise
+    that promoted those channels above threshold; the collapse, where signal-free
+    channels get low template weight and their speckle contributions average
+    down, lands 4.4 mas closer to GRAVITY.
+
+    The override therefore requires the contributing channels to be at least
+    ``min_channel_fraction`` of ``n_channels_total``. A 2-channel DBI detection
+    in one channel (0.5) passes; 2 of 37 IFS channels (0.054) does not, and the
+    collapse is kept (``astrometry_source == "collapse"``). Passing
+    ``n_channels_total=None`` disables the gate. Detection significance, spectrum
+    and template diagnostics are left untouched either way, and
+    ``per_channel_astrometry.csv`` is still written for inspection.
     """
     out = overall_table.copy()
     out["astrometry_source"] = "collapse"
@@ -1742,6 +1776,10 @@ def _override_astrometry_from_per_channel(
     pc = per_channel_table.reset_index(drop=True)
     pc_pos = pc[["x_relative", "y_relative"]].values.astype(float)
     cols = [c for c in _PER_CHANNEL_OVERRIDE_COLS if c in pc.columns and c in out.columns]
+
+    min_channels = None
+    if n_channels_total is not None and "channels_above_threshold" in pc.columns:
+        min_channels = min_channel_fraction * float(n_channels_total)
 
     if "candidate_id" in out.columns:
         groups = list(out.groupby("candidate_id").groups.values())
@@ -1755,10 +1793,24 @@ def _override_astrometry_from_per_channel(
             pc_pos[:, 1] - float(rep["y_relative"]),
         )
         j = int(np.argmin(dist))
-        if dist[j] <= search_radius:
-            for c in cols:
-                out.loc[idx, c] = pc.iloc[j][c]
-            out.loc[idx, "astrometry_source"] = "per_channel"
+        if dist[j] > search_radius:
+            continue
+        if min_channels is not None:
+            n_used = float(pc.iloc[j]["channels_above_threshold"])
+            if n_used < min_channels:
+                logger.info(
+                    "Per-channel astrometry uses %g of %g channels (< %.0f%% of "
+                    "them); keeping the template-collapse position. The "
+                    "per-channel measurement is still written to "
+                    "per_channel_astrometry.csv.",
+                    n_used,
+                    float(n_channels_total),
+                    100 * min_channel_fraction,
+                )
+                continue
+        for c in cols:
+            out.loc[idx, c] = pc.iloc[j][c]
+        out.loc[idx, "astrometry_source"] = "per_channel"
     return out
 
 
@@ -2542,6 +2594,7 @@ class DetectionAnalysis(object):
         candidate_threshold=4.75,
         search_radius=15,
         mask_deviating=False,
+        independent_channels=False,
     ):
         """
         Consolidate candidate detections with 2D Gaussian fitting and duplicate removal.
@@ -2688,7 +2741,10 @@ class DetectionAnalysis(object):
             group_snr = norm_amp[group_positions]
 
             combined = _combine_channels_rt_frame(
-                group_rows, search_radius=search_radius, snr_values=group_snr
+                group_rows,
+                search_radius=search_radius,
+                snr_values=group_snr,
+                independent_channels=independent_channels,
             )
             # Keep the highest-SNR channel as the surviving row in the sibling
             # (contrast / norm-SNR) tables.
@@ -4239,6 +4295,7 @@ class DetectionAnalysis(object):
         candidate_threshold=4.75,
         search_radius=15,
         mask_deviating=False,
+        independent_channels=False,
     ):
         """Detect and fit the companion in each wavelength channel separately,
         then combine the channels that individually clear ``candidate_threshold``
@@ -4265,18 +4322,28 @@ class DetectionAnalysis(object):
             candidate_threshold=candidate_threshold,
             search_radius=search_radius,
             mask_deviating=mask_deviating,
+            independent_channels=independent_channels,
         )
         if candidates_fit is None:
             return None
         return candidates_fit["snr_image"]
 
-    def combine_template_matched_companion_tables(self, search_radius=15, validated_only=True):
+    def combine_template_matched_companion_tables(
+        self,
+        search_radius=15,
+        validated_only=True,
+        per_channel_min_channel_fraction=0.5,
+    ):
         """
         Combines the template-matched companion tables into a single table.
 
         Args:
             validated_only (bool, optional): If True, only combines the validated companion tables.
                 If False, combines all companion tables. Defaults to True.
+            per_channel_min_channel_fraction (float, optional): Minimum share of the
+                reduced wavelength channels that must individually clear the detection
+                threshold before the per-channel astrometry replaces the template-collapse
+                position. See `_override_astrometry_from_per_channel`. Defaults to 0.5.
         """
         
         output_dir_matching = os.path.join(
@@ -4319,13 +4386,19 @@ class DetectionAnalysis(object):
                 best_companion_matches.loc[mask, "candidate_id"] = np.array([idx]).repeat(n)
 
             # The template collapse is optimal for detection SNR, not astrometry.
-            # Where a source is detected in individual channels, its per-channel
-            # inverse-variance position/σ replaces the collapse position (which a
-            # signal-free channel can bias); the collapse remains as fallback.
+            # Where a source is detected in *enough* individual channels, its
+            # per-channel inverse-variance position/σ replaces the collapse position
+            # (which a signal-free channel can bias); the collapse remains as fallback.
+            wavelength_indices = getattr(self, "wavelength_indices", None)
+            n_channels_total = (
+                len(wavelength_indices) if wavelength_indices is not None else None
+            )
             best_companion_matches = _override_astrometry_from_per_channel(
                 best_companion_matches,
                 getattr(self, "per_channel_astrometry", None),
                 search_radius=search_radius,
+                n_channels_total=n_channels_total,
+                min_channel_fraction=per_channel_min_channel_fraction,
             )
 
             spectra_cols = [
@@ -4555,7 +4628,9 @@ class DetectionAnalysis(object):
         use_spectral_correlation=False,
         inner_mask_radius=1, search_radius=15, good_fraction_threshold=0.05,
         theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5],
-        save_initial_detection_products=True):
+        save_initial_detection_products=True,
+        per_channel_min_channel_fraction=0.5,
+        per_channel_independent_channels=False):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = _to_reduction_config(reduction_parameters)
@@ -4613,6 +4688,7 @@ class DetectionAnalysis(object):
             wavelength_indices=wavelength_indices,
             candidate_threshold=candidate_threshold,
             search_radius=search_radius,
+            independent_channels=per_channel_independent_channels,
         )
         if self.per_channel_astrometry is not None:
             output_dir_matching = os.path.join(
@@ -4624,8 +4700,16 @@ class DetectionAnalysis(object):
                 index=False,
             )
 
-        self.combine_template_matched_companion_tables(search_radius=search_radius, validated_only=True)
-        self.combine_template_matched_companion_tables(search_radius=search_radius, validated_only=False)
+        self.combine_template_matched_companion_tables(
+            search_radius=search_radius,
+            validated_only=True,
+            per_channel_min_channel_fraction=per_channel_min_channel_fraction,
+        )
+        self.combine_template_matched_companion_tables(
+            search_radius=search_radius,
+            validated_only=False,
+            per_channel_min_channel_fraction=per_channel_min_channel_fraction,
+        )
 
         # spectrum = self.extract_candidate_spectra(
         #     temporal_components_fraction=temporal_components_fraction,

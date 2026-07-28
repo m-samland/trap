@@ -701,6 +701,17 @@ class DetectionParameters:
     theta_deviation_threshold: float = 25.0
     yx_fwhm_ratio_threshold: Tuple[float, float] = (1.1, 4.5)
     save_initial_detection_products: bool = True
+    # Per-channel astrometry replaces the template-collapse position only when the
+    # channels that individually clear `candidate_threshold` carry a meaningful
+    # share of the data. On a 2-channel DBI observation one good channel (0.5) is
+    # the case the override was designed for; on a 39-channel IFS cube a handful of
+    # threshold-crossing channels is a noise-selected subset, not a cleaner
+    # measurement. See docs/llm_reference/ and the 51 Eri IFS benchmark.
+    per_channel_min_channel_fraction: float = 0.5
+    # Speckle residuals are strongly correlated between neighbouring IFS channels,
+    # so the per-channel inverse-variance combination must not be allowed to shrink
+    # sigma below the best contributing channel unless independence is established.
+    per_channel_independent_channels: bool = False
 
     def merge(self, **kw) -> "DetectionParameters":
         """Return a copy with selected fields overridden."""
@@ -1345,7 +1356,19 @@ def default_trap_config() -> TrapConfig:
 
 
 def trap_config_for_ifs() -> TrapConfig:
-    """Create TRAP configuration optimized for IFS observations."""
+    """Create TRAP configuration optimized for IFS observations.
+
+    ``yx_anamorphism=[1.0059, 1.0011]`` matches the correction Vigan's ``sphere``
+    package applies to IFS science and flux cubes in ``sph_ifs_combine_data``.
+    The anamorphism comes from the cylindrical mirrors in the SPHERE common path
+    and is therefore shared by all three science subsystems (Maire et al. 2016);
+    only the field orientation differs. TRAP compensates in the forward model —
+    it distorts the injection position per frame instead of interpolating the
+    data — so the spherical IFS conversion must leave the cubes uncorrected, as
+    it does. Override to ``[1.0, 1.0]`` if the correction is ever applied
+    upstream. Omitting it understates the separation of a source lying near the
+    detector y axis by up to ~0.6% (0.30 px / 2.2 mas for 51 Eri b).
+    """
     config = TrapConfig(
         reduction=TrapReductionConfig(
             search_region_outer_bound=81,
@@ -1353,6 +1376,7 @@ def trap_config_for_ifs() -> TrapConfig:
             spatial_model=False,
             right_handed=False,
             search_region_inner_bound=1,
+            yx_anamorphism=np.array([1.0059, 1.0011]),
             auto_footprint=True,
         ),
         processing=ProcessingParameters(
