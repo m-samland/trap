@@ -1979,12 +1979,14 @@ class DetectionAnalysis(object):
             + ".jpg",
         )
 
-        if not os.path.exists(self.file_paths["detection_image_path"]):
-            fits.writeto(
-                self.file_paths["detection_image_path"],
-                self.detection_cube,
-                overwrite=True,
-            )
+        # Derived from the per-wavelength files just read, so it has to be
+        # rewritten every time: guarding on existence froze it at whatever the
+        # first run produced, and no overwrite/force path reached it afterwards.
+        fits.writeto(
+            self.file_paths["detection_image_path"],
+            self.detection_cube,
+            overwrite=True,
+        )
 
     def contrast_table_and_normalization(
         self,

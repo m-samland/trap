@@ -40,6 +40,15 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   accounting for the 43° of field rotation that partly averages it out.
 
 ### Fixed
+- **The stacked detection cube written by `DetectionAnalysis.read_output` no
+  longer goes stale.** It was written under `if not os.path.exists(...)`, so
+  `detection_ncomp???_frac?.??_temporal.fits` stayed frozen at whatever the first
+  run produced — a re-reduction refreshed every `detection_lam*` file and every
+  detection product derived from it, but not that one, and no overwrite/force
+  path reached it. Analysis results were unaffected (they use the freshly read
+  in-memory cube), but anyone opening the file directly, or keying on its
+  modification time to check whether a reduction had rerun, saw the first run.
+  Now rewritten on every read. (2 new tests.)
 - **The joblib/loky "A worker stopped while some jobs were given to the executor"
   warning during reduction.** Both `parallel_config` blocks in
   `reduction_wrapper` now pass `idle_worker_timeout=3600` (joblib's default is
