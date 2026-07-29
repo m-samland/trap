@@ -27,16 +27,6 @@ class TestConfig:
         with pytest.raises(ValueError, match="multiwavelength_regressors"):
             TrapReductionConfig(multiwavelength_regressors="bogus")
 
-    def test_legacy_conversion_ignores_new_fields(self):
-        config = TrapReductionConfig(
-            multiwavelength_regressors="pool",
-            regressor_wavelength_indices=[0, 2],
-            max_regressor_pool_size=2.0,
-        )
-        with pytest.warns(DeprecationWarning):
-            legacy = config.to_reduction_parameters()
-        assert not hasattr(legacy, "multiwavelength_regressors")
-
 
 class TestScaleMask:
     def test_identity_scale(self):

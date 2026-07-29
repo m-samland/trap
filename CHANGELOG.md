@@ -5,8 +5,8 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
-First release with validated astrometry. Contains breaking changes — see the two entries
-marked **Breaking** under Changed.
+First release with validated astrometry. Contains breaking changes — see the entries marked
+**Breaking** under Changed and Removed.
 
 ### Added
 - **Per-channel astrometry, reported as the primary position.** The spectral collapse used
@@ -158,6 +158,20 @@ marked **Breaking** under Changed.
   replacement — but alarming in a log.
 
 ### Removed
+- **Breaking: the legacy `Reduction_parameters` object and its bridge methods are gone.**
+  Deprecated in 1.3.0, they are removed here: the `Reduction_parameters` class,
+  `TrapReductionConfig.to_reduction_parameters()` and `TrapConfig.get_reduction_parameters()`.
+  `TrapReductionConfig` / `TrapConfig` are now the only accepted configuration surface —
+  `run_complete_reduction` and the detection analyses raise `TypeError` on anything else, and
+  no code path emits a `DeprecationWarning` any more. Callers replace
+  `config.get_reduction_parameters()` plus attribute assignment with
+  `config.reduction.merge(result_folder=...)`, which returns a new frozen config instead of
+  mutating one. Two consequences for stored results: `run_complete_reduction` no longer writes
+  the duplicate `reduction_parameters.obj` beside `reduction_config.obj`, and
+  `DetectionAnalysis.read_output(read_parameters=True)` can no longer read result folders
+  produced before `reduction_config.obj` existed — it raises `FileNotFoundError` naming the
+  cause rather than failing to unpickle the removed class. Such folders must be re-reduced, or
+  read with `read_parameters=False` and an explicitly supplied config.
 - Dependency on `ray[default]`; `joblib` added instead.
 - `ProgressBarActor` / `ProgressBar` from `trap.utils`, along with the no-op `==` statements
   that belonged to them.

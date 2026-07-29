@@ -83,9 +83,9 @@ def trap_one_position(
         Image of unsaturated PSF.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
     inverse_variance : array_like
@@ -103,7 +103,7 @@ def trap_one_position(
         Contrast detection map (derived using the same reduction parameters
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
-        and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
+        and 'injection_sigma') in `~trap.parameters.TrapReductionConfig`.
     readnoise : scalar
         The detector read noise (e rms/pix/readout).
 
@@ -634,9 +634,9 @@ def run_trap_search(
         Image of unsaturated PSF.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
     inverse_variance : array_like
@@ -654,7 +654,7 @@ def run_trap_search(
         Contrast detection map (derived using the same reduction parameters
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
-        and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
+        and 'injection_sigma') in `~trap.parameters.TrapReductionConfig`.
     readnoise : scalar
         The detector read noise (e rms/pix/readout).
     use_progress_bar : bool
@@ -951,9 +951,9 @@ def multi_position_cross_validation(
         Image of unsaturated PSF.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
     inverse_variance : array_like
@@ -973,7 +973,7 @@ def multi_position_cross_validation(
         Contrast detection map (derived using the same reduction parameters
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
-        and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
+        and 'injection_sigma') in `~trap.parameters.TrapReductionConfig`.
     readnoise : scalar
         The detector read noise (e rms/pix/readout).
 
@@ -1137,9 +1137,9 @@ def trap_search_region(
         Image of unsaturated PSF.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     known_companion_mask : array_like
         Boolean mask of image size. True for pixels affected by companion flux.
     inverse_variance : array_like
@@ -1159,7 +1159,7 @@ def trap_search_region(
         Contrast detection map (derived using the same reduction parameters
         and data) to be used for injection retrieval testing to determine
         biases in reduction (see `inject_fake`, `read_injection_files`
-        and 'injection_sigma') in `~trap.parameters.Reduction_parameters`.
+        and 'injection_sigma') in `~trap.parameters.TrapReductionConfig`.
     readnoise : scalar
         The detector read noise (e rms/pix/readout).
 
@@ -1455,8 +1455,8 @@ def run_complete_reduction(
         An `~trap.parameters.Instrument` object containing parameters intrinsic
         to the instrument used, such as diameter, pixel scale,
         gain and read noise.
-    reduction_parameters : `~trap.parameters.Reduction_parameters` or `~trap.parameters.TrapConfig`
-        A `~trap.parameters.Reduction_parameters` object or `~trap.parameters.TrapConfig`
+    reduction_parameters : `~trap.parameters.TrapReductionConfig` or `~trap.parameters.TrapConfig`
+        A `~trap.parameters.TrapReductionConfig` or `~trap.parameters.TrapConfig`
         object containing all parameters necessary for the TRAP pipeline.
     temporal_components_fraction : array_like
         List containing the principal component fraction to be used for
@@ -1683,12 +1683,7 @@ def run_complete_reduction(
     # Save parameters
     if not reduction_parameters.reduce_single_position:
         save_object(instrument, os.path.join(result_folder, "instrument.obj"))
-        # Save both modern config and legacy format for detection.py backward compat
         save_object(reduction_parameters, os.path.join(result_folder, "reduction_config.obj"))
-        save_object(
-            reduction_parameters.to_reduction_parameters(),
-            os.path.join(result_folder, "reduction_parameters.obj"),
-        )
 
     assert (
         flux_psf_full.shape[0] == data_full.shape[0] == len(instrument.wavelengths)

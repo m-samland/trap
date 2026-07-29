@@ -576,9 +576,9 @@ def run_trap_with_model_temporal(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     planet_relative_yx_pos : tuple
         Relative (yx)-position of pixel to be fit, with respect to `yx_center`
         or `yx_center_injection` if provided.
@@ -1100,9 +1100,9 @@ def run_trap_with_model_spatial(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     planet_relative_yx_pos : tuple
         Relative (yx)-position of pixel to be fit, with respect to `yx_center`
         or `yx_center_injection` if provided.
@@ -1371,9 +1371,9 @@ def run_trap_with_model_wavelength(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     planet_relative_yx_pos : tuple
         Relative (yx)-position of pixel to be fit, with respect to `yx_center`
         or `yx_center_injection` if provided.
@@ -1769,9 +1769,9 @@ def run_trap_with_model_temporal_optimized(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
         (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
@@ -1922,9 +1922,9 @@ def temporal_pca_cross_validation(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
         (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)

@@ -1880,9 +1880,9 @@ class DetectionAnalysis(object):
             Wavelength indices for the analysis.
         instrument : Instrument, optional
             Instrument object containing observational parameters.
-        reduction_parameters : Reduction_parameters or TrapConfig, optional
-            Reduction parameters object. Can be either legacy Reduction_parameters
-            or modern TrapConfig object.
+        reduction_parameters : TrapReductionConfig or TrapConfig, optional
+            Reduction configuration; a TrapConfig is reduced to its
+            ``reduction`` sub-config.
         """
 
         self.detection_images = detection_images
@@ -1928,9 +1928,8 @@ class DetectionAnalysis(object):
             Whether to read correlated residual outputs. Default is False.
         read_parameters : bool, optional
             Whether to read parameters from saved files. Default is True.
-        reduction_parameters : Reduction_parameters or TrapConfig, optional
-            Reduction parameters object. Can be either legacy Reduction_parameters
-            or modern TrapConfig. Only used if read_parameters=False.
+        reduction_parameters : TrapReductionConfig or TrapConfig, optional
+            Reduction configuration. Only used if read_parameters=False.
         instrument : Instrument, optional
             Instrument object. Only used if read_parameters=False.
         """
@@ -1947,11 +1946,14 @@ class DetectionAnalysis(object):
 
         if read_parameters:
             config_path = os.path.join(result_folder, "reduction_config.obj")
-            legacy_path = os.path.join(result_folder, "reduction_parameters.obj")
-            if os.path.exists(config_path):
-                self.reduction_parameters = load_object(config_path)
-            else:
-                self.reduction_parameters = _to_reduction_config(load_object(legacy_path))
+            if not os.path.exists(config_path):
+                raise FileNotFoundError(
+                    f"No 'reduction_config.obj' in {result_folder}. Reductions produced by "
+                    "TRAP < 2.0 only wrote 'reduction_parameters.obj', holding the removed "
+                    "Reduction_parameters object. Re-run the reduction, or pass the config "
+                    "explicitly with read_parameters=False."
+                )
+            self.reduction_parameters = load_object(config_path)
         else:
             if reduction_parameters is not None and instrument is not None:
                 self.reduction_parameters = _to_reduction_config(reduction_parameters)
