@@ -1626,6 +1626,44 @@ def _combine_channels_rt_frame(
     return row
 
 
+def _template_output_filenames(template_name):
+    """Per-template products written only when a template yields a candidate."""
+    return [
+        f"companion_table_{template_name}.csv",
+        f"validated_companion_table_{template_name}.csv",
+        f"validated_companion_table_short_{template_name}.csv",
+        f"companion_spectra_{template_name}.pdf",
+        f"contrast_plot_{template_name}.pdf",
+        f"contrast_plot_{template_name}.png",
+    ]
+
+
+def _overall_output_filenames(prefix):
+    """Cross-template products written only when at least one template detects."""
+    return [
+        f"overall_{prefix}companion_detections.csv",
+        f"overall_{prefix}companion_detections_spectra.csv",
+    ]
+
+
+def _remove_stale_outputs(output_dir, filenames):
+    """Delete `filenames` so a run can only leave behind its own products.
+
+    The writes for these files sit on the success path alone: a template that
+    finds no candidate takes an early exit, and a crash in the spectra extraction
+    aborts before them. Either way the previous run's copies survive next to this
+    run's freshly written detection maps and are indistinguishable from current
+    results. Removing up front rather than on the failure branches also covers
+    exceptions. Absence is the unambiguous signal for "this run found nothing";
+    an empty table would not separate that from "never ran".
+    """
+    for filename in filenames:
+        try:
+            os.remove(os.path.join(output_dir, filename))
+        except FileNotFoundError:
+            pass
+
+
 def _combine_templates_best_snr(per_template_tables, search_radius):
     """Cross-template combination per Section 5 of the astrometry-uncertainty
     spec. Each element of ``per_template_tables`` is one template's companion
@@ -3948,14 +3986,15 @@ class DetectionAnalysis(object):
         >>> if analysis.templates['T-type'].validated_companion_table is not None:
         ...     print(f"Found {len(analysis.templates['T-type'].validated_companion_table)} candidates")
         """
+        # Both are used unconditionally further down, so they cannot stay inside
+        # the `file_paths is None` branch that used to define them.
+        template_name = template.name
+        output_dir_matching = os.path.join(
+            self.reduction_parameters.result_folder, "template_matching/"
+        )
+        os.makedirs(output_dir_matching, exist_ok=True)
         if file_paths is None:
-            template_name = template.name
             file_paths = {}
-            output_dir_matching = os.path.join(
-                self.reduction_parameters.result_folder, "template_matching/"
-            )
-            if not os.path.exists(output_dir_matching):
-                os.makedirs(output_dir_matching)
             file_paths["norm_detection_image_path"] = os.path.join(
                 output_dir_matching, f"normalized_detection_image_{template_name}.fits"
             )
@@ -3971,6 +4010,9 @@ class DetectionAnalysis(object):
             file_paths["contrast_plot_path"] = os.path.join(
                 output_dir_matching, f"contrast_plot_{template_name}"
             )
+        _remove_stale_outputs(
+            output_dir_matching, _template_output_filenames(template_name)
+        )
         wavelengths = self.instrument.wavelengths[self.wavelength_indices]
 
         detection_cube, detection_products = self.template_matching_detection(
@@ -4355,6 +4397,12 @@ class DetectionAnalysis(object):
             prefix = "validated_"
         else:
             prefix = ""
+
+        # The "no companion tables found" branch below writes nothing, so without
+        # this a run that detects nothing at all keeps the previous run's overall
+        # tables — which downstream reads as this run's result.
+        os.makedirs(output_dir_matching, exist_ok=True)
+        _remove_stale_outputs(output_dir_matching, _overall_output_filenames(prefix))
 
         # Combine the in-memory per-template tables populated by
         # match_all_templates in this run. Re-reading the per-template CSVs from

@@ -40,6 +40,25 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   accounting for the 43° of field rotation that partly averages it out.
 
 ### Fixed
+- **A re-run can no longer leave another run's companion tables in
+  `template_matching/`.** `companion_table_*`, `validated_companion_table*`,
+  `companion_spectra_*.pdf` and `contrast_plot_*.{pdf,png}` are written on the
+  success path of `run_template_matching` alone, so a template that finds no
+  candidate this run — or a crash in the spectra extraction — left the previous
+  run's copies sitting beside freshly written detection maps and contrast tables,
+  indistinguishable from current results. Seen on 51 Eri IFS OBS_H, where L-type
+  peaked at 4.68 against `candidate_threshold = 4.75` and kept a two-day-old table
+  reporting a detection. The same held one level up: the "No companion tables
+  found" branch of `combine_template_matched_companion_tables` wrote nothing, so a
+  run detecting nothing at all preserved the previous `overall_*.csv` — and those
+  *are* read as the run's result. Both now remove their products up front, which
+  also covers exceptions rather than only the branches anticipated. A missing file
+  is the unambiguous signal for "this run found nothing"; an empty table would not
+  separate that from "never ran". Products written before the candidate search
+  (`contrast_table_*`, the detection and uncertainty maps) are untouched. Fixes a
+  latent `NameError` in passing: `template_name` and the output directory were
+  bound only inside the `file_paths is None` branch but used unconditionally, so
+  passing `file_paths` explicitly crashed. (3 new tests.)
 - **The stacked detection cube written by `DetectionAnalysis.read_output` no
   longer goes stale.** It was written under `if not os.path.exists(...)`, so
   `detection_ncomp???_frac?.??_temporal.fits` stayed frozen at whatever the first
