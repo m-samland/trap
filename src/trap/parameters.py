@@ -701,6 +701,17 @@ class DetectionParameters:
     theta_deviation_threshold: float = 25.0
     yx_fwhm_ratio_threshold: Tuple[float, float] = (1.1, 4.5)
     save_initial_detection_products: bool = True
+    # Per-channel astrometry replaces the template-collapse position only when the
+    # channels that individually clear `candidate_threshold` carry a meaningful
+    # share of the data. On a 2-channel DBI observation one good channel (0.5) is
+    # the case the override was designed for; on a 39-channel IFS cube a handful of
+    # threshold-crossing channels is a noise-selected subset, not a cleaner
+    # measurement. See docs/llm_reference/ and the 51 Eri IFS benchmark.
+    per_channel_min_channel_fraction: float = 0.5
+    # Speckle residuals are strongly correlated between neighbouring IFS channels,
+    # so the per-channel inverse-variance combination must not be allowed to shrink
+    # sigma below the best contributing channel unless independence is established.
+    per_channel_independent_channels: bool = False
 
     def merge(self, **kw) -> "DetectionParameters":
         """Return a copy with selected fields overridden."""
@@ -720,7 +731,9 @@ class TrapReductionConfig:
     # Search region parameters
     search_region: Optional[Any] = None  # Binary mask of relative position to search for planets
     search_region_inner_bound: int = 1
-    search_region_outer_bound: int = 85
+    search_region_outer_bound: Optional[int] = 85
+    reduction_mask_min_pixels: int = 30
+    auto_footprint: bool = False
     oversampling: int = 1
     
     # Data preprocessing
@@ -795,6 +808,11 @@ class TrapReductionConfig:
     add_radial_regressors: bool = True
     include_opposite_regressors: bool = True
     
+    # Multi-wavelength regressor enrichment (WP2, IFS data only)
+    multiwavelength_regressors: Optional[str] = None  # None | "pool" | "occluded"
+    regressor_wavelength_indices: Optional[Any] = None  # indices into wavelength axis; None = all
+    max_regressor_pool_size: float = 3.0  # total pool budget in units of the single-wavelength pool
+
     # Processing control
     make_reconstructed_lightcurve: bool = True
     compute_residual_correlation: bool = False
@@ -810,6 +828,13 @@ class TrapReductionConfig:
     # Output control
     return_input_data: bool = False
     verbose: bool = False
+
+    def __post_init__(self):
+        if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
+            raise ValueError(
+                "multiwavelength_regressors must be None, 'pool', 'occluded' or 'sdi', "
+                f"got {self.multiwavelength_regressors!r}"
+            )
 
     def merge(self, **kw) -> "TrapReductionConfig":
         """Return a copy with selected fields overridden."""
@@ -831,6 +856,11 @@ class TrapReductionConfig:
         )
         params_dict = asdict(self)
         params_dict.pop("coronagraph_transmission", None)
+        params_dict.pop("multiwavelength_regressors", None)
+        params_dict.pop("regressor_wavelength_indices", None)
+        params_dict.pop("max_regressor_pool_size", None)
+        params_dict.pop("reduction_mask_min_pixels", None)
+        params_dict.pop("auto_footprint", None)
 
         # Filter out None values, but keep explicit None defaults where needed
         filtered_params = {}
@@ -868,6 +898,8 @@ class ReductionRuntimeState:
     search_region: Optional[np.ndarray] = None       # binary mask
     ncpus: int = 4
     coronagraph_transmission_pix: Optional[np.ndarray] = None
+    valid_pixel_mask_cropped: Optional[np.ndarray] = None
+    reduction_mask_min_pixels: int = 30
 
     # --- Category C: per iteration (wavelength x component) ---
     number_of_pca_regressors: int = 20
@@ -895,6 +927,57 @@ class ReductionRuntimeState:
         )
 
 
+def _crop_footprint(valid_pixel_mask, data_crop_size, yx_center_full):
+    """Crop a footprint mask to ``(data_crop_size, data_crop_size)`` centered
+    on ``yx_center_full[0]``.
+
+    Uses :class:`astropy.nddata.Cutout2D` with ``mode='partial'`` so a crop
+    that partially extends past the input is padded with ``False`` instead of
+    silently returning an empty slice. Returns ``None`` if the mask is
+    ``None``, the crop size is ``None``, or the center is not finite (in the
+    last case, logs a warning and disables the footprint intersection).
+    """
+    if valid_pixel_mask is None:
+        return None
+    mask_bool = np.asarray(valid_pixel_mask).astype("bool")
+    if data_crop_size is None or yx_center_full is None:
+        return mask_bool
+    center = np.asarray(yx_center_full)[0]
+    if not np.all(np.isfinite(center)):
+        logger.warning(
+            "valid_pixel_mask crop disabled: yx_center_full[0]=%s contains NaN/inf.",
+            tuple(center),
+        )
+        return None
+    from astropy.nddata import Cutout2D
+    cutout = Cutout2D(
+        mask_bool.astype(np.uint8),
+        position=(float(center[1]), float(center[0])),
+        size=(int(data_crop_size), int(data_crop_size)),
+        mode="partial",
+        fill_value=0,
+    )
+    return cutout.data.astype(bool)
+
+
+def _derive_outer_bound(valid_mask, yx_center, min_pixels):
+    """Largest integer radius whose annulus holds >= ``min_pixels`` valid pixels.
+
+    Single-pass over the mask via bincount; O(H*W) work, no Python loop.
+    """
+    if not np.any(valid_mask):
+        return 0
+    yy, xx = np.indices(valid_mask.shape, dtype=np.float32)
+    r = np.hypot(yy - yx_center[0], xx - yx_center[1])
+    r_int = r.astype(np.int32)
+    counts = np.bincount(
+        r_int[valid_mask].ravel(),
+        minlength=int(r.max()) + 1,
+    )
+    valid_radii = np.flatnonzero(counts >= min_pixels)
+    return int(valid_radii.max()) if valid_radii.size else 0
+
+
 def build_runtime_state(
     config: TrapReductionConfig,
     data_shape: tuple,
@@ -902,6 +985,8 @@ def build_runtime_state(
     stamp_sizes_reduction: np.ndarray,
     max_shift: float,
     mas_per_pixel: Optional[float] = None,
+    valid_pixel_mask: Optional[np.ndarray] = None,
+    yx_center_full: Optional[np.ndarray] = None,
 ) -> ReductionRuntimeState:
     """Compute all derived values from user config + data properties.
 
@@ -990,7 +1075,30 @@ def build_runtime_state(
             )
 
     # --- Category B: derived once ---
-    search_region_outer_bound = config.search_region_outer_bound
+    if config.search_region_outer_bound is None:
+        if valid_pixel_mask is None:
+            raise ValueError(
+                "search_region_outer_bound=None requires valid_pixel_mask "
+                "to derive a maximum radius."
+            )
+        if yx_center_full is None:
+            derivation_center = (
+                valid_pixel_mask.shape[0] / 2.0,
+                valid_pixel_mask.shape[1] / 2.0,
+            )
+        else:
+            derivation_center = tuple(np.asarray(yx_center_full)[0])
+        search_region_outer_bound = _derive_outer_bound(
+            valid_pixel_mask,
+            derivation_center,
+            min_pixels=config.reduction_mask_min_pixels,
+        )
+        logger.info(
+            "Auto outer bound (footprint-derived): %d px", search_region_outer_bound
+        )
+    else:
+        search_region_outer_bound = config.search_region_outer_bound
+
     if config.reduce_single_position and config.guess_position is not None:
         guess_position_separation = np.sqrt(
             config.guess_position[0] ** 2 + config.guess_position[1] ** 2
@@ -1012,10 +1120,13 @@ def build_runtime_state(
         data_crop_size = int(data_crop_size // 2 * 2 + 1)
 
         if data_crop_size > data_shape[-1]:
-            raise ValueError(
-                f"Data crop size {data_crop_size} is larger than input image "
-                f"size: {data_shape[-1]}"
+            logger.info(
+                "Requested crop %d exceeds input %d; clamping to input FoV.",
+                data_crop_size, data_shape[-1],
             )
+            data_crop_size = int(data_shape[-1])
+            if data_crop_size % 2 == 0:
+                data_crop_size -= 1
         logger.info("Auto crop size cropped data to: %s", data_crop_size)
         yx_dim = (data_crop_size, data_crop_size)
     else:
@@ -1030,6 +1141,10 @@ def build_runtime_state(
                 config.search_region.shape[-1],
             )
 
+    valid_pixel_mask_cropped = _crop_footprint(
+        valid_pixel_mask, data_crop_size, yx_center_full,
+    )
+
     search_region = config.search_region
     if search_region is None:
         search_region = regressor_selection.make_annulus_mask(
@@ -1038,6 +1153,12 @@ def build_runtime_state(
             yx_dim=yx_dim,
             oversampling=config.oversampling,
             yx_center=None,
+        )
+    if valid_pixel_mask_cropped is not None:
+        search_region = np.logical_and(search_region, valid_pixel_mask_cropped)
+        logger.info(
+            "Scheduling %d positions inside the footprint.",
+            int(search_region.sum()),
         )
 
     ncpus = config.ncpus
@@ -1053,6 +1174,8 @@ def build_runtime_state(
         search_region=search_region,
         ncpus=ncpus,
         coronagraph_transmission_pix=coronagraph_transmission_pix,
+        valid_pixel_mask_cropped=valid_pixel_mask_cropped,
+        reduction_mask_min_pixels=config.reduction_mask_min_pixels,
         # Category C: initial values (will be overwritten by for_iteration)
         number_of_pca_regressors=config.number_of_pca_regressors,
         temporal_components_fraction=0.0,
@@ -1233,7 +1356,19 @@ def default_trap_config() -> TrapConfig:
 
 
 def trap_config_for_ifs() -> TrapConfig:
-    """Create TRAP configuration optimized for IFS observations."""
+    """Create TRAP configuration optimized for IFS observations.
+
+    ``yx_anamorphism=[1.0059, 1.0011]`` matches the correction Vigan's ``sphere``
+    package applies to IFS science and flux cubes in ``sph_ifs_combine_data``.
+    The anamorphism comes from the cylindrical mirrors in the SPHERE common path
+    and is therefore shared by all three science subsystems (Maire et al. 2016);
+    only the field orientation differs. TRAP compensates in the forward model —
+    it distorts the injection position per frame instead of interpolating the
+    data — so the spherical IFS conversion must leave the cubes uncorrected, as
+    it does. Override to ``[1.0, 1.0]`` if the correction is ever applied
+    upstream. Omitting it understates the separation of a source lying near the
+    detector y axis by up to ~0.6% (0.30 px / 2.2 mas for 51 Eri b).
+    """
     config = TrapConfig(
         reduction=TrapReductionConfig(
             search_region_outer_bound=81,
@@ -1241,6 +1376,8 @@ def trap_config_for_ifs() -> TrapConfig:
             spatial_model=False,
             right_handed=False,
             search_region_inner_bound=1,
+            yx_anamorphism=np.array([1.0059, 1.0011]),
+            auto_footprint=True,
         ),
         processing=ProcessingParameters(
             wavelength_indices=range(1, 38),
@@ -1288,6 +1425,7 @@ def trap_config_for_irdis() -> TrapConfig:
             right_handed=False,
             search_region_inner_bound=1,
             yx_anamorphism=np.array([1.0062, 1.0]),
+            auto_footprint=True,
         ),
         processing=ProcessingParameters(
             wavelength_indices=range(0, 2),

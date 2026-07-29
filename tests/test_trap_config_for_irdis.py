@@ -43,6 +43,10 @@ class TestTrapConfigForIrdis:
         assert cfg.instrument.pixel_scale_arcsec_per_pixel == pytest.approx(0.00746)
         assert list(cfg.processing.wavelength_indices) == list(range(1, 38))
 
+    def test_auto_footprint_default_true_for_sphere_factories(self):
+        assert trap_config_for_ifs().reduction.auto_footprint is True
+        assert trap_config_for_irdis().reduction.auto_footprint is True
+
 
 class TestInstrumentConfigToInstrumentIrdisModes:
     @pytest.mark.parametrize(

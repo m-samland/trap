@@ -135,6 +135,14 @@ def solve_linear_equation_simple(design_matrix, data, inverse_covariance=None):
             data * np.sqrt(inverse_covariance),
             rcond=None)
         P_sigma_squared = np.diag(np.linalg.pinv(AVinvAT))
+        # A singular normal matrix means some parameters are unconstrained by the
+        # data -- e.g. a reduction pixel whose inverse variance is zero in every
+        # signal-carrying frame. pinv reports 0 variance for those directions,
+        # but the honest value is infinite (no information). Returning inf makes
+        # every downstream 1/variance an inverse-variance weight of 0, so a
+        # degenerate pixel is dropped from contrast/SNR combinations instead of
+        # dominating them with an infinite weight (or triggering a divide-by-zero).
+        P_sigma_squared = np.where(P_sigma_squared > 0, P_sigma_squared, np.inf)
     return P, P_sigma_squared
 
 

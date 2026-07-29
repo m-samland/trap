@@ -5,79 +5,162 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
-### Added
-- Optional coronagraph throughput correction: pass a `(separation_mas, throughput)`
-  table via `TrapReductionConfig.coronagraph_transmission` to attenuate the
-  forward model by the separation-dependent coronagraph transmission, correcting
-  underestimated contrasts at small separations (#31).
-- **Shared-array store** (`trap.shared_arrays`) – large input arrays are dumped
-  once as `.npy` files to a scratch directory and worker processes memmap them
-  read-only, so the OS page cache provides a single shared in-RAM copy per node.
-  The scratch directory is configurable via `TrapReductionConfig.scratch_dir` /
-  `TrapResources.scratch_dir` and defaults to `/dev/shm` when present with
-  sufficient headroom (cluster nodes), otherwise the system temp directory
-  (see `trap.parameters.resolve_scratch_dir`).
-- Serial-vs-parallel equivalence test on a synthetic cube
-  (`tests/test_parallel_equivalence.py`) plus unit tests for the shared-array
-  store (`tests/test_shared_arrays.py`).
+First release with validated astrometry. Contains breaking changes — see the two entries
+marked **Breaking** under Changed.
 
-### Fixed
-- **`trap_config_for_irdis()` now sets `instrument_type="photometry"`** (was
-  `"imaging"`). The old value matched neither branch of
-  `SpectralTemplate.__init__` (which checks for `'ifu'` and `'photometry'`),
-  so `contrast_modelbox` was never assigned and template-matching detection on
-  IRDIS DBI crashed with `AttributeError: 'SpectralTemplate' object has no
-  attribute 'contrast_modelbox'`. `"photometry"` selects the existing branch
-  that integrates model spectra through per-channel filter bandpasses via
-  `species.SyntheticPhotometry`, which is the correct treatment for DBI. No
-  other TRAP-side changes are needed — callers just have to populate
-  `Instrument.filters` with species-registered filter names (spherical's
-  `run_trap` handles this via a SPHERE-specific obs-mode → SVO filter-name
-  mapping).
+### Added
+- **Per-channel astrometry, reported as the primary position.** The spectral collapse used
+  for template detection maximises SNR but is astrometrically biased — it folds in channels
+  carrying no signal at the source. The companion is now fitted in each wavelength channel
+  and combined in the source-aligned `(r, t)` frame, with two guards: the override needs at
+  least `per_channel_min_channel_fraction` (0.5) of channels to contribute, and the combined
+  σ is floored at the best contributing channel's σ unless
+  `per_channel_independent_channels=True` — neighbouring channels are speckle-correlated, so
+  the formal `1/Σ(1/σ²)` shrinkage claimed a √n gain that does not exist. New
+  `astrometry_source` column (`per_channel` | `collapse`) and `per_channel_astrometry.csv`;
+  detection significance, `best_template` and the spectrum still come from the collapse. On
+  51 Eri IFS OBS_H the reported separation moved 447.66 → 454.30 mas against a GRAVITY truth
+  of 455.364 ± 0.653 mas. (#35, benchmark in
+  `spherical/tests/data/51eri_astrometry_benchmark.md`)
+- **Edge-of-FoV reduction.** `run_complete_reduction` accepts a `valid_pixel_mask` (2D `H×W`
+  or 3D `n_wave×H×W`) describing which detector pixels carry real data. Out-of-footprint
+  positions are excluded from scheduling, per-position masks and regressor pools are
+  intersected with the footprint, and positions with fewer than `reduction_mask_min_pixels`
+  (30) surviving pixels return `NaN` instead of raising. `search_region_outer_bound` is now
+  `Optional[int] = 85`, where `None` derives the bound from the footprint. Passing no mask
+  leaves behaviour identical, but `trap_config_for_ifs` / `trap_config_for_irdis` set
+  `auto_footprint=True`, which infers the mask from all-NaN pixels connected to the array
+  border; the `TrapReductionConfig` default remains `False`. (#35)
+- **Multi-wavelength regressors for IFS (WP2).** The temporal regressor pool can be enriched
+  with time series from other wavelength slices: the speckle field zooms radially by
+  `s = λ_j/λ_ref` about the star centre while astrophysical sources stay static, so per-slice
+  masks scale the reference-pool geometry and exclude the static source position, known
+  companions and slice bad pixels. Configured via
+  `TrapReductionConfig.multiwavelength_regressors` (`None` | `"pool"` = full scaled annulus |
+  `"occluded"` = scaled reference-signal-mask footprint | `"sdi"` = that footprint with the
+  static-source and known-companion exclusions dropped, the classic SDI trick for a "dark"
+  donor channel), `regressor_wavelength_indices` and `max_regressor_pool_size`. The
+  single-wavelength and default `None` paths are bit-identical to before — only mask
+  construction and training-matrix concatenation changed, solvers are untouched. (#35)
+- **Shared-array store** (`trap.shared_arrays`) — large input arrays are dumped once as
+  `.npy` files to a scratch directory and memmapped read-only by worker processes, so the OS
+  page cache holds a single in-RAM copy per node. Configurable via
+  `TrapReductionConfig.scratch_dir` / `TrapResources.scratch_dir`; defaults to `/dev/shm`
+  when present with sufficient headroom, otherwise the system temp directory.
+- Optional coronagraph throughput correction: pass a `(separation_mas, throughput)` table via
+  `TrapReductionConfig.coronagraph_transmission` to attenuate the forward model by the
+  separation-dependent transmission, correcting underestimated contrasts at small
+  separations. (#31)
 
 ### Changed
-- **`include_noise` → `estimate_noise_from_data`; ivar cube is always used when passed.**
-  The old gate on `TrapReductionConfig.include_noise` silently discarded any
-  `inverse_variance_full` handed to `run_complete_reduction` when the flag was
-  False, which was a footgun: passing an ivar cube looked like a request to
-  use it, but the flag had to be flipped separately. The gate is now:
-  explicit ivar always wins; the (renamed) `estimate_noise_from_data` flag
-  only controls the fallback path when NO ivar is supplied (True estimates
-  Poisson + read-noise from the data itself; False leaves the fit
-  unweighted). Callers migrating: rename `include_noise=…` to
-  `estimate_noise_from_data=…`; behavior is unchanged unless you were
-  passing an ivar cube with `include_noise=False`, in which case it now
-  actually gets used. Renamed everywhere (`parameters.py`, `regression.py`,
-  the tutorial `.ipynb` / `.py` variants, the IRDIS debris tutorial, the
-  CV validation scripts); dead `1./y` fallback in `regression.py`'s four
-  inner gates removed (the top-level gate already covers it).
-- **Ray removed; multiprocessing now uses joblib/loky** – `run_trap_search` and
-  `multi_position_cross_validation` dispatch position chunks through
-  `joblib.Parallel` (loky backend) instead of Ray remote functions. Results are
-  identical to the serial path; single-wavelength reductions are unchanged.
-  Startup time, memory reservation and dependency footprint shrink, worker
-  logs/exceptions now surface on the driver, and one code path serves laptop
-  and cluster (multi-node scaling via scheduler job arrays over
-  wavelengths/epochs). BLAS threads in workers are capped to 1, matching Ray's
-  previous implicit behavior.
-- `run_complete_reduction` dumps the preprocessed per-wavelength data (and
-  inverse variance) to the shared-array store once, before the
-  component/wavelength loops, instead of re-transferring the cube to workers
-  for every component fraction. Position chunking raised from `2 × ncpus` to
-  `8 × ncpus` to reduce idle tails.
-- Progress reporting is now a driver-side `tqdm` bar ticking per completed
-  chunk; the Ray-based `ProgressBarActor`/`ProgressBar` in `trap.utils` were
-  removed, along with the no-op `==` statements that belonged to them
-  (roadmap item 5 / improvement note 7).
+- **Breaking: `include_noise` renamed to `estimate_noise_from_data`, and an explicit ivar
+  cube is now always used.** The old flag silently discarded an `inverse_variance_full`
+  handed to `run_complete_reduction` when False, which was a footgun. The gate is now:
+  explicit ivar always wins, and the renamed flag only controls the fallback when no ivar is
+  supplied (True estimates Poisson + read noise from the data, False leaves the fit
+  unweighted). Callers must rename the keyword — there is no compatibility alias.
+- **Breaking: Ray removed; multiprocessing now uses joblib/loky.** `run_trap_search` and
+  `multi_position_cross_validation` dispatch position chunks through `joblib.Parallel`
+  instead of Ray remote functions. Results are identical to the serial path and
+  single-wavelength reductions are unchanged. Startup time, memory reservation and
+  dependency footprint shrink, worker logs and exceptions now surface on the driver, and one
+  code path serves laptop and cluster. Worker BLAS threads are capped to 1, matching Ray's
+  previous implicit behaviour.
+- **SPHERE anamorphism is now corrected by default** — `trap_config_for_ifs` sets
+  `yx_anamorphism=[1.0059, 1.0011]` and `trap_config_for_irdis` `[1.0062, 1.0]`. The
+  common-path cylindrical mirrors distort all three science subsystems, not just IRDIS (Maire
+  et al. 2016); the IFS values match the correction Vigan's `sphere` package applies in
+  `sph_ifs_combine_data`. TRAP compensates in the forward model rather than interpolating the
+  data, so input cubes must stay uncorrected. Omitting it understated the separation of a
+  source near the detector y axis by up to ~0.6% — 2.2 mas for 51 Eri b. (#35)
+- Preprocessed per-wavelength data and inverse variance are dumped to the shared-array store
+  once, before the component and wavelength loops, instead of being re-transferred to workers
+  for every component fraction; position chunking raised from `2 × ncpus` to `8 × ncpus` to
+  shorten idle tails. Progress reporting is now a driver-side `tqdm` bar ticking per
+  completed chunk.
+- **Library logging instead of `print`.** Per-module `logging.getLogger(__name__)` with a
+  single `NullHandler` at the package root. The library sets no levels or handlers of its
+  own, so callers control verbosity via `logging.getLogger("trap").setLevel(...)` — a driver
+  such as `spherical` can quiet routine output to warnings and keep its progress bar intact.
+  `likelihood_tools.py` and `embed_shell.py` are unchanged.
+
+### Fixed
+- **Unconstrained WLS parameters now return infinite variance instead of zero.**
+  `solve_linear_equation_simple` caught a singular normal matrix — a reduction pixel whose
+  inverse variance is zero in every signal-carrying frame — and returned
+  `diag(pinv(AtWA)) = 0` for the unconstrained directions. Downstream,
+  `compute_contrast_weighted_average` inverts that into an infinite weight, so the no-data
+  pixel either dominated the inverse-variance average or produced `NaN`, corrupting the
+  contrast and SNR of any source combining it. Only the singular except-path changed;
+  well-conditioned fits are untouched. (`1e0e709`)
+- **`_crop_box` pads instead of silently returning an empty array.** Raw numpy slicing on the
+  last two axes turned a crop with `center=(126, 129)` and `boxsize=261` on a `(262, 262)`
+  input into slice `[-4:257]` = `[258:257]`, i.e. shape `(0, 0)` rather than `(261, 261)`.
+  All four public crop helpers now route through a padded implementation that always returns
+  the requested shape, filling out-of-bounds regions by dtype (`NaN` / `False` / `0`), and
+  `build_runtime_state`'s footprint crop additionally goes through `Cutout2D(mode='partial')`
+  to survive fractional-pixel centres. Took down a bet Pic OBS_H run with a broadcast error.
+  (`8f48961`, `4e7d9a8`)
+- **A re-run can no longer leave another run's companion tables in `template_matching/`.**
+  `companion_table_*`, `validated_companion_table*`, `companion_spectra_*.pdf` and
+  `contrast_plot_*` were written on the success path of `run_template_matching` alone, so a
+  template that found no candidate this run left the previous run's copies beside freshly
+  written detection maps, indistinguishable from current results. The same held one level up
+  for `overall_*.csv`, which *is* read as the run's result. Both now remove their products up
+  front, so a missing file is the unambiguous signal for "this run found nothing"; products
+  written before the candidate search are untouched. Fixes a latent `NameError` in passing —
+  `template_name` and the output directory were bound only inside the `file_paths is None`
+  branch but used unconditionally. (`7395902`)
+- **Cross-template combination no longer ingests stale per-template CSVs.**
+  `combine_template_matched_companion_tables` rebuilt the overall table by re-reading
+  `{prefix}companion_table_{template}.csv` from disk, so a template that found nothing in the
+  current run contributed its file from a previous run — inflating
+  `n_templates_above_threshold`, fabricating `*_sigma_template_scatter` and tripping
+  `astrometry_template_disagreement`. It now combines the in-memory tables populated by
+  `match_all_templates` this run. (#35)
+- **The stacked detection cube written by `DetectionAnalysis.read_output` no longer goes
+  stale.** It was written under `if not os.path.exists(...)`, so
+  `detection_ncomp???_frac?.??_temporal.fits` stayed frozen at whatever the first run
+  produced while every other detection product refreshed. Analysis results were unaffected
+  (they use the in-memory cube), but anyone opening the file directly, or keying on its
+  modification time to check whether a reduction had rerun, saw the first run. (`404335c`)
+- **`trap_config_for_irdis()` now sets `instrument_type="photometry"`** (was `"imaging"`).
+  The old value matched neither branch of `SpectralTemplate.__init__`, so
+  `contrast_modelbox` was never assigned and IRDIS DBI template matching crashed with
+  `AttributeError`. `"photometry"` integrates model spectra through per-channel filter
+  bandpasses via `species.SyntheticPhotometry`, the correct treatment for DBI; callers must
+  populate `Instrument.filters` with species-registered filter names.
+- **Out-of-grid stellar parameters no longer abort template matching.**
+  `add_default_templates` built the stellar template from the solar-only `bt-nextgen` grid
+  but passed the requested `stellar_parameters` straight to `species`' `get_model`, so a
+  sub-solar `[Fe/H]` or an out-of-range Teff/log g raised `ValueError`. Values are now
+  clamped to the grid boundaries via `ReadModel.get_bounds()`, snapping to the nearest edge
+  with a `warnings.warn`.
+- Edge-of-FoV reduction no longer crashes with `numpy.linalg.LinAlgError: SVD did not
+  converge` when pool pixels carry per-frame or per-wavelength `NaN` entries that pass the
+  border-connected footprint gate. `_run_reduction_loops` ORs per-wavelength non-finite
+  pixels into `bad_pixel_mask`, and `_assemble_training_matrix` drops any remaining
+  non-finite columns before the SVD; downstream only uses the temporal basis, so dropping
+  training-matrix columns is safe.
+- Detection-map peak extraction is `NaN`-safe: positions marked `NaN` by the reduction no
+  longer poison the `argmax` of the candidate cluster.
+- `inject_signal` no longer raises when the injection stamp overlaps the array boundary — the
+  destination slice and stamp are clipped per frame, and frames entirely outside the array
+  are skipped.
+- `build_runtime_state` clamps the auto-computed `data_crop_size` at the input FoV with an
+  INFO log instead of raising when the requested crop would exceed it.
+- The joblib/loky "A worker stopped while some jobs were given to the executor" warning
+  during reduction: both `parallel_config` blocks in `reduction_wrapper` now pass
+  `idle_worker_timeout=3600` (joblib's default is 300 s). One loky pool is reused across
+  every wavelength channel and chunks are equalised by size rather than runtime, so a worker
+  that ran out of positions early could idle past the timeout and be reaped. The warning was
+  always harmless — it is emitted only on a graceful worker exit and loky respawns a
+  replacement — but alarming in a log.
 
 ### Removed
 - Dependency on `ray[default]`; `joblib` added instead.
-
-### Fixed
-- **Out-of-grid stellar parameters no longer abort template matching** – `add_default_templates` built the stellar template from the solar-only `bt-nextgen` grid but passed the requested `stellar_parameters` straight to `species`' `get_model`, so a sub-solar `[Fe/H]` (or an out-of-range Teff/log g) raised `ValueError: … smaller than the lower boundary of the model grid`. Values are now clamped to the grid boundaries (via `ReadModel.get_bounds()`) before `get_model`, snapping to the nearest edge with a `warnings.warn`, so any caller's stellar parameters degrade gracefully instead of crashing.
-
-### Changed
-- **Library logging instead of `print`** – Replaced the library's `print()` calls with standard-library `logging` (per-module `logging.getLogger(__name__)`, a single `NullHandler` at the package root). The library sets no levels or handlers of its own; callers control verbosity via `logging.getLogger("trap").setLevel(...)`, so a driver such as `spherical` can quiet routine output down to warnings/errors and keep its progress bar intact. Per-position diagnostics on the Ray worker path are `debug` only. `likelihood_tools.py` and `embed_shell.py` are unchanged.
+- `ProgressBarActor` / `ProgressBar` from `trap.utils`, along with the no-op `==` statements
+  that belonged to them.
 
 ## [1.3.0] - 2026-07-03
 
