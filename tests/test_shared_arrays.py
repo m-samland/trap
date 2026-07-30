@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from trap.parameters import resolve_scratch_dir
-from trap.shared_arrays import SharedArrayRef, SharedArrayStore, resolve
+from trap.shared_arrays import SharedArrayStore, resolve
 
 
 def test_dump_and_resolve_roundtrip(tmp_path):

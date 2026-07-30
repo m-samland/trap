@@ -1,14 +1,25 @@
 """Unit and integration tests for WP2 multi-wavelength regressor enrichment."""
 
+import dataclasses
+
+import astropy.units as u
 import numpy as np
 import pytest
+from astropy.io import fits
 
-from trap.parameters import TrapReductionConfig
+from trap import makesource
+from trap.parameters import Instrument, TrapReductionConfig
+from trap.reduction_wrapper import run_complete_reduction
+from trap.regression import _assemble_training_matrix
 from trap.regressor_selection import (
+    MultiwavelengthRegressors,
     find_N_unique_samples,
+    make_mask_from_psf_track,
+    make_multiwavelength_regressor_masks,
     make_signal_mask,
     scale_mask_about_center,
 )
+from trap.shared_arrays import SharedArrayStore
 
 
 class TestConfig:
@@ -71,16 +82,6 @@ class TestSeededSampling:
         assert not np.any(mask_a & ~pool)
 
 
-import dataclasses
-
-from trap.parameters import TrapReductionConfig as _Config
-from trap.regressor_selection import (
-    MultiwavelengthRegressors,
-    make_multiwavelength_regressor_masks,
-    make_mask_from_psf_track,
-)
-
-
 def _mw_context(mode, scale_factors=(1.25,), max_pool=3.0, n_lambda=2,
                 image_size=61, fwhm=(4.0,), fwhm_reference=4.0):
     n = len(scale_factors)
@@ -114,7 +115,7 @@ class TestMultiwavelengthMasks:
 
     def _masks(self, mode, separation=12, scale_factors=(1.25,), max_pool=3.0,
                fwhm=(4.0,)):
-        config = _Config(annulus_width=5, annulus_offset=0.0)
+        config = TrapReductionConfig(annulus_width=5, annulus_offset=0.0)
         center = (self.image_size // 2, self.image_size // 2)
         signal_mask = _signal_track(self.image_size, separation)
         context = _mw_context(
@@ -159,7 +160,7 @@ class TestMultiwavelengthMasks:
         # Small budget on a large annulus forces subsampling so the cap bites.
         n_reference = 200
         max_pool = 1.5
-        config = _Config(annulus_width=9, annulus_offset=0.0)
+        config = TrapReductionConfig(annulus_width=9, annulus_offset=0.0)
         center = (self.image_size // 2, self.image_size // 2)
         signal_mask = _signal_track(self.image_size, 12)
         context = _mw_context("pool", scale_factors=(1.25, 0.8),
@@ -194,7 +195,7 @@ class TestMultiwavelengthMasks:
         assert enrichment_budget > 0
 
     def test_bad_pixels_excluded(self):
-        config = _Config(annulus_width=5, annulus_offset=0.0)
+        config = TrapReductionConfig(annulus_width=5, annulus_offset=0.0)
         center = (self.image_size // 2, self.image_size // 2)
         signal_mask = _signal_track(self.image_size, 12)
         bad = np.zeros((self.image_size, self.image_size), dtype=bool)
@@ -227,7 +228,7 @@ class TestMultiwavelengthMasks:
         # A known companion overlapping the scaled footprint is dropped by
         # occluded (blanket exclusion of astrophysical sources) but kept by
         # sdi (SDI premise: donor channel is astrophysically faint here).
-        config = _Config(annulus_width=5, annulus_offset=0.0)
+        config = TrapReductionConfig(annulus_width=5, annulus_offset=0.0)
         center = (self.image_size // 2, self.image_size // 2)
         signal_mask = _signal_track(self.image_size, 12)
         # Companion sits in the scaled-footprint band (sep ~ 12 * 1.25 = 15).
@@ -260,7 +261,7 @@ class TestMultiwavelengthMasks:
     def test_sdi_still_excludes_bad_pixels(self):
         # Bad-pixel exclusion is a detector-level guard and must apply in
         # every mode, including "sdi".
-        config = _Config(annulus_width=5, annulus_offset=0.0)
+        config = TrapReductionConfig(annulus_width=5, annulus_offset=0.0)
         center = (self.image_size // 2, self.image_size // 2)
         signal_mask = _signal_track(self.image_size, 12)
         bad = np.zeros((self.image_size, self.image_size), dtype=bool)
@@ -279,9 +280,6 @@ class TestMultiwavelengthMasks:
         )
         assert 1 in masks
         assert not np.any(masks[1] & bad)
-
-
-from trap.regression import _assemble_training_matrix
 
 
 class TestAssembleTrainingMatrix:
@@ -327,9 +325,6 @@ class TestAssembleTrainingMatrix:
         np.testing.assert_array_equal(matrix[:, 3:], cube[1][mask_j].T[subset])
 
 
-from trap.shared_arrays import SharedArrayStore
-
-
 def test_shared_store_remove(tmp_path):
     with SharedArrayStore(scratch_dir=tmp_path) as store:
         store.dump("scratch", np.arange(4.0))
@@ -338,14 +333,6 @@ def test_shared_store_remove(tmp_path):
         with pytest.raises(KeyError):
             store.ref("scratch")
         store.remove("scratch")  # idempotent
-
-
-import astropy.units as u
-from astropy.io import fits
-
-from trap import makesource
-from trap.parameters import Instrument
-from trap.reduction_wrapper import run_complete_reduction
 
 
 @pytest.fixture(scope="module")
