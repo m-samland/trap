@@ -31,7 +31,8 @@ First release with validated astrometry. Contains breaking changes — see the e
   leaves behaviour identical, but `trap_config_for_ifs` / `trap_config_for_irdis` set
   `auto_footprint=True`, which infers the mask from all-NaN pixels connected to the array
   border; the `TrapReductionConfig` default remains `False`. (#35)
-- **Multi-wavelength regressors for IFS (WP2).** The temporal regressor pool can be enriched
+- **Multi-wavelength regressors for IFS (WP2) — experimental, off by default.** The temporal
+  regressor pool can be enriched
   with time series from other wavelength slices: the speckle field zooms radially by
   `s = λ_j/λ_ref` about the star centre while astrophysical sources stay static, so per-slice
   masks scale the reference-pool geometry and exclude the static source position, known
@@ -39,9 +40,11 @@ First release with validated astrometry. Contains breaking changes — see the e
   `TrapReductionConfig.multiwavelength_regressors` (`None` | `"pool"` = full scaled annulus |
   `"occluded"` = scaled reference-signal-mask footprint | `"sdi"` = that footprint with the
   static-source and known-companion exclusions dropped, the classic SDI trick for a "dark"
-  donor channel), `regressor_wavelength_indices` and `max_regressor_pool_size`. The
-  single-wavelength and default `None` paths are bit-identical to before — only mask
-  construction and training-matrix concatenation changed, solvers are untouched. (#35)
+  donor channel), `regressor_wavelength_indices` and `max_regressor_pool_size`. Not yet
+  validated across a range of datasets, and the modes are not expected to be equally useful:
+  treat results as exploratory and compare against a `None` run. The single-wavelength and
+  default `None` paths are bit-identical to before — only mask construction and training-matrix
+  concatenation changed, solvers are untouched. (#35)
 - **Shared-array store** (`trap.shared_arrays`) — large input arrays are dumped once as
   `.npy` files to a scratch directory and memmapped read-only by worker processes, so the OS
   page cache holds a single in-RAM copy per node. Configurable via
@@ -84,11 +87,12 @@ First release with validated astrometry. Contains breaking changes — see the e
 - **Unconstrained WLS parameters now return infinite variance instead of zero.**
   `solve_linear_equation_simple` caught a singular normal matrix — a reduction pixel whose
   inverse variance is zero in every signal-carrying frame — and returned
-  `diag(pinv(AtWA)) = 0` for the unconstrained directions. Downstream,
-  `compute_contrast_weighted_average` inverts that into an infinite weight, so the no-data
-  pixel either dominated the inverse-variance average or produced `NaN`, corrupting the
-  contrast and SNR of any source combining it. Only the singular except-path changed;
-  well-conditioned fits are untouched. (`1e0e709`)
+  `diag(pinv(AtWA)) = 0` for the unconstrained directions, which
+  `compute_contrast_weighted_average` then inverts into an infinite weight. It takes a pixel
+  with no usable data at all, so in practice this affected edge-of-FoV and heavily masked
+  reductions; where it did occur the pixel could dominate the inverse-variance average or turn
+  it into `NaN`. Only the singular except-path changed; well-conditioned fits are untouched.
+  (`1e0e709`)
 - **`_crop_box` pads instead of silently returning an empty array.** Raw numpy slicing on the
   last two axes turned a crop with `center=(126, 129)` and `boxsize=261` on a `(262, 262)`
   input into slice `[-4:257]` = `[258:257]`, i.e. shape `(0, 0)` rather than `(261, 261)`.

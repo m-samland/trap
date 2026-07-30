@@ -16,7 +16,7 @@
 - **Temporal Systematics Modeling**: Models time-dependent stellar residuals using causal regression for improved contrast at small inner working angles.
 - **Automatic Detection and Characterization**: Automatically detect point sources, measure their astrometry per wavelength channel, and extract their spectra.
 - **Spectral Template Matching**: Works with external spectral templates (using [`species`](https://github.com/tomasstolker/species)) for improved detection.
-- **Integral-Field and Dual-Band Data**: Ready-made configurations for IFS and IRDIS-style data, including optional enrichment of the temporal regressor pool with other wavelength slices.
+- **Integral-Field and Dual-Band Data**: Ready-made configurations for IFS and IRDIS-style data, with experimental, opt-in enrichment of the temporal regressor pool using other wavelength slices.
 - **Edge-of-Field Reduction**: An optional detector footprint mask lets the search run out to the edge of irregularly shaped fields of view instead of stopping at a fixed radius.
 - **Dataclass Configuration**: Reductions are configured with frozen, introspectable dataclasses (`TrapConfig` / `TrapReductionConfig`) — no hidden global state.
 - **Parallel Processing**: Efficient parallelism via [joblib](https://joblib.readthedocs.io/)/loky with a memmap-backed shared-array store, scalable from laptops to clusters.
