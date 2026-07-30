@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.  
 This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0] - 2026-07-30
 
 First release with validated astrometry. Contains breaking changes — see the entries marked
 **Breaking** under Changed and Removed.
@@ -47,10 +47,6 @@ First release with validated astrometry. Contains breaking changes — see the e
   page cache holds a single in-RAM copy per node. Configurable via
   `TrapReductionConfig.scratch_dir` / `TrapResources.scratch_dir`; defaults to `/dev/shm`
   when present with sufficient headroom, otherwise the system temp directory.
-- Optional coronagraph throughput correction: pass a `(separation_mas, throughput)` table via
-  `TrapReductionConfig.coronagraph_transmission` to attenuate the forward model by the
-  separation-dependent transmission, correcting underestimated contrasts at small
-  separations. (#31)
 
 ### Changed
 - **Breaking: `include_noise` renamed to `estimate_noise_from_data`, and an explicit ivar
@@ -130,12 +126,6 @@ First release with validated astrometry. Contains breaking changes — see the e
   `AttributeError`. `"photometry"` integrates model spectra through per-channel filter
   bandpasses via `species.SyntheticPhotometry`, the correct treatment for DBI; callers must
   populate `Instrument.filters` with species-registered filter names.
-- **Out-of-grid stellar parameters no longer abort template matching.**
-  `add_default_templates` built the stellar template from the solar-only `bt-nextgen` grid
-  but passed the requested `stellar_parameters` straight to `species`' `get_model`, so a
-  sub-solar `[Fe/H]` or an out-of-range Teff/log g raised `ValueError`. Values are now
-  clamped to the grid boundaries via `ReadModel.get_bounds()`, snapping to the nearest edge
-  with a `warnings.warn`.
 - Edge-of-FoV reduction no longer crashes with `numpy.linalg.LinAlgError: SVD did not
   converge` when pool pixels carry per-frame or per-wavelength `NaN` entries that pass the
   border-connected footprint gate. `_run_reduction_loops` ORs per-wavelength non-finite
@@ -175,6 +165,27 @@ First release with validated astrometry. Contains breaking changes — see the e
 - Dependency on `ray[default]`; `joblib` added instead.
 - `ProgressBarActor` / `ProgressBar` from `trap.utils`, along with the no-op `==` statements
   that belonged to them.
+
+## [1.3.1] - 2026-07-08
+
+### Added
+- Optional coronagraph throughput correction: pass a `(separation_mas, throughput)` table via
+  `TrapReductionConfig.coronagraph_transmission` to attenuate the forward model by the
+  separation-dependent transmission, correcting underestimated contrasts at small
+  separations. Applied at injection, so point-source contrasts and contrast curves are both
+  corrected, and the table persists through `reduction_config.obj` so the detection module's
+  candidate re-reduction uses the identical throughput. (#31)
+
+### Fixed
+- **Out-of-grid stellar parameters no longer abort template matching.**
+  `add_default_templates` built the stellar template from the solar-only `bt-nextgen` grid
+  but passed the requested `stellar_parameters` straight to `species`' `get_model`, so a
+  sub-solar `[Fe/H]` or an out-of-range Teff/log g raised `ValueError`. Values are now
+  clamped to the grid boundaries via `ReadModel.get_bounds()`, snapping to the nearest edge
+  with a `warnings.warn`.
+- **All-NaN cutouts now raise a clear error** (#30). A cutout containing only `NaN` raises an
+  explicit `RuntimeError` instead of failing obscurely downstream, and `radial_bounds` is now
+  consistently a tuple.
 
 ## [1.3.0] - 2026-07-03
 
@@ -276,7 +287,9 @@ First release with validated astrometry. Contains breaking changes — see the e
 ### Fixed
 - No known issues.
 
-[Unreleased]: https://github.com/m-samland/trap/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/m-samland/trap/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/m-samland/trap/compare/v1.3.1...v2.0.0
+[1.3.1]: https://github.com/m-samland/trap/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/m-samland/trap/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/m-samland/trap/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/m-samland/trap/compare/v1.1.0...v1.2.0
