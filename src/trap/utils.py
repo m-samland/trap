@@ -5,103 +5,22 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
-from asyncio import Event
-from typing import Tuple
+import logging
 
 import dill
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.fft as fft
-import ray
 import scipy.interpolate as sinterp
 from numba import njit
 from numpy.random import default_rng
-from ray.actor import ActorHandle
 from scipy import ndimage
 from scipy.ndimage import spline_filter
 from tqdm import tqdm
 
 from trap import regressor_selection
 
-
-@ray.remote
-class ProgressBarActor:
-    counter: int
-    delta: int
-    event: Event
-
-    def __init__(self) -> None:
-        self.counter = 0
-        self.delta = 0
-        self.event = Event()
-
-    def update(self, num_items_completed: int) -> None:
-        """Updates the ProgressBar with the incremental
-        number of items that were just completed.
-        """
-        self.counter += num_items_completed
-        self.delta += num_items_completed
-        self.event.set()
-
-    async def wait_for_update(self) -> Tuple[int, int]:
-        """Blocking call.
-
-        Waits until somebody calls `update`, then returns a tuple of
-        the number of updates since the last call to
-        `wait_for_update`, and the total number of completed items.
-        """
-        await self.event.wait()
-        self.event.clear()
-        saved_delta = self.delta
-        self.delta = 0
-        return saved_delta, self.counter
-
-    def get_counter(self) -> int:
-        """
-        Returns the total number of complete items.
-        """
-        return self.counter
-
-# Back on the local node, once you launch your remote Ray tasks, call
-# `print_until_done`, which will feed everything back into a `tqdm` counter.
-
-
-class ProgressBar:
-    progress_actor: ActorHandle
-    total: int
-    description: str
-    pbar: tqdm
-
-    def __init__(self, total: int, description: str = ""):
-        # Ray actors don't seem to play nice with mypy, generating
-        # a spurious warning for the following line,
-        # which we need to suppress. The code is fine.
-        self.progress_actor = ProgressBarActor.remote()  # type: ignore
-        self.total = total
-        self.description = description
-
-    @property
-    def actor(self) -> ActorHandle:
-        """Returns a reference to the remote `ProgressBarActor`.
-
-        When you complete tasks, call `update` on the actor.
-        """
-        return self.progress_actor
-
-    def print_until_done(self) -> None:
-        """Blocking call.
-
-        Do this after starting a series of remote Ray tasks, to which you've
-        passed the actor handle. Each of them calls `update` on the actor.
-        When the progress meter reaches 100%, this method returns.
-        """
-        pbar = tqdm(desc=self.description, total=self.total)
-        while True:
-            delta, counter = ray.get(self.actor.wait_for_update.remote())
-            pbar.update(delta)
-            if counter >= self.total:
-                pbar.close()
-                return
+logger = logging.getLogger(__name__)
 
 
 def shuffle_and_equalize_relative_positions(
@@ -213,20 +132,62 @@ def resize_arr(arr, newdim):
                 dx1 - dx2:dx1 + dx2 + 1]
 
 
-def _crop_box(flux_arr, boxsize, center_yx):
-    """Core crop logic operating on the last two axes."""
+def _padded_crop_box(flux_arr, boxsize, center_yx, fill_value=0):
+    """Crop the last two axes of ``flux_arr`` to ``(boxsize, boxsize)`` around
+    ``center_yx``, padding with ``fill_value`` where the requested box extends
+    past the input.
+
+    Unlike a raw numpy slice, the output shape on the last two axes is always
+    exactly ``(boxsize, boxsize)`` regardless of ``center_yx``. Positions that
+    would require reading past an edge of ``flux_arr`` come back as
+    ``fill_value``.
+    """
     if center_yx is None:
-        dx1 = flux_arr.shape[-1] // 2
-        dy1 = flux_arr.shape[-2] // 2
+        cy = flux_arr.shape[-2] // 2
+        cx = flux_arr.shape[-1] // 2
     else:
-        dx1 = center_yx[1]
-        dy1 = center_yx[0]
-    dx2 = dy2 = boxsize // 2
-    if boxsize % 2 == 0:
-        return flux_arr[..., int(dy1 - dy2):int(dy1 + dy2),
-                        int(dx1 - dx2):int(dx1 + dx2)]
-    return flux_arr[..., int(dy1 - dy2):int(dy1 + dy2 + 1),
-                    int(dx1 - dx2):int(dx1 + dx2 + 1)]
+        cy = int(center_yx[0])
+        cx = int(center_yx[1])
+    half = int(boxsize) // 2
+    boxsize = int(boxsize)
+    y0 = cy - half
+    x0 = cx - half
+    y1 = y0 + boxsize
+    x1 = x0 + boxsize
+
+    Hin = flux_arr.shape[-2]
+    Win = flux_arr.shape[-1]
+
+    src_y0, src_y1 = max(0, y0), min(Hin, y1)
+    src_x0, src_x1 = max(0, x0), min(Win, x1)
+    dst_y0 = src_y0 - y0
+    dst_x0 = src_x0 - x0
+    dst_y1 = dst_y0 + (src_y1 - src_y0)
+    dst_x1 = dst_x0 + (src_x1 - src_x0)
+
+    out_shape = flux_arr.shape[:-2] + (boxsize, boxsize)
+    out = np.full(out_shape, fill_value, dtype=flux_arr.dtype)
+    if src_y1 > src_y0 and src_x1 > src_x0:
+        out[..., dst_y0:dst_y1, dst_x0:dst_x1] = flux_arr[..., src_y0:src_y1, src_x0:src_x1]
+    return out
+
+
+def _crop_box(flux_arr, boxsize, center_yx):
+    """Core crop logic operating on the last two axes.
+
+    Now always returns shape ``(..., boxsize, boxsize)`` on the last two
+    axes by padding with a dtype-appropriate fill value (``NaN`` for
+    floats, ``False`` for booleans, ``0`` otherwise). Callers that need a
+    specific fill value should use ``_padded_crop_box`` directly.
+    """
+    dtype = np.asarray(flux_arr).dtype
+    if np.issubdtype(dtype, np.floating):
+        fill = np.nan
+    elif np.issubdtype(dtype, np.bool_):
+        fill = False
+    else:
+        fill = 0
+    return _padded_crop_box(flux_arr, boxsize, center_yx, fill_value=fill)
 
 
 def crop_box_from_4D_cube(flux_arr, boxsize, center_yx=None):
@@ -277,8 +238,7 @@ def resize_cube(arr, new_dim):
 def derotate_cube(flux_arr, pa, right_handed, verbose=False):
     for i in range(flux_arr.shape[0]):
         if verbose is True:
-            print("Derotating Spectral Channel: Frame: {:02d} by {:02.03f} degree.".format(
-                i + 1, pa[i]))
+            logger.debug("Derotating Spectral Channel: Frame: %02d by %02.03f degree.", i + 1, pa[i])
         flux_arr[i] = ndimage.rotate(flux_arr[i], pa[i], reshape=False)
 
     return flux_arr
@@ -304,7 +264,7 @@ def mask_cube(arr, dim, r_init=3, fwhm=5):
     assert len(np.asarray(arr).shape) == 4, "Function arr_resize expects a 4D data cube"
     for i in range(arr.shape[0]):
         for j in range(arr.shape[1]):
-            print("Masking Center of Channel {0}: Frame {1}".format(i + 1, j + 1))
+            logger.debug("Masking Center of Channel %d: Frame %d", i + 1, j + 1)
             arr[i, j] = mask_center(arr[i, j], dim, r_init, fwhm)
     return arr
 
@@ -314,12 +274,12 @@ def scale_images(arr, lam, newdim):
     """
     magnification = np.zeros_like(lam)
     flux = arr.copy()
-    print(arr.shape)
-    print(lam.shape)
+    logger.debug("%s", arr.shape)
+    logger.debug("%s", lam.shape)
     for i in range(lam.shape[0] - 1):
         magnification[i] = np.divide(lam[-1], lam[i])
         for j in range(arr.shape[1]):
-            print("Magnifing Channel {0}: Frame {1}".format(i + 1, j + 1))
+            logger.debug("Magnifing Channel %d: Frame %d", i + 1, j + 1)
             # Crop Image before saving into flux is necessary!
             flux[i, j] = resize_arr(ndimage.interpolation.zoom(
                 arr[i, j], float(magnification[i]), order=3), newdim)
@@ -331,11 +291,11 @@ def scale_images_sdi(arr, lam, newdim):
     """
     magnification = np.zeros_like(lam)
     flux = arr.copy()
-    print(arr.shape)
-    print(lam.shape)
+    logger.debug("%s", arr.shape)
+    logger.debug("%s", lam.shape)
     for i in range(lam.shape[0] - 1):
         magnification[i] = np.divide(lam[-1], lam[i])
-        print("Magnifing Channel {0}".format(i + 1))
+        logger.debug("Magnifing Channel %d", i + 1)
         # Crop Image before saving into flux is necessary!
         flux[i] = resize_arr(ndimage.interpolation.zoom(
             arr[i], float(magnification[i]), order=3), newdim)

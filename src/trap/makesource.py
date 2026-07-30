@@ -153,44 +153,66 @@ def inject_signal(flux_arr, xdiff, ydiff, x1, x2, y1, y2, psf_model, norm,
         y_signal, x_signal = (psf_size // 2., psf_size // 2.)
         dist_from_signal = np.sqrt((x - x_signal)**2 + (y - y_signal)**2)
         psf_mask = dist_from_signal > psf_size // 2
-
     else:
         psf_mask = np.zeros_like(psf_model).astype('bool')
-        # flux_psf_form[~psf_mask] = 0
+
     ntimes = xdiff.shape[0]
     shifted_psf = np.empty_like(psf_model)
+    H, W = injected_cube.shape[-2:]
+    ph, pw = psf_model.shape
+
+    def _clipped_slices(idx):
+        dy1, dy2 = int(y1[idx]), int(y2[idx])
+        dx1, dx2 = int(x1[idx]), int(x2[idx])
+        cy1, cy2 = max(0, dy1), min(H, dy2)
+        cx1, cx2 = max(0, dx1), min(W, dx2)
+        if cy1 >= cy2 or cx1 >= cx2:
+            return None
+        sy1, sy2 = cy1 - dy1, ph - (dy2 - cy2)
+        sx1, sx2 = cx1 - dx1, pw - (dx2 - cx2)
+        return cy1, cy2, cx1, cx2, sy1, sy2, sx1, sx2
 
     if flux_arr.ndim == 2:
         if subpixel:
             for idx in range(ntimes):
+                clip = _clipped_slices(idx)
+                if clip is None:
+                    continue
+                cy1, cy2, cx1, cx2, sy1, sy2, sx1, sx2 = clip
                 shift(input=psf_model,
                       shift=(ydiff[idx], xdiff[idx]),
                       output=shifted_psf,
-                      order=3,
-                      mode='constant',
-                      cval=0.,
-                      prefilter=False)
+                      order=3, mode='constant', cval=0., prefilter=False)
                 shifted_psf[psf_mask] = 0
-                injected_cube[y1[idx]:y2[idx], x1[idx]:x2[idx]] += shifted_psf * norm[idx]
+                injected_cube[cy1:cy2, cx1:cx2] += shifted_psf[sy1:sy2, sx1:sx2] * norm[idx]
         else:
             for idx in range(ntimes):
-                injected_cube[y1[idx]:y2[idx], x1[idx]:x2[idx]] += psf_model * norm[idx]
+                clip = _clipped_slices(idx)
+                if clip is None:
+                    continue
+                cy1, cy2, cx1, cx2, sy1, sy2, sx1, sx2 = clip
+                injected_cube[cy1:cy2, cx1:cx2] += psf_model[sy1:sy2, sx1:sx2] * norm[idx]
 
     elif flux_arr.ndim == 3:
         if subpixel:
             for idx in range(ntimes):
+                clip = _clipped_slices(idx)
+                if clip is None:
+                    continue
+                cy1, cy2, cx1, cx2, sy1, sy2, sx1, sx2 = clip
                 shift(input=psf_model,
                       shift=(ydiff[idx], xdiff[idx]),
                       output=shifted_psf,
-                      order=3,
-                      mode='constant',
-                      cval=0.,
-                      prefilter=False)
+                      order=3, mode='constant', cval=0., prefilter=False)
                 shifted_psf[psf_mask] = 0
-                injected_cube[idx, y1[idx]:y2[idx], x1[idx]:x2[idx]] += shifted_psf * norm[idx]
+                injected_cube[idx, cy1:cy2, cx1:cx2] += shifted_psf[sy1:sy2, sx1:sx2] * norm[idx]
         else:
             for idx in range(ntimes):
-                injected_cube[idx, y1[idx]:y2[idx], x1[idx]:x2[idx]] += psf_model * norm[idx]
+                clip = _clipped_slices(idx)
+                if clip is None:
+                    continue
+                cy1, cy2, cx1, cx2, sy1, sy2, sx1, sx2 = clip
+                injected_cube[idx, cy1:cy2, cx1:cx2] += psf_model[sy1:sy2, sx1:sx2] * norm[idx]
     else:
         raise ValueError("Injection only possible for 2D or 3D data.")
 

@@ -6,6 +6,7 @@ Routines used in TRAP
 """
 
 import copy
+import logging
 import os
 import warnings
 from collections import OrderedDict
@@ -43,6 +44,8 @@ from trap.utils import (
     save_object,
     subtract_angles,
 )
+
+logger = logging.getLogger(__name__)
 
 # plt.style.use("paper")
 
@@ -760,9 +763,7 @@ def plot_contrast_curve(
         try:
             pdf.savefig(bbox_inches="tight")
         except RuntimeError:
-            print(
-                "Could not output pdf-version of contrast curve (this may be a Mac issue)."
-            )
+            logger.warning("Could not output pdf-version of contrast curve (this may be a Mac issue).")
         pdf.close()
 
     if show is True:
@@ -970,9 +971,7 @@ def plot_contrast_curve_ratio(
         try:
             pdf.savefig(bbox_inches="tight")
         except RuntimeError:
-            print(
-                "Could not output pdf-version of contrast curve (this may be a Mac issue)."
-            )
+            logger.warning("Could not output pdf-version of contrast curve (this may be a Mac issue).")
         pdf.close()
 
     if show is True:
@@ -1070,6 +1069,7 @@ def fit_2d_gaussian(
     fix_width=True,
     fix_orientation=True,
     plot=False,
+    fixed_position=None,
 ):
     if yx_center is None:
         yx_center = (image.shape[0] // 2.0, image.shape[1] // 2)
@@ -1127,10 +1127,43 @@ def fit_2d_gaussian(
         g_init.y_stddev.fixed = True
     if fix_orientation:
         g_init.theta.fixed = True
+    if fixed_position is not None:
+        # Clamp the centroid to a caller-supplied sub-pixel (y, x) position in
+        # original image coordinates (Fits B/C pin position to Fit A's centroid
+        # so their amplitudes are measured at the radially-unbiased location).
+        fx_cut, fy_cut = cutout.to_cutout_position(
+            (fixed_position[1], fixed_position[0])
+        )
+        g_init.x_mean = fx_cut
+        g_init.y_mean = fy_cut
+        g_init.x_mean.fixed = True
+        g_init.y_mean.fixed = True
 
-    fitter = fitting.LevMarLSQFitter()
+    def _extract_param_cov_xy(par):
+        param_cov_full = fitter.fit_info.get("param_cov", None)
+        # Free-parameter names in the order LevMar exposes them:
+        names = [n for n in par.param_names if not par.fixed[n]]
+        if (
+            param_cov_full is not None
+            and "x_mean" in names
+            and "y_mean" in names
+        ):
+            i_x = names.index("x_mean")
+            i_y = names.index("y_mean")
+            cov_xy = np.array(
+                [
+                    [param_cov_full[i_x, i_x], param_cov_full[i_x, i_y]],
+                    [param_cov_full[i_y, i_x], param_cov_full[i_y, i_y]],
+                ]
+            )
+        else:
+            cov_xy = None
+        return cov_xy, names
+
+    fitter = fitting.LevMarLSQFitter(calc_uncertainties=True)
     par = fitter(g_init, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask])
     model = par(xx, yy)
+    param_cov_xy, param_names = _extract_param_cov_xy(par)
 
     if plot:
         plt.imshow(cutout.data, origin="lower")
@@ -1155,6 +1188,7 @@ def fit_2d_gaussian(
         )
         par = fitter(g_init, xx[mask], yy[mask], cutout.data[mask])
         model = par(xx, yy)
+        param_cov_xy, param_names = _extract_param_cov_xy(par)
 
     # Cutout works with x first and y second
     xy_fit_position_orig = cutout.to_original_position(
@@ -1176,6 +1210,8 @@ def fit_2d_gaussian(
         "yx_fit_relative": yx_fit_relative,
         "mask": mask,
         "fwhm_area": fwhm_area,
+        "param_cov_xy": param_cov_xy,
+        "param_names": param_names,
     }
 
     return parameters
@@ -1204,22 +1240,27 @@ def fit_planet_parameters(
     fix_width=True,
     fix_orientation=True,
     plot=False,
+    phi_source=None,
 ):
+    """Fit A/B/C on the three detection images per the astrometry-uncertainty
+    spec:
 
-    contrast_image_parameters = fit_2d_gaussian(
-        detection_image[0],
-        yx_position=yx_position,
-        x_stddev=x_stddev,
-        y_stddev=y_stddev,
-        box_size=box_size,
-        mask_deviating=mask_deviating,
-        deviation_threshold=deviation_threshold,
-        fix_width=fix_width,
-        fix_orientation=fix_orientation,
-    )
+    - A: raw SNR image (``detection_image[2]``), fully free → authoritative
+      position, empirical widths ``x_fwhm_free``/``y_fwhm_free``, orientation
+      ``theta_free``, and LevMar centroid covariance.
+    - B: contrast image, position clamped to A's sub-pixel centroid → physical
+      contrast amplitude at the radially-unbiased location.
+    - C: norm-SNR image, position clamped to A → calibrated ``SNR_local`` at
+      A's centroid (used for the Cramér-Rao floor and validation).
 
+    Fixing B and C to A's centroid removes the radial-normalisation bias that a
+    free norm-SNR fit would suffer while keeping every downstream column. The
+    ``fix_width`` / ``fix_orientation`` arguments are retained for signature
+    compatibility but are ignored: Fit A is always free (that is the point of
+    the three-role setup).
+    """
+    # Fit A: raw SNR image, fully free.
     snr_image_parameters = fit_2d_gaussian(
-        # normalized_detection_image,
         detection_image[2],
         yx_position=yx_position,
         x_stddev=x_stddev,
@@ -1227,30 +1268,71 @@ def fit_planet_parameters(
         box_size=box_size,
         mask_deviating=mask_deviating,
         deviation_threshold=deviation_threshold,
-        fix_width=fix_width,
-        fix_orientation=fix_orientation,
+        fix_width=False,
+        fix_orientation=False,
+    )
+    fit_a_yx_orig = snr_image_parameters["yx_fit_position_orig"]
+    fit_a_start = (
+        int(round(fit_a_yx_orig[0])),
+        int(round(fit_a_yx_orig[1])),
     )
 
+    # Fit C: norm-SNR image, position clamped to Fit A, amplitude + widths free.
     norm_snr_image_parameters = fit_2d_gaussian(
         normalized_detection_image,
-        yx_position=yx_position,
+        yx_position=fit_a_start,
         x_stddev=x_stddev,
         y_stddev=y_stddev,
         box_size=box_size,
         mask_deviating=mask_deviating,
         deviation_threshold=deviation_threshold,
-        fix_width=fix_width,
-        fix_orientation=fix_orientation,
+        fix_width=False,
+        fix_orientation=False,
+        fixed_position=fit_a_yx_orig,
     )
 
-    contrast_image_results = summarize_2d_gauss_fit_result(contrast_image_parameters)
-    snr_image_results = summarize_2d_gauss_fit_result(snr_image_parameters)
-    norm_snr_image_results = summarize_2d_gauss_fit_result(norm_snr_image_parameters)
+    # Fit B: contrast image, position clamped to Fit A, amplitude + widths free.
+    contrast_image_parameters = fit_2d_gaussian(
+        detection_image[0],
+        yx_position=fit_a_start,
+        x_stddev=x_stddev,
+        y_stddev=y_stddev,
+        box_size=box_size,
+        mask_deviating=mask_deviating,
+        deviation_threshold=deviation_threshold,
+        fix_width=False,
+        fix_orientation=False,
+        fixed_position=fit_a_yx_orig,
+    )
 
-    # uncertainty_nearest = normalized_noise_map[int(yx_pos_absolute_snr[0]), int(yx_pos_absolute_snr[1])]
-    # snr_nearest = contrast / (uncertainty_nearest / 5)
+    snr_local_normalized = float(
+        norm_snr_image_parameters["parameters"].amplitude.value
+    )
 
-    # contrast = contrast_image_parameters['parameters'].amplitude.value  # fit_contrast(*xy_in_stamp)
+    if phi_source is None:
+        # Math-angle of the source vector (radial = +x at α=0), matching the
+        # (r, t) rotation convention in `_compute_rt_frame_sigmas` — not the
+        # astronomical position angle.
+        y_rel, x_rel = snr_image_parameters["yx_fit_relative"]
+        phi_source_local = float(np.arctan2(y_rel, x_rel))
+    else:
+        phi_source_local = float(phi_source)
+
+    contrast_image_results = summarize_2d_gauss_fit_result(
+        contrast_image_parameters,
+        phi_source=phi_source_local,
+        snr_local_normalized=snr_local_normalized,
+    )
+    snr_image_results = summarize_2d_gauss_fit_result(
+        snr_image_parameters,
+        phi_source=phi_source_local,
+        snr_local_normalized=snr_local_normalized,
+    )
+    norm_snr_image_results = summarize_2d_gauss_fit_result(
+        norm_snr_image_parameters,
+        phi_source=phi_source_local,
+        snr_local_normalized=snr_local_normalized,
+    )
 
     if plot:
         plot_model_and_data(
@@ -1263,7 +1345,90 @@ def fit_planet_parameters(
     return contrast_image_results, snr_image_results, norm_snr_image_results
 
 
-def summarize_2d_gauss_fit_result(result_dictionary):
+def _compute_rt_frame_sigmas(
+    x_fwhm_free,
+    y_fwhm_free,
+    theta_free,
+    phi_source,
+    param_cov_xy,
+    snr_local_normalized,
+    eps_snr=1.0,
+):
+    """Compute source-aligned (radial, tangential) statistical σ per Section 3
+    of the astrometry-uncertainty spec.
+
+    Parameters
+    ----------
+    x_fwhm_free, y_fwhm_free : float
+        Empirical FWHMs from a free 2D Gaussian fit on the SNR image, in pixels.
+    theta_free : float
+        Fitted orientation, radians (astropy Gaussian2D convention).
+    phi_source : float
+        Source-star direction in the fit frame, radians (as computed at fit
+        init in `fit_2d_gaussian`).
+    param_cov_xy : ndarray or None
+        2×2 LevMar covariance of the centroid (x_mean, y_mean), or None if the
+        fit's covariance was unavailable/singular.
+    snr_local_normalized : float
+        Calibrated SNR at the source position (amplitude of a norm-SNR fit).
+    eps_snr : float
+        Floor on SNR to avoid division by zero.
+
+    Returns
+    -------
+    dict with keys sigma_r_stat, sigma_t_stat, rho_rt, sigma_r_fit,
+    sigma_t_fit, sigma_r_cr, sigma_t_cr. All in pixels.
+    """
+    sigma_x_free = x_fwhm_free / 2.355
+    sigma_y_free = y_fwhm_free / 2.355
+    delta = theta_free - phi_source
+    cos_d, sin_d = np.cos(delta), np.sin(delta)
+    sigma_psf_r = np.sqrt((sigma_x_free * cos_d) ** 2 + (sigma_y_free * sin_d) ** 2)
+    sigma_psf_t = np.sqrt((sigma_x_free * sin_d) ** 2 + (sigma_y_free * cos_d) ** 2)
+
+    snr_eff = max(snr_local_normalized, eps_snr)
+    sigma_r_cr = sigma_psf_r / snr_eff
+    sigma_t_cr = sigma_psf_t / snr_eff
+
+    if param_cov_xy is not None and np.all(np.isfinite(param_cov_xy)):
+        cos_p, sin_p = np.cos(phi_source), np.sin(phi_source)
+        R = np.array([[cos_p, -sin_p], [sin_p, cos_p]])
+        c_rt = R.T @ param_cov_xy @ R
+        var_r, var_t = c_rt[0, 0], c_rt[1, 1]
+        if var_r > 0 and var_t > 0:
+            sigma_r_fit = np.sqrt(var_r)
+            sigma_t_fit = np.sqrt(var_t)
+            rho_rt_fit = c_rt[0, 1] / (sigma_r_fit * sigma_t_fit)
+        else:
+            sigma_r_fit = np.nan
+            sigma_t_fit = np.nan
+            rho_rt_fit = np.nan
+    else:
+        sigma_r_fit = np.nan
+        sigma_t_fit = np.nan
+        rho_rt_fit = np.nan
+
+    sigma_r_stat = sigma_r_cr if np.isnan(sigma_r_fit) else max(sigma_r_fit, sigma_r_cr)
+    sigma_t_stat = sigma_t_cr if np.isnan(sigma_t_fit) else max(sigma_t_fit, sigma_t_cr)
+
+    from_fit_r = (not np.isnan(sigma_r_fit)) and sigma_r_fit >= sigma_r_cr
+    from_fit_t = (not np.isnan(sigma_t_fit)) and sigma_t_fit >= sigma_t_cr
+    rho_rt = rho_rt_fit if (from_fit_r and from_fit_t) else 0.0
+
+    return {
+        "sigma_r_stat": sigma_r_stat,
+        "sigma_t_stat": sigma_t_stat,
+        "rho_rt": rho_rt,
+        "sigma_r_fit": sigma_r_fit,
+        "sigma_t_fit": sigma_t_fit,
+        "sigma_r_cr": sigma_r_cr,
+        "sigma_t_cr": sigma_t_cr,
+    }
+
+
+def summarize_2d_gauss_fit_result(
+    result_dictionary, phi_source=None, snr_local_normalized=None
+):
     fitted_parameters = {
         "x": [],
         "y": [],
@@ -1306,8 +1471,385 @@ def summarize_2d_gauss_fit_result(result_dictionary):
     fitted_parameters["good_fraction"].append(
         np.sum(result_dictionary["mask"]) / result_dictionary["fwhm_area"]
     )
+
+    rt = _compute_rt_frame_sigmas(
+        x_fwhm_free=result_dictionary["parameters"].x_stddev.value * 2.355,
+        y_fwhm_free=result_dictionary["parameters"].y_stddev.value * 2.355,
+        theta_free=result_dictionary["parameters"].theta.value,
+        phi_source=(0.0 if phi_source is None else phi_source),
+        param_cov_xy=result_dictionary.get("param_cov_xy", None),
+        snr_local_normalized=(
+            np.nan if snr_local_normalized is None else snr_local_normalized
+        ),
+    )
+    fitted_parameters["radial_sigma_stat"] = [rt["sigma_r_stat"]]
+    fitted_parameters["tangential_sigma_stat"] = [rt["sigma_t_stat"]]
+    fitted_parameters["rt_corr_stat"] = [rt["rho_rt"]]
+    fitted_parameters["radial_sigma_fit"] = [rt["sigma_r_fit"]]
+    fitted_parameters["tangential_sigma_fit"] = [rt["sigma_t_fit"]]
+    fitted_parameters["radial_sigma_cr"] = [rt["sigma_r_cr"]]
+    fitted_parameters["tangential_sigma_cr"] = [rt["sigma_t_cr"]]
+
     fitted_parameters = pd.DataFrame(fitted_parameters)
     return fitted_parameters
+
+
+def _combine_channels_rt_frame(
+    group_rows, search_radius, snr_values=None, independent_channels=False
+):
+    """Inverse-variance combination of per-channel (r, t) σ with a PDG scale
+    factor, per Section 4 of the astrometry-uncertainty spec.
+
+    ``group_rows`` is a DataFrame with one row per channel that detected this
+    candidate (already grouped upstream). Position and σ columns are combined;
+    all other columns are copied from the highest-SNR channel so the resulting
+    headline row is internally consistent (shape params, good-fraction, etc.).
+    ``snr_values`` optionally supplies the per-row ranking SNR (calibrated
+    norm-SNR amplitude); when omitted the raw-SNR fit ``amplitude`` is used.
+
+    ``independent_channels`` controls whether the formal ``1/Σ(1/σ²)`` shrinkage
+    is trusted. Speckle residuals are strongly correlated between neighbouring
+    wavelength channels — on 51 Eri IFS the 37-channel template collapse reaches
+    a *lower* normalised SNR than its single best channel, i.e. the multiplex
+    gain is ~0 — so combining channels as if independent understates σ by up to
+    √n. With the default ``False`` the combined σ is floored at the best
+    contributing channel's σ, which is the most that can be claimed without
+    demonstrating independence. χ²_red ≪ 1 in the returned diagnostics is the
+    signature of correlated inputs.
+
+    Returns a single-row DataFrame with the combined position, σ columns, and
+    χ²_red diagnostics.
+    """
+    group_rows = group_rows.reset_index(drop=True)
+    n = len(group_rows)
+
+    x_rel = group_rows["x_relative"].values.astype(float)
+    y_rel = group_rows["y_relative"].values.astype(float)
+    sigma_r = group_rows["radial_sigma_stat"].values.astype(float)
+    sigma_t = group_rows["tangential_sigma_stat"].values.astype(float)
+    # Rotation uses the math-angle of the source vector (radial = +x at α=0),
+    # matching the (r, t) convention in `_compute_rt_frame_sigmas`. The
+    # astronomical position_angle is emitted separately for output.
+    alpha = np.arctan2(y_rel, x_rel)
+
+    if snr_values is None:
+        snr_values = group_rows["amplitude"].values.astype(float)
+    else:
+        snr_values = np.asarray(snr_values, dtype=float)
+    donor = int(np.nanargmax(snr_values))
+
+    # Weighted mean position in (x, y): weights use the tighter (tangential)
+    # axis, combining per-channel frames that differ only slightly in angle.
+    w = 1.0 / np.maximum(sigma_t**2, 1e-12)
+    x_bar = float(np.sum(w * x_rel) / np.sum(w))
+    y_bar = float(np.sum(w * y_rel) / np.sum(w))
+    sep_bar = float(np.hypot(x_bar, y_bar))
+    alpha_bar = float(np.arctan2(y_bar, x_bar))
+    pa_bar = float(np.degrees(np.arctan2(-x_bar, y_bar)) % 360.0)
+
+    cos_p, sin_p = np.cos(alpha_bar), np.sin(alpha_bar)
+    R = np.array([[cos_p, -sin_p], [sin_p, cos_p]])
+
+    # Rotate each channel's (r, t) covariance into the combined (r, t) frame.
+    var_r_list, var_t_list = [], []
+    for k in range(n):
+        c_rt_k = np.diag([sigma_r[k] ** 2, sigma_t[k] ** 2])
+        cos_k, sin_k = np.cos(alpha[k]), np.sin(alpha[k])
+        R_k = np.array([[cos_k, -sin_k], [sin_k, cos_k]])
+        c_xy_k = R_k @ c_rt_k @ R_k.T
+        c_rt_bar_k = R.T @ c_xy_k @ R
+        var_r_list.append(c_rt_bar_k[0, 0])
+        var_t_list.append(c_rt_bar_k[1, 1])
+    var_r_arr = np.array(var_r_list)
+    var_t_arr = np.array(var_t_list)
+
+    w_r = 1.0 / np.maximum(var_r_arr, 1e-12)
+    w_t = 1.0 / np.maximum(var_t_arr, 1e-12)
+    var_r_formal = 1.0 / np.sum(w_r)
+    var_t_formal = 1.0 / np.sum(w_t)
+
+    dx = x_rel - x_bar
+    dy = y_rel - y_bar
+    dr_k = dx * cos_p + dy * sin_p
+    dt_k = -dx * sin_p + dy * cos_p
+
+    if n > 1:
+        chi2_red_r = float(np.sum(w_r * dr_k**2) / (n - 1))
+        chi2_red_t = float(np.sum(w_t * dt_k**2) / (n - 1))
+        scale_r = max(1.0, np.sqrt(chi2_red_r))
+        scale_t = max(1.0, np.sqrt(chi2_red_t))
+    else:
+        chi2_red_r = np.nan
+        chi2_red_t = np.nan
+        scale_r = 1.0
+        scale_t = 1.0
+
+    sigma_r_combined = np.sqrt(var_r_formal) * scale_r
+    sigma_t_combined = np.sqrt(var_t_formal) * scale_t
+
+    if not independent_channels:
+        sigma_r_combined = max(sigma_r_combined, float(np.sqrt(np.min(var_r_arr))))
+        sigma_t_combined = max(sigma_t_combined, float(np.sqrt(np.min(var_t_arr))))
+
+    c_rt_combined = np.array(
+        [[sigma_r_combined**2, 0.0], [0.0, sigma_t_combined**2]]
+    )
+    c_xy_combined = R @ c_rt_combined @ R.T
+    sigma_x_combined = float(np.sqrt(c_xy_combined[0, 0]))
+    sigma_y_combined = float(np.sqrt(c_xy_combined[1, 1]))
+    rho_xy_combined = float(
+        c_xy_combined[0, 1] / (sigma_x_combined * sigma_y_combined)
+    )
+
+    row = group_rows.iloc[[donor]].copy()
+    # Recompute the absolute position from the donor's own image center offset.
+    x_center_abs = float(group_rows["x"].values[donor] - x_rel[donor])
+    y_center_abs = float(group_rows["y"].values[donor] - y_rel[donor])
+    row["x"] = x_center_abs + x_bar
+    row["y"] = y_center_abs + y_bar
+    row["x_relative"] = x_bar
+    row["y_relative"] = y_bar
+    row["separation"] = sep_bar
+    row["position_angle"] = pa_bar
+    row["radial_sigma_stat"] = sigma_r_combined
+    row["tangential_sigma_stat"] = sigma_t_combined
+    row["separation_sigma"] = sigma_r_combined
+    row["position_angle_sigma"] = float(
+        np.degrees(sigma_t_combined / max(sep_bar, 1e-6))
+    )
+    row["x_relative_sigma"] = sigma_x_combined
+    row["y_relative_sigma"] = sigma_y_combined
+    row["xy_relative_corr"] = rho_xy_combined
+    row["chi2_red_radial"] = chi2_red_r
+    row["chi2_red_tangential"] = chi2_red_t
+    row["channels_above_threshold"] = n
+    return row
+
+
+def _template_output_filenames(template_name):
+    """Per-template products written only when a template yields a candidate."""
+    return [
+        f"companion_table_{template_name}.csv",
+        f"validated_companion_table_{template_name}.csv",
+        f"validated_companion_table_short_{template_name}.csv",
+        f"companion_spectra_{template_name}.pdf",
+        f"contrast_plot_{template_name}.pdf",
+        f"contrast_plot_{template_name}.png",
+    ]
+
+
+def _overall_output_filenames(prefix):
+    """Cross-template products written only when at least one template detects."""
+    return [
+        f"overall_{prefix}companion_detections.csv",
+        f"overall_{prefix}companion_detections_spectra.csv",
+    ]
+
+
+def _remove_stale_outputs(output_dir, filenames):
+    """Delete `filenames` so a run can only leave behind its own products.
+
+    The writes for these files sit on the success path alone: a template that
+    finds no candidate takes an early exit, and a crash in the spectra extraction
+    aborts before them. Either way the previous run's copies survive next to this
+    run's freshly written detection maps and are indistinguishable from current
+    results. Removing up front rather than on the failure branches also covers
+    exceptions. Absence is the unambiguous signal for "this run found nothing";
+    an empty table would not separate that from "never ran".
+    """
+    for filename in filenames:
+        try:
+            os.remove(os.path.join(output_dir, filename))
+        except FileNotFoundError:
+            pass
+
+
+def _combine_templates_best_snr(per_template_tables, search_radius):
+    """Cross-template combination per Section 5 of the astrometry-uncertainty
+    spec. Each element of ``per_template_tables`` is one template's companion
+    table (one row per candidate *per wavelength*). Sources are grouped across
+    templates within ``search_radius`` in (x_relative, y_relative); the headline
+    per source is the highest-SNR template's row set.
+
+    Templates share the same pixel-noise realisation, so σ is *not* combined in
+    quadrature. Instead the winning template's every-wavelength rows are kept
+    verbatim (preserving the spectrum) and the across-template scatter is
+    reported in separate ``*_sigma_template_scatter`` columns, with a boolean
+    ``astrometry_template_disagreement`` flag.
+    """
+    tables = [t for t in per_template_tables if t is not None and not t.empty]
+    if not tables:
+        return pd.DataFrame()
+
+    # One representative row per (template, candidate) drives grouping and the
+    # best-SNR choice; the full wavelength rows are re-fetched for the winner.
+    reps = []
+    for table_index, table in enumerate(tables):
+        if "candidate_id" in table.columns:
+            for _, grp in table.groupby("candidate_id"):
+                rep = grp.sort_values("wavelength_index").iloc[[0]].copy()
+                rep["_table_index"] = table_index
+                reps.append(rep)
+        else:
+            rep = table.iloc[[0]].copy()
+            rep["_table_index"] = table_index
+            reps.append(rep)
+    reps = pd.concat(reps, ignore_index=True)
+
+    positions = reps[["x_relative", "y_relative"]].values.astype(float)
+    used = np.zeros(len(reps), dtype=bool)
+    output_rows = []
+    for i in range(len(reps)):
+        if used[i]:
+            continue
+        dist = np.linalg.norm(positions - positions[i], axis=1)
+        group_mask = (dist < search_radius) & (~used)
+        used[group_mask] = True
+        group = reps[group_mask]
+
+        best_pos = int(np.nanargmax(group["norm_snr_fit_free"].values))
+        best_rep = group.iloc[best_pos]
+        best_table = tables[int(best_rep["_table_index"])]
+        best_template_name = best_rep["template_name"]
+
+        if "candidate_id" in best_rep.index:
+            best_candidate_id = best_rep["candidate_id"]
+            winner_rows = best_table[
+                best_table["candidate_id"] == best_candidate_id
+            ].copy()
+        else:
+            winner_rows = best_table.copy()
+
+        n = len(group)
+        if n >= 2:
+            scatter_x = float(group["x_relative"].std(ddof=1))
+            scatter_y = float(group["y_relative"].std(ddof=1))
+            scatter_sep = float(group["separation"].std(ddof=1))
+            scatter_pa = float(group["position_angle"].std(ddof=1))
+        else:
+            scatter_x = np.nan
+            scatter_y = np.nan
+            scatter_sep = np.nan
+            scatter_pa = np.nan
+
+        winner_rows["best_template"] = best_template_name
+        winner_rows["n_templates_above_threshold"] = int(n)
+        winner_rows["x_relative_sigma_template_scatter"] = scatter_x
+        winner_rows["y_relative_sigma_template_scatter"] = scatter_y
+        winner_rows["separation_sigma_template_scatter"] = scatter_sep
+        winner_rows["position_angle_sigma_template_scatter"] = scatter_pa
+
+        # Disagreement: template scatter exceeds 2× the headline σ on either
+        # axis (only defined for n ≥ 2).
+        if n >= 2:
+            headline_x = float(winner_rows["x_relative_sigma"].values[0])
+            headline_y = float(winner_rows["y_relative_sigma"].values[0])
+            disagree = (scatter_x > 2.0 * headline_x) or (scatter_y > 2.0 * headline_y)
+        else:
+            disagree = False
+        winner_rows["astrometry_template_disagreement"] = bool(disagree)
+        output_rows.append(winner_rows)
+
+    combined = pd.concat(output_rows, ignore_index=True)
+    combined = combined.drop(columns=["_table_index"], errors="ignore")
+    return combined.sort_values("separation", ignore_index=True)
+
+
+_PER_CHANNEL_OVERRIDE_COLS = [
+    "x",
+    "y",
+    "x_relative",
+    "y_relative",
+    "separation",
+    "position_angle",
+    "x_relative_sigma",
+    "y_relative_sigma",
+    "xy_relative_corr",
+    "separation_sigma",
+    "position_angle_sigma",
+    "radial_sigma_stat",
+    "tangential_sigma_stat",
+    "channels_above_threshold",
+]
+
+
+def _override_astrometry_from_per_channel(
+    overall_table,
+    per_channel_table,
+    search_radius,
+    n_channels_total=None,
+    min_channel_fraction=0.5,
+):
+    """Make per-channel astrometry the reported position/σ of each source, when
+    it rests on enough of the data to be an improvement.
+
+    The spectral collapse maximises detection SNR, not astrometric accuracy: it
+    folds in channels with no signal at the source, whose speckle structure
+    biases the centroid. On 51 Eri **IRDIS** (2 channels) that is a real defect —
+    the collapse sits ~9 mas / 2.6σ off GRAVITY because the signal-free K2
+    channel carries a large weight, while the single detected channel (K1) is
+    within 0.7 mas.
+
+    That reasoning does **not** extend to a many-channel IFS cube, and applying
+    it there makes the astrometry worse. On 51 Eri IFS only 2 of 37 channels
+    clear ``candidate_threshold``, so the "cleaner" position discards ~95% of the
+    signal (including the entire J-band peak) and is selected by the very noise
+    that promoted those channels above threshold; the collapse, where signal-free
+    channels get low template weight and their speckle contributions average
+    down, lands 4.4 mas closer to GRAVITY.
+
+    The override therefore requires the contributing channels to be at least
+    ``min_channel_fraction`` of ``n_channels_total``. A 2-channel DBI detection
+    in one channel (0.5) passes; 2 of 37 IFS channels (0.054) does not, and the
+    collapse is kept (``astrometry_source == "collapse"``). Passing
+    ``n_channels_total=None`` disables the gate. Detection significance, spectrum
+    and template diagnostics are left untouched either way, and
+    ``per_channel_astrometry.csv`` is still written for inspection.
+    """
+    out = overall_table.copy()
+    out["astrometry_source"] = "collapse"
+    if per_channel_table is None or len(per_channel_table) == 0:
+        return out
+
+    pc = per_channel_table.reset_index(drop=True)
+    pc_pos = pc[["x_relative", "y_relative"]].values.astype(float)
+    cols = [c for c in _PER_CHANNEL_OVERRIDE_COLS if c in pc.columns and c in out.columns]
+
+    min_channels = None
+    if n_channels_total is not None and "channels_above_threshold" in pc.columns:
+        min_channels = min_channel_fraction * float(n_channels_total)
+
+    if "candidate_id" in out.columns:
+        groups = list(out.groupby("candidate_id").groups.values())
+    else:
+        groups = [out.index]
+
+    for idx in groups:
+        rep = out.loc[idx[0]]
+        dist = np.hypot(
+            pc_pos[:, 0] - float(rep["x_relative"]),
+            pc_pos[:, 1] - float(rep["y_relative"]),
+        )
+        j = int(np.argmin(dist))
+        if dist[j] > search_radius:
+            continue
+        if min_channels is not None:
+            n_used = float(pc.iloc[j]["channels_above_threshold"])
+            if n_used < min_channels:
+                logger.info(
+                    "Per-channel astrometry uses %g of %g channels (< %.0f%% of "
+                    "them); keeping the template-collapse position. The "
+                    "per-channel measurement is still written to "
+                    "per_channel_astrometry.csv.",
+                    n_used,
+                    float(n_channels_total),
+                    100 * min_channel_fraction,
+                )
+                continue
+        for c in cols:
+            out.loc[idx, c] = pc.iloc[j][c]
+        out.loc[idx, "astrometry_source"] = "per_channel"
+    return out
 
 
 class DetectionAnalysis(object):
@@ -1338,9 +1880,9 @@ class DetectionAnalysis(object):
             Wavelength indices for the analysis.
         instrument : Instrument, optional
             Instrument object containing observational parameters.
-        reduction_parameters : Reduction_parameters or TrapConfig, optional
-            Reduction parameters object. Can be either legacy Reduction_parameters
-            or modern TrapConfig object.
+        reduction_parameters : TrapReductionConfig or TrapConfig, optional
+            Reduction configuration; a TrapConfig is reduced to its
+            ``reduction`` sub-config.
         """
 
         self.detection_images = detection_images
@@ -1386,9 +1928,8 @@ class DetectionAnalysis(object):
             Whether to read correlated residual outputs. Default is False.
         read_parameters : bool, optional
             Whether to read parameters from saved files. Default is True.
-        reduction_parameters : Reduction_parameters or TrapConfig, optional
-            Reduction parameters object. Can be either legacy Reduction_parameters
-            or modern TrapConfig. Only used if read_parameters=False.
+        reduction_parameters : TrapReductionConfig or TrapConfig, optional
+            Reduction configuration. Only used if read_parameters=False.
         instrument : Instrument, optional
             Instrument object. Only used if read_parameters=False.
         """
@@ -1405,11 +1946,14 @@ class DetectionAnalysis(object):
 
         if read_parameters:
             config_path = os.path.join(result_folder, "reduction_config.obj")
-            legacy_path = os.path.join(result_folder, "reduction_parameters.obj")
-            if os.path.exists(config_path):
-                self.reduction_parameters = load_object(config_path)
-            else:
-                self.reduction_parameters = _to_reduction_config(load_object(legacy_path))
+            if not os.path.exists(config_path):
+                raise FileNotFoundError(
+                    f"No 'reduction_config.obj' in {result_folder}. Reductions produced by "
+                    "TRAP < 2.0 only wrote 'reduction_parameters.obj', holding the removed "
+                    "Reduction_parameters object. Re-run the reduction, or pass the config "
+                    "explicitly with read_parameters=False."
+                )
+            self.reduction_parameters = load_object(config_path)
         else:
             if reduction_parameters is not None and instrument is not None:
                 self.reduction_parameters = _to_reduction_config(reduction_parameters)
@@ -1475,12 +2019,14 @@ class DetectionAnalysis(object):
             + ".jpg",
         )
 
-        if not os.path.exists(self.file_paths["detection_image_path"]):
-            fits.writeto(
-                self.file_paths["detection_image_path"],
-                self.detection_cube,
-                overwrite=True,
-            )
+        # Derived from the per-wavelength files just read, so it has to be
+        # rewritten every time: guarding on existence froze it at whatever the
+        # first run produced, and no overwrite/force path reached it afterwards.
+        fits.writeto(
+            self.file_paths["detection_image_path"],
+            self.detection_cube,
+            overwrite=True,
+        )
 
     def contrast_table_and_normalization(
         self,
@@ -1959,6 +2505,19 @@ class DetectionAnalysis(object):
                 inplace=False,
             )
 
+            # Seed the fit widths from the instrument PSF at this wavelength
+            # instead of the hardcoded IRDIS-H defaults; Fit A is free, so this
+            # only sets the initial guess (spec "Files touched", fit_2d_gaussian).
+            instrument = getattr(self, "instrument", None)
+            if instrument is not None and getattr(instrument, "fwhm", None) is not None:
+                fwhm_seed = instrument.fwhm[wavelength_index]
+                fwhm_seed = float(getattr(fwhm_seed, "value", fwhm_seed))
+                x_stddev_seed = fwhm_seed / 2.355
+                y_stddev_seed = fwhm_seed / 2.355
+            else:
+                x_stddev_seed = x_stddev
+                y_stddev_seed = y_stddev
+
             (
                 contrast_image_result,
                 snr_image_result,
@@ -1971,92 +2530,31 @@ class DetectionAnalysis(object):
                 ][0],
                 contrast_table=detection_products["contrast_tables"][0],
                 yx_position=candidates[["y", "x"]].values[candidate_idx],
-                x_stddev=x_stddev,
-                y_stddev=y_stddev,
+                x_stddev=x_stddev_seed,
+                y_stddev=y_stddev_seed,
                 box_size=box_size,
                 mask_deviating=mask_deviating,
                 deviation_threshold=deviation_threshold,
-                fix_width=True,
-                fix_orientation=True,
                 plot=plot,
             )
 
-            (
-                contrast_image_result_free,
-                snr_image_result_free,
-                norm_snr_image_result_free,
-            ) = fit_planet_parameters(
-                detection_image=detection_cube[detection_product_index],
-                # uncertainty_image=detection_products['uncertainty_cube'][0],
-                normalized_detection_image=detection_products[
-                    "normalized_detection_cube"
-                ][0],
-                contrast_table=detection_products["contrast_tables"][0],
-                yx_position=candidates[["y", "x"]].values[candidate_idx],
-                x_stddev=x_stddev,
-                y_stddev=y_stddev,
-                box_size=box_size,
-                mask_deviating=mask_deviating,
-                deviation_threshold=deviation_threshold,
-                fix_width=False,
-                fix_orientation=False,
-                plot=plot,
-            )
-
-            contrast_image_result = pd.merge(
+            # Fit A is already a free fit, so the "_free" columns downstream
+            # code reads are just the same quantities under the new setup.
+            for image_result in (
                 contrast_image_result,
-                contrast_image_result_free[
-                    [
-                        "amplitude",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                    ]
-                ],
-                left_index=True,
-                right_index=True,
-                how="left",
-                suffixes=[None, "_free"],
-            )
-            snr_image_result = pd.merge(
                 snr_image_result,
-                snr_image_result_free[
-                    [
-                        "amplitude",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                    ]
-                ],
-                left_index=True,
-                right_index=True,
-                how="left",
-                suffixes=[None, "_free"],
-            )
-            norm_snr_image_result = pd.merge(
                 norm_snr_image_result,
-                norm_snr_image_result_free[
-                    [
-                        "amplitude",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                    ]
-                ],
-                left_index=True,
-                right_index=True,
-                how="left",
-                suffixes=[None, "_free"],
-            )
+            ):
+                for col in (
+                    "amplitude",
+                    "x_fwhm",
+                    "y_fwhm",
+                    "theta",
+                    "good_pixels",
+                    "fwhm_area",
+                    "good_fraction",
+                ):
+                    image_result[f"{col}_free"] = image_result[col]
 
             contrast_image_result.insert(
                 loc=0, column="candidate_index", value=np.array([candidate_idx])
@@ -2138,6 +2636,7 @@ class DetectionAnalysis(object):
         candidate_threshold=4.75,
         search_radius=15,
         mask_deviating=False,
+        independent_channels=False,
     ):
         """
         Consolidate candidate detections with 2D Gaussian fitting and duplicate removal.
@@ -2259,210 +2758,58 @@ class DetectionAnalysis(object):
             plot=False,
         )
         
-        unique_candidate_indices = []
-        rejected = []
-        final_position_table = []
-        weighted_average_key_list = [
-            "x",
-            "y",
-            "x_relative",
-            "y_relative",
-            "separation",
-            "position_angle",
-            "x_fwhm",
-            "y_fwhm",
-            "theta",
-            "good_pixels",
-            "fwhm_area",
-            "good_fraction",
-            "x_fwhm_free",
-            "y_fwhm_free",
-            "theta_free",
-            "good_pixels_free",
-            "fwhm_area_free",
-            "good_fraction_free",
-        ]
-        for idx in range(len(candidates)):
-            pos1 = (
-                candidates_fit["snr_image"]
-                .iloc[idx][["x_relative", "y_relative"]]
-                .values
-            )
-            pos2 = candidates_fit["snr_image"][["x_relative", "y_relative"]].values
-            dist = linalg.norm(pos1 - pos2, axis=1)
-
-            mask = dist < search_radius
-            if np.sum(mask) == 1:
-                unique_candidate_indices.append(idx)
-                # If candidate is only detected in one channel, uncertainty is NaN
-                entry = (
-                    candidates_fit["snr_image"]
-                    .iloc[idx][weighted_average_key_list]
-                    .to_frame()
-                    .T
-                )
-                entry.insert(loc=3, column="x_relative_sigma", value=np.nan)
-                entry.insert(loc=5, column="y_relative_sigma", value=np.nan)
-                entry.insert(loc=7, column="separation_sigma", value=np.nan)
-                entry.insert(loc=9, column="position_angle_sigma", value=np.nan)
-                entry.insert(
-                    loc=10, column="channels_above_threshold", value=np.array([1])
-                )
-                final_position_table.append(entry)
-            else:
-                # Find wavelength with highest SNR
-                if idx not in unique_candidate_indices and idx not in rejected:
-                    # Perform weighted average of columns
-                    df = candidates_fit["snr_image"][mask]
-                    snr = candidates_fit["norm_snr_image"]["amplitude"][mask]
-                    df.insert(loc=0, column="snr", value=snr)
-                    df.insert(loc=1, column="group", value=np.ones(len(df)))
-
-                    # Sigma clipping for position
-                    # from astropy.stats import sigma_clip, mad_std
-                    # filtered_data1 = sigma_clip(df['separation'], sigma=3.5, maxiters=3,
-                    #                             cenfunc=np.median, stdfunc=mad_std)
-                    # filtered_data2 = sigma_clip(df['position_angle'], sigma=3.5,
-                    #                             maxiters=3, cenfunc=np.median, stdfunc=mad_std)
-
-                    # Make new data frame of average weighted by SNR
-                    def weighted_average(grp, weight_column="snr"):
-                        return (
-                            grp._get_numeric_data()
-                            .multiply(grp[weight_column], axis=0)
-                            .sum()
-                            / grp[weight_column].sum()
-                        )
-
-                    weighted_agg = df.groupby("group").apply(weighted_average, include_groups=False)
-                    weighted_agg = weighted_agg[weighted_average_key_list]
-
-                    # Compute uncertainty based on standard deviation
-                    std_dev_df = df.groupby("group").apply(np.std, axis=0, include_groups=False)
-                    weighted_agg.insert(
-                        loc=3,
-                        column="x_relative_sigma",
-                        value=std_dev_df["x_relative"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=5,
-                        column="y_relative_sigma",
-                        value=std_dev_df["y_relative"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=7,
-                        column="separation_sigma",
-                        value=std_dev_df["separation"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=9,
-                        column="position_angle_sigma",
-                        value=std_dev_df["position_angle"].values,
-                    )
-                    weighted_agg.insert(
-                        loc=10,
-                        column="channels_above_threshold",
-                        value=np.array([len(df)]),
-                    )
-
-                    # Get candidate id of channel with highest SNR
-                    temp_idx = np.nanargmax(
-                        candidates_fit["norm_snr_image"][mask]["amplitude"]
-                    )
-                    candidate_index = int(
-                        candidates_fit["snr_image"][mask].iloc[temp_idx][
-                            "candidate_index"
-                        ]
-                    )
-                    # Set in mask, such that it won't be used in next iteration
-                    mask[candidate_index] = False
-                    rejected = rejected + list(np.argwhere(mask)[:, 0])
-
-                    # Add to our final position table
-                    final_position_table_key_list = [
-                        "x",
-                        "y",
-                        "x_relative",
-                        "x_relative_sigma",
-                        "y_relative",
-                        "y_relative_sigma",
-                        "separation",
-                        "separation_sigma",
-                        "position_angle",
-                        "position_angle_sigma",
-                        "channels_above_threshold",
-                        "x_fwhm",
-                        "y_fwhm",
-                        "theta",
-                        "good_pixels",
-                        "fwhm_area",
-                        "good_fraction",
-                        "x_fwhm_free",
-                        "y_fwhm_free",
-                        "theta_free",
-                        "good_pixels_free",
-                        "fwhm_area_free",
-                        "good_fraction_free",
-                    ]
-                    if (
-                        candidate_index not in unique_candidate_indices
-                        and candidate_index not in rejected
-                    ):
-                        unique_candidate_indices.append(candidate_index)
-                        final_position_table.append(
-                            weighted_agg[final_position_table_key_list]
-                        )
-
-        final_position_table = pd.concat(final_position_table, ignore_index=True)
-
-        # Filter out duplicates from candidate table, only retain one row entry per candidate
-        candidates = candidates.iloc[unique_candidate_indices].sort_values("separation")
-        candidates_fit["contrast_image"] = (
-            candidates_fit["contrast_image"]
-            .iloc[unique_candidate_indices]
-            .sort_values("separation", ignore_index=True)
+        # Group per-wavelength detections of the same source (within
+        # search_radius) and combine them in the source-aligned (r, t) frame
+        # per Section 4 of the astrometry-uncertainty spec. Positional indexing
+        # throughout so a non-range candidate index never aliases a position.
+        snr_table = candidates_fit["snr_image"].reset_index(drop=True)
+        norm_amp = (
+            candidates_fit["norm_snr_image"]["amplitude"]
+            .reset_index(drop=True)
+            .values.astype(float)
         )
-        candidates_fit["snr_image"] = (
-            candidates_fit["snr_image"].iloc[unique_candidate_indices].reset_index()
+        positions = snr_table[["x_relative", "y_relative"]].values.astype(float)
+
+        assigned = np.zeros(len(snr_table), dtype=bool)
+        unique_candidate_indices = []
+        combined_rows = []
+        for idx in range(len(snr_table)):
+            if assigned[idx]:
+                continue
+            dist = linalg.norm(positions[idx] - positions, axis=1)
+            group_mask = (dist < search_radius) & (~assigned)
+            group_positions = np.where(group_mask)[0]
+            group_rows = snr_table.iloc[group_positions]
+            group_snr = norm_amp[group_positions]
+
+            combined = _combine_channels_rt_frame(
+                group_rows,
+                search_radius=search_radius,
+                snr_values=group_snr,
+                independent_channels=independent_channels,
+            )
+            # Keep the highest-SNR channel as the surviving row in the sibling
+            # (contrast / norm-SNR) tables.
+            keeper = int(group_positions[int(np.nanargmax(group_snr))])
+            unique_candidate_indices.append(keeper)
+            assigned[group_positions] = True
+            combined_rows.append(combined)
+
+        final_position_table = pd.concat(combined_rows, ignore_index=True)
+
+        # Order all tables consistently by the combined separation.
+        order = np.argsort(final_position_table["separation"].values, kind="stable")
+        final_position_table = final_position_table.iloc[order].reset_index(drop=True)
+        kept = [unique_candidate_indices[i] for i in order]
+
+        candidates = candidates.iloc[kept].reset_index(drop=True)
+        candidates_fit["contrast_image"] = (
+            candidates_fit["contrast_image"].iloc[kept].reset_index(drop=True)
         )
         candidates_fit["norm_snr_image"] = (
-            candidates_fit["norm_snr_image"]
-            .iloc[unique_candidate_indices]
-            .sort_values("separation", ignore_index=True)
+            candidates_fit["norm_snr_image"].iloc[kept].reset_index(drop=True)
         )
-
-        candidates_fit["snr_image"][weighted_average_key_list] = final_position_table[
-            weighted_average_key_list
-        ]
-        candidates_fit["snr_image"].insert(
-            loc=6,
-            column="x_relative_sigma",
-            value=final_position_table["x_relative_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=8,
-            column="y_relative_sigma",
-            value=final_position_table["y_relative_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=10,
-            column="separation_sigma",
-            value=final_position_table["separation_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=12,
-            column="position_angle_sigma",
-            value=final_position_table["position_angle_sigma"].values,
-        )
-        candidates_fit["snr_image"].insert(
-            loc=13,
-            column="channels_above_threshold",
-            value=final_position_table["channels_above_threshold"].values,
-        )
-
-        candidates_fit["snr_image"].sort_values(
-            "separation", ignore_index=True, inplace=True
-        )
+        candidates_fit["snr_image"] = final_position_table
 
         self.candidates = candidates
         self.candidates_fit = candidates_fit
@@ -2790,7 +3137,7 @@ class DetectionAnalysis(object):
             return None
 
         for candidate_index, yx_candidate_position in tqdm(enumerate(yx_candidate_positions)):
-            print("Running TRAP at candidate position: ", yx_candidate_position)
+            logger.info("Running TRAP at candidate position: %s", yx_candidate_position)
             candidate_spectrum = self.rereduce_single_position(
                 candidate_index=candidate_index,
                 yx_candidate_position=yx_candidate_position,
@@ -2946,6 +3293,9 @@ class DetectionAnalysis(object):
                 "separation_sigma",
                 "position_angle",
                 "position_angle_sigma",
+                "xy_relative_corr",
+                "radial_sigma_stat",
+                "tangential_sigma_stat",
                 "channels_above_threshold",
                 "theta_free",
                 "x_fwhm",
@@ -3083,9 +3433,7 @@ class DetectionAnalysis(object):
         try:
             database = Database()
         except:
-            print(
-                f"No initialized species database found in: {species_database_directory}"
-            )
+            logger.warning("No initialized species database found in: %s", species_database_directory)
             SpeciesInit()
             database = Database()
 
@@ -3640,14 +3988,15 @@ class DetectionAnalysis(object):
         >>> if analysis.templates['T-type'].validated_companion_table is not None:
         ...     print(f"Found {len(analysis.templates['T-type'].validated_companion_table)} candidates")
         """
+        # Both are used unconditionally further down, so they cannot stay inside
+        # the `file_paths is None` branch that used to define them.
+        template_name = template.name
+        output_dir_matching = os.path.join(
+            self.reduction_parameters.result_folder, "template_matching/"
+        )
+        os.makedirs(output_dir_matching, exist_ok=True)
         if file_paths is None:
-            template_name = template.name
             file_paths = {}
-            output_dir_matching = os.path.join(
-                self.reduction_parameters.result_folder, "template_matching/"
-            )
-            if not os.path.exists(output_dir_matching):
-                os.makedirs(output_dir_matching)
             file_paths["norm_detection_image_path"] = os.path.join(
                 output_dir_matching, f"normalized_detection_image_{template_name}.fits"
             )
@@ -3663,6 +4012,9 @@ class DetectionAnalysis(object):
             file_paths["contrast_plot_path"] = os.path.join(
                 output_dir_matching, f"contrast_plot_{template_name}"
             )
+        _remove_stale_outputs(
+            output_dir_matching, _template_output_filenames(template_name)
+        )
         wavelengths = self.instrument.wavelengths[self.wavelength_indices]
 
         detection_cube, detection_products = self.template_matching_detection(
@@ -3731,16 +4083,18 @@ class DetectionAnalysis(object):
             
             # Check if candidates survived the second iteration validation
             if candidates_fit_final is None or len(candidates_fit_final) == 0:
-                print("Warning: No candidates survived second iteration validation")
-                print("This typically occurs when initial detections were false positives")
-                print("that did not meet the criteria when background statistics were corrected.")
+                logger.warning(
+                    "No candidates survived second iteration validation. This typically occurs "
+                    "when initial detections were false positives that did not meet the criteria "
+                    "when background statistics were corrected."
+                )
                 template.companion_table = None
                 template.validated_companion_table = None
                 template.validated_companion_table_short = None
                 template.detection_products = detection_products
                 return
             
-            print("Extracting candidate spectra.")
+            logger.info("Extracting candidate spectra.")
             candidate_spectra = self.extract_candidate_spectra(
                 yx_candidate_positions=candidates_fit_final["snr_image"][
                     ["y_relative", "x_relative"]
@@ -3981,13 +4335,61 @@ class DetectionAnalysis(object):
             show=False,
         )
 
-    def combine_template_matched_companion_tables(self, search_radius=15, validated_only=True):
+    def measure_per_channel_astrometry(
+        self,
+        wavelength_indices=None,
+        candidate_threshold=4.75,
+        search_radius=15,
+        mask_deviating=False,
+        independent_channels=False,
+    ):
+        """Detect and fit the companion in each wavelength channel separately,
+        then combine the channels that individually clear ``candidate_threshold``
+        in the source-aligned (r, t) frame.
+
+        Template-independent — it runs on the per-channel detection maps
+        (`self.detection_cube`), so it is the astrometrically-clean alternative
+        to the spectral collapse used for detection. Returns the combined
+        per-source table (one row per source, `_combine_channels_rt_frame`
+        applied) or ``None`` when no channel yields a candidate above threshold.
+        """
+        if wavelength_indices is None:
+            wavelength_indices = self.wavelength_indices
+        candidates = self.find_candidates_all_wavelengths(
+            wavelength_indices=wavelength_indices,
+            candidate_threshold=candidate_threshold,
+            iterative_search_exclusion_radius=search_radius,
+        )
+        if candidates is None or len(candidates) == 0:
+            return None
+        _, candidates_fit = self.complete_candidate_table(
+            candidates=candidates,
+            wavelength_indices=wavelength_indices,
+            candidate_threshold=candidate_threshold,
+            search_radius=search_radius,
+            mask_deviating=mask_deviating,
+            independent_channels=independent_channels,
+        )
+        if candidates_fit is None:
+            return None
+        return candidates_fit["snr_image"]
+
+    def combine_template_matched_companion_tables(
+        self,
+        search_radius=15,
+        validated_only=True,
+        per_channel_min_channel_fraction=0.5,
+    ):
         """
         Combines the template-matched companion tables into a single table.
 
         Args:
             validated_only (bool, optional): If True, only combines the validated companion tables.
                 If False, combines all companion tables. Defaults to True.
+            per_channel_min_channel_fraction (float, optional): Minimum share of the
+                reduced wavelength channels that must individually clear the detection
+                threshold before the per-channel astrometry replaces the template-collapse
+                position. See `_override_astrometry_from_per_channel`. Defaults to 0.5.
         """
         
         output_dir_matching = os.path.join(
@@ -3998,136 +4400,99 @@ class DetectionAnalysis(object):
         else:
             prefix = ""
 
+        # The "no companion tables found" branch below writes nothing, so without
+        # this a run that detects nothing at all keeps the previous run's overall
+        # tables — which downstream reads as this run's result.
+        os.makedirs(output_dir_matching, exist_ok=True)
+        _remove_stale_outputs(output_dir_matching, _overall_output_filenames(prefix))
+
+        # Combine the in-memory per-template tables populated by
+        # match_all_templates in this run. Re-reading the per-template CSVs from
+        # disk would silently ingest a stale table from a previous run — a
+        # template that finds nothing this run keeps its old file — which
+        # contaminates the cross-template scatter diagnostics with detections
+        # from another run.
         combined_detection_products = []
         for key in self.templates:
-            try:
-                filename = os.path.join(
-                        output_dir_matching,
-                        f"{prefix}companion_table_{key}.csv",
-                    )
-                companion_table = pd.read_csv(filename)
-                # Only add non-empty DataFrames
-                if not companion_table.empty:
-                    combined_detection_products.append(companion_table)
-            except FileNotFoundError:
-                print(f"{filename} not found.")
+            template = self.templates[key]
+            companion_table = (
+                template.validated_companion_table
+                if validated_only
+                else template.companion_table
+            )
+            if companion_table is not None and not companion_table.empty:
+                combined_detection_products.append(companion_table)
 
         if combined_detection_products:  # Check if list is not empty
-            combined_companion_table = pd.concat(combined_detection_products, ignore_index=True)
-            unique_candidate_indices = []
-            final_x_positions = []
-            rejected = []
-            unique_x_relative, unique_indices = np.unique(
-                combined_companion_table["x_relative"], return_index=True
+            best_companion_matches = _combine_templates_best_snr(
+                per_template_tables=combined_detection_products,
+                search_radius=search_radius,
             )
-            for idx, _ in enumerate(unique_x_relative):
-                pos1 = (
-                    combined_companion_table.iloc[unique_indices]
-                    .iloc[idx][["x_relative", "y_relative"]]
-                    .values.astype("float64")
-                )
-                pos2 = combined_companion_table.iloc[unique_indices][["x_relative", "y_relative"]].values
-                dist = linalg.norm(pos1 - pos2, axis=1)
-                mask = dist < search_radius
-                if np.sum(mask) == 1:
-                    unique_candidate_indices.append(idx)
-                    final_x_positions.append(unique_x_relative[idx])
-                else:
-                    if idx not in unique_candidate_indices and idx not in rejected:
-                        temp_candidate_index = np.argmax(
-                            combined_companion_table.iloc[unique_indices][mask]["peak_pixel_snr"]
-                        )
-                        x_position = combined_companion_table.iloc[unique_indices][mask].iloc[
-                            temp_candidate_index
-                        ]["x_relative"]
-                        candidate_index = np.where(
-                            combined_companion_table.iloc[unique_indices]["x_relative"] == x_position
-                        )[0][0]
-                        mask[candidate_index] = False
-                        rejected = rejected + list(np.argwhere(mask)[:, 0])
-                        if (
-                            candidate_index not in unique_candidate_indices
-                            and candidate_index not in rejected
-                        ):
-                            unique_candidate_indices.append(candidate_index)
-                            final_x_positions.append(x_position)
 
-            best_companion_matches = combined_companion_table[
-                combined_companion_table["x_relative"].isin(final_x_positions)
-            ].sort_values("separation", ignore_index=True)
-
+            # Assign a stable candidate_id per unique source (ordered by separation).
             for idx, separation in enumerate(
                 np.unique(best_companion_matches["separation"])
             ):
                 mask = best_companion_matches["separation"] == separation
-                n = np.sum(mask)
+                n = int(np.sum(mask))
                 best_companion_matches.loc[mask, "candidate_id"] = np.array([idx]).repeat(n)
 
-            best_companion_matches_spectra = best_companion_matches[
-                [
-                    "candidate_id",
-                    "x",
-                    "y",
-                    "x_relative",
-                    "x_relative_sigma",
-                    "y_relative",
-                    "y_relative_sigma",
-                    "separation",
-                    "separation_sigma",
-                    "position_angle",
-                    "position_angle_sigma",
-                    # 'channels_above_threshold',
-                    "template_name",
-                    "norm_snr_fit_free",
-                    "peak_pixel_snr",
-                    "wavelength_index",
-                    "wavelength",
-                    "contrast",
-                    "uncertainty",
-                ]
-            ]
-
-            best_companion_matches_short = best_companion_matches[
-                best_companion_matches["wavelength_index"] == 0
-            ]
-            best_companion_matches_short = best_companion_matches_short[
-                [
-                    "candidate_id",
-                    "x",
-                    "y",
-                    "x_relative",
-                    "x_relative_sigma",
-                    "y_relative",
-                    "y_relative_sigma",
-                    "separation",
-                    "separation_sigma",
-                    "position_angle",
-                    "position_angle_sigma",
-                    # 'channels_above_threshold',
-                    "template_name",
-                    "norm_snr_fit_free",
-                    "peak_pixel_snr",
-                ]
-            ]
-            best_companion_matches_spectra = best_companion_matches_spectra.sort_values(
-                ["candidate_id", "wavelength"], ignore_index=True
+            # The template collapse is optimal for detection SNR, not astrometry.
+            # Where a source is detected in *enough* individual channels, its
+            # per-channel inverse-variance position/σ replaces the collapse position
+            # (which a signal-free channel can bias); the collapse remains as fallback.
+            wavelength_indices = getattr(self, "wavelength_indices", None)
+            n_channels_total = (
+                len(wavelength_indices) if wavelength_indices is not None else None
             )
+            best_companion_matches = _override_astrometry_from_per_channel(
+                best_companion_matches,
+                getattr(self, "per_channel_astrometry", None),
+                search_radius=search_radius,
+                n_channels_total=n_channels_total,
+                min_channel_fraction=per_channel_min_channel_fraction,
+            )
+
+            spectra_cols = [
+                "candidate_id", "x", "y",
+                "x_relative", "x_relative_sigma", "y_relative", "y_relative_sigma",
+                "xy_relative_corr", "separation", "separation_sigma",
+                "position_angle", "position_angle_sigma",
+                "radial_sigma_stat", "tangential_sigma_stat", "astrometry_source",
+                "template_name", "best_template", "n_templates_above_threshold",
+                "astrometry_template_disagreement",
+                "x_relative_sigma_template_scatter", "y_relative_sigma_template_scatter",
+                "separation_sigma_template_scatter", "position_angle_sigma_template_scatter",
+                "norm_snr_fit_free", "peak_pixel_snr",
+                "wavelength_index", "wavelength", "contrast", "uncertainty",
+            ]
+            spectra_present = [
+                c for c in spectra_cols if c in best_companion_matches.columns
+            ]
+            best_companion_matches_spectra = best_companion_matches[
+                spectra_present
+            ].sort_values(["candidate_id", "wavelength"], ignore_index=True)
+
+            per_wavelength = {"wavelength_index", "wavelength", "contrast", "uncertainty"}
+            short_cols = [c for c in spectra_present if c not in per_wavelength]
+            best_companion_matches_short = (
+                best_companion_matches[best_companion_matches["wavelength_index"] == 0][
+                    short_cols
+                ].sort_values(["candidate_id"], ignore_index=True)
+            )
+
             best_companion_matches_spectra.to_csv(
                 os.path.join(
                     output_dir_matching, f"overall_{prefix}companion_detections_spectra.csv"
                 ),
                 index=False,
             )
-
-            best_companion_matches_short = best_companion_matches_short.sort_values(
-                ["candidate_id"], ignore_index=True
-            )
             best_companion_matches_short.to_csv(
                 os.path.join(output_dir_matching, f"overall_{prefix}companion_detections.csv"),
                 index=False,
             )
         else:
-            print("No companion tables found.")
+            logger.warning("No companion tables found.")
 
 
     def detection_and_characterization(
@@ -4159,7 +4524,7 @@ class DetectionAnalysis(object):
             file_paths=self.file_paths
         )
 
-        print("Identifying and fitting potential candidates.")
+        logger.info("Identifying and fitting potential candidates.")
         candidates, candidates_fit = self.complete_candidate_table(
             wavelength_indices=None,
             candidate_threshold=candidate_threshold,
@@ -4174,7 +4539,7 @@ class DetectionAnalysis(object):
             plot_companions = False
         else:
             plot_companions = True
-            print("Extracting candidate spectra.")
+            logger.info("Extracting candidate spectra.")
             candidate_spectra = self.extract_candidate_spectra(
                 yx_candidate_positions=candidates_fit["snr_image"][
                     ["y_relative", "x_relative"]
@@ -4315,7 +4680,9 @@ class DetectionAnalysis(object):
         use_spectral_correlation=False,
         inner_mask_radius=1, search_radius=15, good_fraction_threshold=0.05,
         theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5],
-        save_initial_detection_products=True):
+        save_initial_detection_products=True,
+        per_channel_min_channel_fraction=0.5,
+        per_channel_independent_channels=False):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = _to_reduction_config(reduction_parameters)
@@ -4365,8 +4732,36 @@ class DetectionAnalysis(object):
         )
         
         self.plot_template_matched_contrasts()
-        self.combine_template_matched_companion_tables(search_radius=search_radius, validated_only=True)
-        self.combine_template_matched_companion_tables(search_radius=search_radius, validated_only=False)
+
+        # Per-channel astrometry (template-independent) drives the reported
+        # position/σ; the template collapse is optimal for detection SNR, not
+        # for astrometry. Measured once here and merged into both overall tables.
+        self.per_channel_astrometry = self.measure_per_channel_astrometry(
+            wavelength_indices=wavelength_indices,
+            candidate_threshold=candidate_threshold,
+            search_radius=search_radius,
+            independent_channels=per_channel_independent_channels,
+        )
+        if self.per_channel_astrometry is not None:
+            output_dir_matching = os.path.join(
+                self.reduction_parameters.result_folder, "template_matching/"
+            )
+            os.makedirs(output_dir_matching, exist_ok=True)
+            self.per_channel_astrometry.to_csv(
+                os.path.join(output_dir_matching, "per_channel_astrometry.csv"),
+                index=False,
+            )
+
+        self.combine_template_matched_companion_tables(
+            search_radius=search_radius,
+            validated_only=True,
+            per_channel_min_channel_fraction=per_channel_min_channel_fraction,
+        )
+        self.combine_template_matched_companion_tables(
+            search_radius=search_radius,
+            validated_only=False,
+            per_channel_min_channel_fraction=per_channel_min_channel_fraction,
+        )
 
         # spectrum = self.extract_candidate_spectra(
         #     temporal_components_fraction=temporal_components_fraction,

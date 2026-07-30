@@ -5,6 +5,10 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
 from photutils.aperture import CircularAnnulus
@@ -192,6 +196,164 @@ def make_annulus_mask_by_separation(separation, width, yx_dim, yx_center=None):
     return annulus_mask
 
 
+def scale_mask_about_center(mask, scale_factor, yx_center):
+    """Radially zoom a boolean mask by ``scale_factor`` about ``yx_center``.
+
+    Uses inverse mapping (each output pixel looks up its source pixel), so
+    magnified footprints stay hole-free. Used to project the reference-slice
+    speckle geometry onto another wavelength slice, where the speckle field
+    is zoomed by s = lambda_j / lambda_ref.
+    """
+    if scale_factor <= 0:
+        raise ValueError("scale_factor must be positive")
+    yy, xx = np.indices(mask.shape, dtype="float64")
+    y_source = np.round((yy - yx_center[0]) / scale_factor + yx_center[0]).astype(int)
+    x_source = np.round((xx - yx_center[1]) / scale_factor + yx_center[1]).astype(int)
+    valid = (y_source >= 0) & (y_source < mask.shape[0]) & (x_source >= 0) & (x_source < mask.shape[1])
+    scaled_mask = np.zeros_like(mask, dtype=bool)
+    scaled_mask[valid] = mask[y_source[valid], x_source[valid]]
+    return scaled_mask
+
+
+@dataclass(frozen=True)
+class MultiwavelengthRegressors:
+    """Context for cross-wavelength regressor enrichment of one reduced slice.
+
+    Travels (picklable) from the driver to the workers; ``data`` may be a
+    `trap.shared_arrays.SharedArrayRef` to the ``(n_lambda, y, x, t)`` cube
+    in the shared-array store, or a plain array on the serial path. All
+    per-slice arrays are aligned with ``wavelength_indices``.
+    """
+
+    data: Any
+    wavelength_indices: np.ndarray
+    scale_factors: np.ndarray
+    fwhm: np.ndarray
+    fwhm_reference: float
+    yx_centers: np.ndarray
+    bad_pixel_masks: Any
+    mode: str
+    max_regressor_pool_size: float
+    valid_pixel_masks: Any = None
+
+
+def make_multiwavelength_regressor_masks(
+    multiwavelength_regressors,
+    reduction_parameters,
+    yx_pixel,
+    yx_dim,
+    yx_center,
+    signal_mask,
+    n_reference_pixels,
+    known_companion_mask=None,
+    valid_pixel_masks=None,
+    rng=None,
+):
+    """Regressor-pixel masks in other wavelength slices for one tested position.
+
+    The speckle field of slice j is the reference slice's field zoomed by
+    ``s = lambda_j / lambda_ref`` about the star center, while astrophysical
+    sources stay static. Mode ``"pool"`` selects the full scaled annulus
+    (width also scaled by s, budget-capped); mode ``"occluded"`` keeps only
+    its intersection with the scaled reference-signal-mask footprint, i.e.
+    the speckles that occlude the tested position at the reference
+    wavelength (B is a subset of A). Mode ``"sdi"`` is like ``"occluded"``
+    but drops the reference-signal-mask exclusion — the scaled speckle
+    footprint at the tested position is admitted to the regressor pool.
+    This is the classic SDI trick: valid only when the donor channel is
+    assumed to carry little astrophysical flux at the tested position
+    (e.g. IRDIS K2 for methane/water-rich planets); on channels where the
+    source is bright it will self-subtract. ``"sdi"`` also drops the
+    ``known_companion_mask`` exclusion in donor slices — for a two-channel
+    dataset with the tested position on the known companion (as in a
+    forced-photometry / injection recovery run) the companion mask would
+    otherwise erase most of the very pixels this mode is meant to admit.
+    Bad-pixel exclusions still apply in ``"sdi"``.
+
+    In modes ``"pool"`` and ``"occluded"`` the *static* source position is
+    excluded with the reference signal track dilated to the slice's FWHM
+    plus a margin; the displacement-eligibility criterion
+    ``r >= fwhm_j / (s - 1)`` falls out of that test. Returns an
+    OrderedDict mapping slice index to boolean ``(y, x)`` mask; slices with
+    no eligible pixels are omitted.
+    """
+    context = multiwavelength_regressors
+    if valid_pixel_masks is None:
+        valid_pixel_masks = context.valid_pixel_masks
+    annulus_width = reduction_parameters.annulus_width
+    annulus_offset = reduction_parameters.annulus_offset
+    separation = np.sqrt((yx_pixel[0] - yx_center[0]) ** 2 + (yx_pixel[1] - yx_center[1]) ** 2) + annulus_offset
+
+    # slice index -> (pool_mask, occluded_mask, sdi_mask)
+    candidates = OrderedDict()
+    for i, slice_index in enumerate(context.wavelength_indices):
+        scale = float(context.scale_factors[i])
+        if np.isclose(scale, 1.0):
+            continue
+        yx_center_slice = context.yx_centers[i]
+        if annulus_width is None:
+            annulus_mask = np.ones(yx_dim, dtype=bool)
+        else:
+            annulus_mask = make_annulus_mask_by_separation(
+                separation=separation * scale, width=annulus_width * scale, yx_dim=yx_dim, yx_center=yx_center_slice
+            )
+        growth = int(np.ceil(max(context.fwhm[i] - context.fwhm_reference, 0.0) / 2.0)) + 1
+        # Additive exclusions. Bad pixels always apply. Known companions
+        # apply in "pool"/"occluded" (static across lambda, excluded at the
+        # same (y, x) in every donor). Static signal-track exclusion
+        # (dilated tested-position track) applies only in "pool"/"occluded".
+        bad_pixel_exclusion = np.zeros(yx_dim, dtype=bool)
+        if context.bad_pixel_masks is not None and context.bad_pixel_masks[i] is not None:
+            bad_pixel_exclusion = context.bad_pixel_masks[i]
+        companion_exclusion = np.zeros(yx_dim, dtype=bool)
+        if known_companion_mask is not None:
+            companion_exclusion = binary_dilation(known_companion_mask, iterations=growth)
+        signal_exclusion = binary_dilation(signal_mask, iterations=growth)
+        full_exclusion = np.logical_or(signal_exclusion, np.logical_or(companion_exclusion, bad_pixel_exclusion))
+        pool_mask = np.logical_and(annulus_mask, ~full_exclusion)
+        footprint = scale_mask_about_center(signal_mask, scale, yx_center_slice)
+        occluded_mask = np.logical_and(pool_mask, footprint)
+        sdi_mask = np.logical_and(np.logical_and(annulus_mask, ~bad_pixel_exclusion), footprint)
+        if valid_pixel_masks is not None and valid_pixel_masks[i] is not None:
+            slice_valid = valid_pixel_masks[i]
+            pool_mask = np.logical_and(pool_mask, slice_valid)
+            occluded_mask = np.logical_and(occluded_mask, slice_valid)
+            sdi_mask = np.logical_and(sdi_mask, slice_valid)
+        candidates[int(slice_index)] = (pool_mask, occluded_mask, sdi_mask)
+
+    masks = OrderedDict()
+    if context.mode == "occluded":
+        for slice_index, (_, occluded_mask, _) in candidates.items():
+            if np.any(occluded_mask):
+                masks[slice_index] = occluded_mask
+        return masks
+
+    if context.mode == "sdi":
+        for slice_index, (_, _, sdi_mask) in candidates.items():
+            if np.any(sdi_mask):
+                masks[slice_index] = sdi_mask
+        return masks
+
+    # Mode "pool": occluded pixels are always kept; the remaining annulus
+    # pixels share the enrichment budget (units of the single-lambda pool).
+    n_occluded_total = sum(int(np.count_nonzero(occluded_mask)) for _, occluded_mask, _ in candidates.values())
+    budget_total = int(round(context.max_regressor_pool_size * n_reference_pixels))
+    enrichment_budget = max(budget_total - int(n_reference_pixels) - n_occluded_total, 0)
+    per_slice_budget = enrichment_budget // len(candidates) if candidates else 0
+    for slice_index, (pool_mask, occluded_mask, _) in candidates.items():
+        extra_mask = np.logical_and(pool_mask, ~occluded_mask)
+        n_extra = int(np.count_nonzero(extra_mask))
+        if n_extra > per_slice_budget:
+            if per_slice_budget == 0:
+                extra_mask = np.zeros_like(extra_mask)
+            else:
+                extra_mask = find_N_unique_samples(per_slice_budget, yx_dim, regressor_pool_mask=extra_mask, rng=rng)
+        combined = np.logical_or(occluded_mask, extra_mask)
+        if np.any(combined):
+            masks[slice_index] = combined
+    return masks
+
+
 def plot_annulus_pixels(yx_dim=(101, 101), yx_center=None):
     number_of_pixels = np.zeros((4, 50))
     for i, annulus_width in enumerate([5, 7, 9, 11]):
@@ -209,6 +371,7 @@ def make_regressor_pool_for_pixel(
         reduction_parameters, yx_pixel, yx_dim, yx_center=None,
         signal_mask=None, known_companion_mask=None,
         bad_pixel_mask=None, additional_regressors=None,
+        valid_pixel_mask=None,
         runtime=None, **kwargs):
     """ Given a certain pixel position, an array with the dimension
     of the image is returned marking the for this pixelregressors as True.
@@ -264,12 +427,11 @@ def make_regressor_pool_for_pixel(
     inclusion = np.logical_or(annulus_mask, radial_regressor_mask)
     if additional_regressors is not None:
         inclusion = np.logical_or(inclusion, additional_regressors)
-    regressor_pool_mask = np.logical_and.reduce(([inclusion,
-                                                  ~target_pix_mask,
-                                                  ~signal_mask,
-                                                  ~known_companion_mask,
-                                                  ~bad_pixel_mask]))
-    return regressor_pool_mask
+    masks = [inclusion, ~target_pix_mask, ~signal_mask,
+             ~known_companion_mask, ~bad_pixel_mask]
+    if valid_pixel_mask is not None:
+        masks.append(valid_pixel_mask)
+    return np.logical_and.reduce(masks)
 
 
 def find_N_closest_values_in_image(target_value, image, N, regressor_pool_mask=None):
@@ -300,7 +462,7 @@ def find_N_closest_values_in_image(target_value, image, N, regressor_pool_mask=N
     return reference_pixel_map
 
 
-def find_N_unique_samples(N, yx_dim, regressor_pool_mask=None):
+def find_N_unique_samples(N, yx_dim, regressor_pool_mask=None, rng=None):
     """ Pix N unique random numbers from image or pool.
 
     """
@@ -312,7 +474,10 @@ def find_N_unique_samples(N, yx_dim, regressor_pool_mask=None):
         number_reference_pixel = np.product(yx_dim)
         reference_pixel_map = np.zeros(number_reference_pixel, dtype=bool)
 
-    random_sample = np.random.choice(number_reference_pixel, size=N, replace=False)
+    if rng is None:
+        random_sample = np.random.choice(number_reference_pixel, size=N, replace=False)
+    else:
+        random_sample = rng.choice(number_reference_pixel, size=N, replace=False)
     if regressor_pool_mask is not None:
         for sample in random_sample:
             ref_pos = tuple(ref_pix_indeces[sample])

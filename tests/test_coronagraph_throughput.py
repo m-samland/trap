@@ -95,14 +95,6 @@ def test_runtime_requires_mas_per_pixel():
         _minimal_runtime(table_mas, mas_per_pixel=None)
 
 
-def test_to_reduction_parameters_with_transmission():
-    config = TrapReductionConfig(
-        coronagraph_transmission=np.array([[0.0, 0.0], [100.0, 1.0]])
-    )
-    with pytest.warns(DeprecationWarning):
-        config.to_reduction_parameters()
-
-
 def test_amplitude_scaling_does_not_mutate_shared_array():
     # Mirrors the trap_one_position logic: amplitude_modulation comes from
     # ray.put and is shared read-only across positions.

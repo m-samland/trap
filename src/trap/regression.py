@@ -5,6 +5,7 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import logging
 import os
 
 import matplotlib.pyplot as plt
@@ -19,7 +20,7 @@ from scipy.optimize import curve_fit
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-from trap import image_coordinates, pca_regression, plotting_tools, regressor_selection
+from trap import image_coordinates, pca_regression, plotting_tools, regressor_selection, shared_arrays
 from trap.utils import (
     compute_empirical_correlation_matrix,
     det_max_ncomp_specific,
@@ -27,6 +28,8 @@ from trap.utils import (
     matern32_kernel,
     matern52_kernel,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Result(object):
@@ -186,7 +189,7 @@ class Result(object):
         else:
             self.compute_good_residual_mask(sigma_for_outlier=sigma)
             self.compute_contrast_weighted_average(mask_outliers=True, use_signal_weighting=self.use_signal_weighting)
-        print(self.__str__())
+        logger.debug("%s", self)
 
     def compute_good_residual_mask(self,
                                    sigma=3, clip_median=True, clip_std=False,
@@ -197,8 +200,11 @@ class Result(object):
         number_of_nan_pixels = np.sum(mask_nans)
         number_of_pixels = self.residuals.shape[0]
         if number_of_nan_pixels > 0:
-            print(
-                f"Fraction of nan pixels: {number_of_nan_pixels / number_of_pixels}.\n Number of pixels: {number_of_pixels}")
+            logger.debug(
+                "Fraction of nan pixels: %s. Number of pixels: %d",
+                number_of_nan_pixels / number_of_pixels,
+                number_of_pixels,
+            )
         if clip_median:  # Clip pixels based on time-domain median
             mask.append(
                 sigma_clip(np.median(self.residuals, axis=1),
@@ -497,6 +503,48 @@ class Result(object):
             plt.show()
 
 
+def _assemble_training_matrix(
+    data, regressor_pool_mask, data_range_to_fit=None, multiwavelength_data=None, multiwavelength_masks=None
+):
+    """Training matrix ``(n_time, n_pixel)`` for the temporal systematics model.
+
+    Base columns are the reference-slice pool pixels. When multi-wavelength
+    enrichment is active, time series from other slices of the
+    ``(n_lambda, y, x, t)`` cube (plain array or shared-store reference) are
+    appended; ``multiwavelength_masks`` maps slice index to a boolean
+    ``(y, x)`` selection.
+    """
+    if data_range_to_fit is None:
+        training_matrix = data[:, regressor_pool_mask]
+    else:
+        training_matrix = data[data_range_to_fit][:, regressor_pool_mask]
+    if not multiwavelength_masks:
+        return _drop_nonfinite_columns(training_matrix)
+    cube = shared_arrays.resolve(multiwavelength_data)
+    columns = [training_matrix]
+    for slice_index, mask in multiwavelength_masks.items():
+        series = np.asarray(cube[slice_index][mask]).T  # (n_time, n_pixel_j)
+        if data_range_to_fit is not None:
+            series = series[data_range_to_fit]
+        columns.append(series)
+    return _drop_nonfinite_columns(np.concatenate(columns, axis=1))
+
+
+def _drop_nonfinite_columns(training_matrix):
+    # Any NaN/Inf in a column propagates through matrix_scaling and makes SVD
+    # non-convergent (LAPACK gesdd). Silently drop bad columns; downstream only
+    # uses the temporal basis, not per-column identity.
+    finite_cols = np.isfinite(training_matrix).all(axis=0)
+    if finite_cols.all():
+        return training_matrix
+    dropped = int(training_matrix.shape[1] - finite_cols.sum())
+    logger.debug(
+        "Dropped %d non-finite columns from training matrix (kept %d).",
+        dropped, int(finite_cols.sum()),
+    )
+    return training_matrix[:, finite_cols]
+
+
 def run_trap_with_model_temporal(
         data, model, pa, reduction_parameters,
         planet_relative_yx_pos, reduction_mask,
@@ -510,6 +558,8 @@ def run_trap_with_model_temporal(
         opposite_mask=None,
         bad_pixel_mask=None,
         regressor_pool_mask=None,
+        multiwavelength_data=None,
+        multiwavelength_masks=None,
         true_contrast=None,
         return_input_data=False,
         plot_all_diagnostics=False,
@@ -526,9 +576,9 @@ def run_trap_with_model_temporal(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     planet_relative_yx_pos : tuple
         Relative (yx)-position of pixel to be fit, with respect to `yx_center`
         or `yx_center_injection` if provided.
@@ -540,7 +590,7 @@ def run_trap_with_model_temporal(
     yx_center_injection : array_like
         Array containing yx_center to be used for forward model position.
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -658,11 +708,16 @@ def run_trap_with_model_temporal(
             else:
                 regressor_pool_mask_global = regressor_pool_mask.copy()
             if verbose:
-                print("Number of reference pixel: {}".format(np.sum(regressor_pool_mask)))
+                logger.debug("Number of reference pixel: %d", np.sum(regressor_pool_mask))
 
             if not local_model:
                 if number_of_pca_regressors != 0:
-                    training_matrix = data[:, regressor_pool_mask_global]
+                    training_matrix = _assemble_training_matrix(
+                        data,
+                        regressor_pool_mask_global,
+                        multiwavelength_data=multiwavelength_data,
+                        multiwavelength_masks=multiwavelength_masks,
+                    )
                     B_full, lambdas_full, _, _ = pca_regression.compute_SVD(
                         training_matrix, n_components=None, scaling=pca_scaling,
                         compute_robust_lambda=compute_robust_lambda)
@@ -702,7 +757,7 @@ def run_trap_with_model_temporal(
                     np.round(reduction_parameters.number_of_components_fraction * maximum_number_of_components))
                 if number_of_pca_regressors < 1:
                     number_of_pca_regressors = 1
-                print("Number of components used: {}".format(number_of_pca_regressors))
+                logger.debug("Number of components used: %s", number_of_pca_regressors)
 
         y = y[data_range_to_fit]
 
@@ -713,7 +768,13 @@ def run_trap_with_model_temporal(
                 local_regressors = np.logical_and(reduction_mask, locally_unaffected)
                 regressor_pool_mask[local_regressors] = True
 
-            training_matrix = data[data_range_to_fit][:, regressor_pool_mask]  # .copy()
+            training_matrix = _assemble_training_matrix(
+                data,
+                regressor_pool_mask,
+                data_range_to_fit=data_range_to_fit,
+                multiwavelength_data=multiwavelength_data,
+                multiwavelength_masks=multiwavelength_masks,
+            )
 
             if number_of_pca_regressors != 0:
                 B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
@@ -734,11 +795,8 @@ def run_trap_with_model_temporal(
                 model_matrix = np.vstack((constant_offset, model_for_pixel))
                 A = model_matrix.T
 
-        if reduction_parameters.include_noise:
-            if inverse_variance_reduction_area is not None:
-                inverse_covariance = inverse_variance_reduction_area[:, idx]
-            else:
-                inverse_covariance = 1. / y
+        if inverse_variance_reduction_area is not None:
+            inverse_covariance = inverse_variance_reduction_area[:, idx]
         else:
             inverse_covariance = None
 
@@ -845,7 +903,7 @@ def run_trap_with_model_temporal(
 
         if reduction_parameters.plot_all_diagnostics and model is not None:
             if np.array_equal(yx_pixel, test_pixel):
-                print("Selected pixel: {}".format(yx_pixel))
+                logger.debug("Selected pixel: %s", yx_pixel)
                 mask_coordinates = np.argwhere(regressor_pool_mask)
 
                 plotting_tools.plot_scale(np.median(data, axis=0), yx_coords=mask_coordinates,
@@ -1042,9 +1100,9 @@ def run_trap_with_model_spatial(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     planet_relative_yx_pos : tuple
         Relative (yx)-position of pixel to be fit, with respect to `yx_center`
         or `yx_center_injection` if provided.
@@ -1056,7 +1114,7 @@ def run_trap_with_model_spatial(
     yx_center_injection : array_like
         Array containing yx_center to be used for forward model position.
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     true_contrast : scalar, optional
         The true contrast of an injected signal.
@@ -1136,7 +1194,7 @@ def run_trap_with_model_spatial(
         # flux_overlap_fraction = compute_flux_overlap(idx, model)
         # time_mask = flux_overlap_fraction < reduction_parameters.spatial_exclusion_flux_overlap
         if np.sum(time_mask) < 3:  # require at least 5 reference frames
-            print('Returning None for lack of frames')
+            logger.debug("Returning None for lack of frames")
             return None
 
         if training_data is None:
@@ -1174,21 +1232,14 @@ def run_trap_with_model_spatial(
             else:
                 A = np.hstack((B, model_matrix.T))
 
-            if reduction_parameters.include_noise:
-                if inverse_variance_reduction_area is not None:
-                    inverse_covariance = inverse_variance_reduction_area[idx]
-                else:
-                    inverse_covariance = 1. / y
-
-                P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
-                    design_matrix=A.T,
-                    data=y,
-                    inverse_covariance=inverse_covariance)
+            if inverse_variance_reduction_area is not None:
+                inverse_covariance = inverse_variance_reduction_area[idx]
             else:
-                P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
-                    design_matrix=A.T,
-                    data=y,
-                    inverse_covariance=None)
+                inverse_covariance = None
+            P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
+                design_matrix=A.T,
+                data=y,
+                inverse_covariance=inverse_covariance)
 
             reconstructed_lightcurve = np.dot(A, P_wo_marginalization)
 
@@ -1320,9 +1371,9 @@ def run_trap_with_model_wavelength(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     planet_relative_yx_pos : tuple
         Relative (yx)-position of pixel to be fit, with respect to `yx_center`
         or `yx_center_injection` if provided.
@@ -1334,7 +1385,7 @@ def run_trap_with_model_wavelength(
     yx_center_injection : array_like
         Array containing yx_center to be used for forward model position.
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -1449,7 +1500,7 @@ def run_trap_with_model_wavelength(
             else:
                 regressor_pool_mask_global = regressor_pool_mask.copy()
             if verbose:
-                print("Number of reference pixel: {}".format(np.sum(regressor_pool_mask)))
+                logger.debug("Number of reference pixel: %d", np.sum(regressor_pool_mask))
 
             if not local_model:
                 if number_of_pca_regressors != 0:
@@ -1492,7 +1543,7 @@ def run_trap_with_model_wavelength(
                     np.round(reduction_parameters.number_of_components_fraction * maximum_number_of_components))
                 if number_of_pca_regressors < 1:
                     number_of_pca_regressors = 1
-                print("Number of components used: {}".format(number_of_pca_regressors))
+                logger.debug("Number of components used: %s", number_of_pca_regressors)
 
         y = y[data_range_to_fit]
 
@@ -1523,11 +1574,8 @@ def run_trap_with_model_wavelength(
                 model_matrix = np.vstack((constant_offset, model_for_pixel))
                 A = model_matrix.T
 
-        if reduction_parameters.include_noise:
-            if inverse_variance_reduction_area is not None:
-                inverse_covariance = inverse_variance_reduction_area[:, idx]
-            else:
-                inverse_covariance = 1. / y
+        if inverse_variance_reduction_area is not None:
+            inverse_covariance = inverse_variance_reduction_area[:, idx]
         else:
             inverse_covariance = None
 
@@ -1557,7 +1605,7 @@ def run_trap_with_model_wavelength(
 
         if plot_all_diagnostics and model is not None:
             if np.array_equal(yx_pixel, test_pixel):
-                print("Selected pixel: {}".format(yx_pixel))
+                logger.debug("Selected pixel: %s", yx_pixel)
                 mask_coordinates = np.argwhere(regressor_pool_mask)
 
                 plotting_tools.plot_scale(np.median(data, axis=0), yx_coords=mask_coordinates,
@@ -1706,7 +1754,9 @@ def run_trap_with_model_temporal_optimized(
         runtime=None,
         inverse_variance_reduction_area=None,
         regressor_matrix=None,
-        regressor_pool_mask=None):
+        regressor_pool_mask=None,
+        multiwavelength_data=None,
+        multiwavelength_masks=None):
     """Core function of the TRAP analysis. Builds the temporal regression
     model and perform model fitting for all time series vectors in the
     `reduction_mask` as described in Samland et al. 2020.
@@ -1719,14 +1769,14 @@ def run_trap_with_model_temporal_optimized(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
         (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -1755,7 +1805,9 @@ def run_trap_with_model_temporal_optimized(
     # test_pixel = np.round(np.mean(reduction_pix_indeces, axis=0))
     # EDIT: !!!!!!!
     # Provide pre-stacked training matrix, only add model on top!
-    training_matrix = data[:, regressor_pool_mask]
+    training_matrix = _assemble_training_matrix(
+        data, regressor_pool_mask, multiwavelength_data=multiwavelength_data, multiwavelength_masks=multiwavelength_masks
+    )
     B_full, _, _, _ = pca_regression.compute_SVD(
         training_matrix, n_components=None,
         scaling=reduction_parameters.pca_scaling)
@@ -1776,11 +1828,8 @@ def run_trap_with_model_temporal_optimized(
             model_matrix = np.vstack((constant_offset, model_for_pixel))
             A = model_matrix.T
 
-        if reduction_parameters.include_noise:
-            if inverse_variance_reduction_area is not None:
-                inverse_covariance = inverse_variance_reduction_area[:, idx]
-            else:
-                inverse_covariance = 1. / y
+        if inverse_variance_reduction_area is not None:
+            inverse_covariance = inverse_variance_reduction_area[:, idx]
         else:
             inverse_covariance = None
         try:
@@ -1873,14 +1922,14 @@ def temporal_pca_cross_validation(
         Temporal image cube containing the companion model.
     pa : array_like
         Vector containing the parallactic angles for each frame.
-    reduction_parameters : `~trap.parameters.Reduction_parameters`
-        A `~trap.parameters.Reduction_parameters` object all parameters
-        necessary for the TRAP pipeline.
+    reduction_parameters : `~trap.parameters.TrapReductionConfig`
+        A `~trap.parameters.TrapReductionConfig` object containing all
+        parameters necessary for the TRAP pipeline.
     reduction_mask : array_like
         Boolean mask of data included in the reduction
         (\\mathcal{P}_\\mathcal{Y} in Samland et al. 2020)
     inverse_variance_reduction_area : array_like, optional
-        Inverse variance for pixels in `reduction_mask`. Use if `include_noise`
+        Inverse variance for pixels in `reduction_mask`. Use if `estimate_noise_from_data`
         in `reduction_parameters` is True.
     regressor_matrix : array_like, optional
         Pre-computed regressor matrix. If not given regressor_matrix
@@ -1959,7 +2008,7 @@ def temporal_pca_cross_validation(
                 ) = train_test_split(
                     A, y, inverse_variance_vector, indices, test_size=test_size, random_state=n)
 
-                if reduction_parameters.include_noise:
+                if reduction_parameters.estimate_noise_from_data:
                     if inverse_variance_reduction_area is not None:
                         inverse_covariance = inverse_variance_train
                     else:

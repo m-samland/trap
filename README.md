@@ -14,9 +14,12 @@
 ## Key Features
 
 - **Temporal Systematics Modeling**: Models time-dependent stellar residuals using causal regression for improved contrast at small inner working angles.
-- **Automatic Detection and Characterization**: Automatically detect point sources and extract their spectra.
+- **Automatic Detection and Characterization**: Automatically detect point sources, measure their astrometry per wavelength channel, and extract their spectra.
 - **Spectral Template Matching**: Works with external spectral templates (using [`species`](https://github.com/tomasstolker/species)) for improved detection.
-- **Parallel Processing**: Efficient parallelism via [Ray](https://docs.ray.io/), scalable from laptops to clusters.
+- **Integral-Field and Dual-Band Data**: Ready-made configurations for IFS and IRDIS-style data, with experimental, opt-in enrichment of the temporal regressor pool using other wavelength slices.
+- **Edge-of-Field Reduction**: An optional detector footprint mask lets the search run out to the edge of irregularly shaped fields of view instead of stopping at a fixed radius.
+- **Dataclass Configuration**: Reductions are configured with frozen, introspectable dataclasses (`TrapConfig` / `TrapReductionConfig`) — no hidden global state.
+- **Parallel Processing**: Efficient parallelism via [joblib](https://joblib.readthedocs.io/)/loky with a memmap-backed shared-array store, scalable from laptops to clusters.
 - **Automated Visualization**: Generates diagnostic plots, spectra, and contrast curves for each reduction pipeline run.
 
 ---
@@ -29,13 +32,24 @@ TRAP requires **Python 3.11, 3.12, or 3.13**. It can be installed directly from 
 pip install git+https://github.com/m-samland/trap
 ```
 
-> ⚠️ TRAP uses [Ray](https://docs.ray.io/en/latest/) for multiprocessing. If you run TRAP on a computing cluster, make sure Ray is available on the cluster nodes.
+> ℹ️ TRAP parallelizes with `joblib`/loky and a memmap-backed shared-array store, so there is no cluster runtime to install separately. Large input arrays are written once to a scratch directory (`/dev/shm` when available, otherwise the system temp directory) and memory-mapped read-only by the worker processes; set `TrapReductionConfig.scratch_dir` if your machine needs a different location. To scale beyond one node, submit scheduler job arrays over wavelengths or epochs.
 
 ---
 
 ## Quick Start
 
-A [Jupyter notebook](examples/tutorial_notebook.ipynb) and [example dataset](examples/data/) based on **VLT/SPHERE** observations are provided. They demonstrate the full workflow: loading data, performing temporal regression, generating detection maps, and extracting companion spectra.
+A [Jupyter notebook](examples/tutorial.ipynb) and [example dataset](examples/test_data/) based on **VLT/SPHERE** observations are provided. They demonstrate the full workflow: loading data, performing temporal regression, generating detection maps, and extracting companion spectra.
+
+Reductions are configured with dataclasses rather than a CLI:
+
+```python
+from trap.parameters import trap_config_for_ifs
+
+config = trap_config_for_ifs()
+reduction_config = config.reduction.merge(result_folder="./results")
+```
+
+`TrapReductionConfig` is frozen — derive variants with `merge(**kwargs)` instead of assigning to attributes.
 
 ---
 
@@ -69,6 +83,13 @@ Clone the repository and install it locally for development with tests:
 git clone https://github.com/m-samland/trap.git
 cd trap
 pip install -e ".[test]"
+```
+
+Alternatively, a [pixi](https://pixi.sh) environment is provided:
+
+```bash
+pixi install -e dev
+pixi shell -e dev
 ```
 
 ### Contributing Guidelines
@@ -119,6 +140,10 @@ For other citation formats, visit the [ADS entry](https://ui.adsabs.harvard.edu/
 
 The peer-reviewed publication describes release version **v1.0.0** of TRAP.  
 Subsequent changes and feature additions are documented in the [CHANGELOG](CHANGELOG.md).
+
+**v2.0.0 contains breaking changes.** The legacy `Reduction_parameters` object and its bridge
+methods were removed, `include_noise` was renamed to `estimate_noise_from_data`, and Ray was
+replaced by `joblib`/loky. See the [CHANGELOG](CHANGELOG.md) for the migration details.
 
 ---
 

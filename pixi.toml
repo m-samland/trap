@@ -23,11 +23,11 @@ bottleneck = "*"
 natsort = "*"
 dill = "*"
 cython = "*"
+joblib = "*"
 
 # Editable install of the package itself
 [pypi-dependencies]
 trap = { path = ".", editable = true }
-ray = { version = ">=2.47.1", extras = ["default"] }
 species = { git = "https://github.com/tomasstolker/species" }
 
 # ──────────────────────────────────────────────
@@ -72,7 +72,8 @@ dev = { features = ["notebook", "test"], solve-group = "dev" }
 # ──────────────────────────────────────────────
 [feature.test.tasks]
 test = "pytest"
-lint = "ruff check src/"
+# Matches what CI lints: `ruff check .` minus the excluded docs/ and untracked scratch files
+lint = "ruff check src/ tests/"
 format = "ruff format src/"
 format-check = "ruff format --check src/"
 

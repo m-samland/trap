@@ -5,6 +5,8 @@ Routines used in TRAP
          MPIA Heidelberg
 """
 
+import logging
+
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
@@ -13,6 +15,8 @@ from scipy.linalg import cholesky, solve_triangular, svd
 from sklearn import preprocessing
 
 from . import regressor_selection
+
+logger = logging.getLogger(__name__)
 
 # __all__ = ['matrix_scaling', 'compute_SVD', 'compute_V_inverse',
 #    'solve_linear_equation_simple', 'detect_bad_frames']
@@ -131,6 +135,14 @@ def solve_linear_equation_simple(design_matrix, data, inverse_covariance=None):
             data * np.sqrt(inverse_covariance),
             rcond=None)
         P_sigma_squared = np.diag(np.linalg.pinv(AVinvAT))
+        # A singular normal matrix means some parameters are unconstrained by the
+        # data -- e.g. a reduction pixel whose inverse variance is zero in every
+        # signal-carrying frame. pinv reports 0 variance for those directions,
+        # but the honest value is infinite (no information). Returning inf makes
+        # every downstream 1/variance an inverse-variance weight of 0, so a
+        # degenerate pixel is dropped from contrast/SNR combinations instead of
+        # dominating them with an infinite weight (or triggering a divide-by-zero).
+        P_sigma_squared = np.where(P_sigma_squared > 0, P_sigma_squared, np.inf)
     return P, P_sigma_squared
 
 
@@ -264,7 +276,7 @@ def remove_bad_frames(
         bad_frame_indices.append(bad_frame_indices_in_iteration)
         data = np.delete(data, bad_frame_indices_in_iteration, axis=0)
         if verbose:
-            print('Iteration: {} Bad frames: {}'.format(i, bad_frame_indices_in_iteration))
+            logger.debug("Iteration: %s Bad frames: %s", i, bad_frame_indices_in_iteration)
 
     return data, bad_frame_indices
 

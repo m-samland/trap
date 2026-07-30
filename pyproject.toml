@@ -22,7 +22,7 @@ dependencies = [
     "photutils",
     "seaborn",
     "tqdm",
-    "ray[default]>=2.47.1",
+    "joblib",
     "bottleneck",
     "natsort",
     "species@git+https://github.com/tomasstolker/species", 

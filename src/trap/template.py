@@ -1,4 +1,5 @@
 import copy
+import logging
 import os
 
 import numpy as np
@@ -6,6 +7,8 @@ from astropy import units as u
 from species.phot.syn_phot import SyntheticPhotometry
 from species.plot.plot_spectrum import plot_spectrum
 from species.read.read_filter import ReadFilter
+
+logger = logging.getLogger(__name__)
 
 
 class SpectralTemplate(object):
@@ -235,7 +238,7 @@ class SpectralTemplate(object):
                 ylim = (np.min(modelbox.flux), np.max(modelbox.flux))
                 filters = None
 
-            print(filters)
+            logger.debug("%s", filters)
             plot_spectrum(
                 boxes=[modelbox],
                 filters=filters,
