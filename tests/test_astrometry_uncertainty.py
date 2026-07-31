@@ -55,20 +55,26 @@ def test_fit_2d_gaussian_returns_param_cov_on_clean_source():
 
 
 def test_fit_2d_gaussian_handles_singular_fit():
-    """All-NaN cutout region should raise, unchanged by the covariance additions."""
+    """An unfittable cutout reports `fit_ok=False` rather than raising.
+
+    It used to raise, which aborted the whole target for one bad candidate.
+    """
     size = 21
     image, _ = _make_isotropic_gaussian(size=size, amplitude=50.0, sigma=1.5, noise=0.5)
     image[9:12, 9:12] = np.nan
     yx_center = (size // 2, size // 2)
-    with pytest.raises(RuntimeError):
-        detection.fit_2d_gaussian(
-            image,
-            yx_position=(10, 10),
-            yx_center=yx_center,
-            x_stddev=1.5,
-            y_stddev=1.5,
-            box_size=3,
-        )
+    result = detection.fit_2d_gaussian(
+        image,
+        yx_position=(10, 10),
+        yx_center=yx_center,
+        x_stddev=1.5,
+        y_stddev=1.5,
+        box_size=3,
+    )
+    assert result["fit_ok"] is False
+    assert np.isnan(result["parameters"].amplitude.value)
+    # The candidate position is echoed back so the row stays traceable.
+    assert result["yx_fit_position_orig"] == (10.0, 10.0)
 
 
 def test_fit_2d_gaussian_fixed_position_clamps_centroid():
