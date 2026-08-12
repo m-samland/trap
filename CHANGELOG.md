@@ -12,7 +12,7 @@ A single unfittable or spurious candidate no longer aborts a target or costs it 
 - **SNR-scaled candidate exclusion radius.** The radius blanked around an accepted peak scales as `sqrt(snr / candidate_threshold)`, capped at `2.5 ×` the base radius.
   A fixed radius is tuned for a marginal detection, but a bright binary's contamination is a swarm of detached above-threshold blobs that re-enter the search as spurious candidates: on HD_140408 (125σ binary at 35 px) this cut the candidate list from 18/14 to 9/6 per channel while leaving three clean targets, including one with a real 30σ source, unchanged.
   Connected above-threshold regions are masked alongside the disk.
-  Controlled by `exclusion_radius_snr_scaling` / `max_exclusion_radius_factor`.
+  Controlled by the `exclusion_radius_snr_scaling` (default `True`) and `max_exclusion_radius_factor` (2.5) keyword arguments of the `detection.py` search functions, not by `DetectionParameters` fields.
 - **`DetectionParameters.candidate_exclusion_radius`** decouples the iterative search exclusion radius from `search_radius`, which also serves as the cross-template and cross-channel association radius, so widening one used to silently widen the other.
   `None` keeps the previous shared behaviour.
 - **`DetectionParameters.max_candidates`** (50) bounds the previously unlimited candidate loop.
