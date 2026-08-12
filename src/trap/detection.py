@@ -26,7 +26,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from natsort import natsorted
 from numpy import interp
 from photutils.aperture import CircularAnnulus
-from scipy import linalg, stats
+from scipy import linalg, ndimage, stats
 from species import SpeciesInit
 from species.data.database import Database
 from species.read.read_model import ReadModel
@@ -46,6 +46,46 @@ from trap.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Mirrors `DetectionParameters.minimum_candidate_separation`; duplicated as a
+# module constant so the candidate finders keep a sane floor when called
+# directly (tests, notebooks) rather than through the configured entry points.
+DEFAULT_MINIMUM_CANDIDATE_SEPARATION = 5.0
+
+# Mirrors `DetectionParameters.max_candidates`. Every candidate costs a full
+# contrast-table renormalization, so an unbounded list is a runtime hazard as
+# much as a scientific one.
+DEFAULT_MAX_CANDIDATES = 50
+
+# Cap on the SNR-scaled candidate exclusion radius, as a multiple of the base
+# radius. 2.5 takes IRDIS's 11 px base to ~28 px, which is where a 100-sigma
+# binary's blob swarm stops on the HD_140408 test case; more starts eating real
+# search area.
+DEFAULT_MAX_EXCLUSION_RADIUS_FACTOR = 2.5
+
+
+def _resolve_exclusion_radius(candidate_exclusion_radius, search_radius):
+    """Fall back to `search_radius` when no separate exclusion radius is set."""
+    if candidate_exclusion_radius is None:
+        return search_radius
+    return candidate_exclusion_radius
+
+
+def _scaled_exclusion_radius(
+    snr, candidate_threshold, mask_radius, max_factor, enabled=True
+):
+    """Grow a peak's exclusion radius with its significance.
+
+    The contaminated area around a source scales with how far its wings stay
+    above threshold, which grows with SNR; a radius tuned for a marginal
+    detection leaves a bright binary's wings to re-enter the search as dozens of
+    spurious candidates. `sqrt` keeps the growth gentle and the cap keeps a very
+    bright source from blanking the search region.
+    """
+    if not enabled or not np.isfinite(snr) or snr <= candidate_threshold:
+        return mask_radius
+    factor = float(np.sqrt(snr / candidate_threshold))
+    return mask_radius * float(np.clip(factor, 1.0, max_factor))
 
 # plt.style.use("paper")
 
@@ -67,6 +107,7 @@ def make_radial_profile(
     operation="mad_std",
     yx_center=None,
     known_companion_mask=None,
+    minimum_annulus_pixels=10,
 ):
     """
     Compute the radial profile of a 2D data array.
@@ -78,6 +119,12 @@ def make_radial_profile(
     - operation (str, optional): The operation to be applied to the data within each bin. Options are "mad_std", "median", "mean", "min", "std", and "percentiles".
     - yx_center (tuple, optional): The center coordinates of the data array. If not provided, the center is assumed to be the center of the data array.
     - known_companion_mask (ndarray, optional): A mask indicating the positions of known companions to be excluded from the profile.
+    - minimum_annulus_pixels (int, optional): Fall back to the un-masked annulus when
+      excluding known companions leaves fewer than this many finite pixels. Without
+      the fallback a companion mask that covers a whole annulus makes the profile —
+      and therefore the normalized detection image — NaN across that annulus, which
+      no downstream fit can recover from. Set to 0 to restore the un-guarded
+      behaviour.
 
     Returns:
     - profile (ndarray): The computed radial profile.
@@ -143,6 +190,18 @@ def make_radial_profile(
                 mask_wo_companion = mask
             else:
                 mask_wo_companion = np.logical_and(mask, ~known_companion_mask)
+                if (
+                    np.count_nonzero(np.isfinite(data[mask_wo_companion]))
+                    < minimum_annulus_pixels
+                ):
+                    # Keeping the companion in is a biased noise estimate; a NaN
+                    # annulus is an unusable one. Bias high (which suppresses the
+                    # source's own SNR) rather than lose the annulus entirely.
+                    logger.debug(
+                        "Annulus at separation %d retains too few unmasked pixels; "
+                        "falling back to the un-masked statistic.", separation,
+                    )
+                    mask_wo_companion = mask
 
             # Data on which statistic is applied
             annulus_data_1d = data[mask_wo_companion]
@@ -198,6 +257,25 @@ def make_radial_profile(
     return profile, np.array(values)
 
 
+def _adaptive_companion_mask_radius(
+    yx_relative_position, companion_mask_radius, minimum_companion_mask_radius
+):
+    """Shrink a companion's exclusion radius so it cannot swallow its own annuli.
+
+    A fixed radius applied to a source at small separation covers every annulus
+    inside it, leaving `make_radial_profile` nothing to work with. Capping the
+    radius at `separation - 1` keeps unmasked pixels at every separation the
+    source could be measured at; the floor keeps the source's PSF core out of
+    the noise estimate.
+    """
+    separation = float(np.hypot(yx_relative_position[0], yx_relative_position[1]))
+    return float(
+        np.clip(
+            separation - 1.0, minimum_companion_mask_radius, companion_mask_radius
+        )
+    )
+
+
 def make_contrast_curve(
     detection_image,
     radial_bounds=None,
@@ -206,6 +284,8 @@ def make_contrast_curve(
     pixel_scale=12.25,
     yx_known_companion_position=None,
     mask_above_sigma=None,
+    minimum_companion_mask_radius=3.0,
+    minimum_annulus_pixels=10,
 ):
     yx_dim = (detection_image.shape[-2], detection_image.shape[-1])
 
@@ -216,30 +296,25 @@ def make_contrast_curve(
     if yx_known_companion_position is not None:
         yx_known_companion_position = np.array(yx_known_companion_position)
         if yx_known_companion_position.ndim == 1:
-            detected_signal_mask = regressor_selection.make_signal_mask(
-                yx_dim,
-                yx_known_companion_position,
-                companion_mask_radius,
-                relative_pos=True,
-                yx_center=None,
-            )
-        elif yx_known_companion_position.ndim == 2:
-            detected_signal_masks = []
-            for yx_pos in yx_known_companion_position:
-                detected_signal_masks.append(
-                    regressor_selection.make_signal_mask(
-                        yx_dim,
-                        yx_pos,
-                        companion_mask_radius,
-                        relative_pos=True,
-                        yx_center=None,
-                    )
-                )
-            detected_signal_mask = np.logical_or.reduce(detected_signal_masks)
-        else:
+            yx_known_companion_position = yx_known_companion_position[None, :]
+        elif yx_known_companion_position.ndim != 2:
             raise ValueError(
                 "Dimensionality of known companion positions for contrast curve too large."
             )
+        detected_signal_masks = []
+        for yx_pos in yx_known_companion_position:
+            detected_signal_masks.append(
+                regressor_selection.make_signal_mask(
+                    yx_dim,
+                    yx_pos,
+                    _adaptive_companion_mask_radius(
+                        yx_pos, companion_mask_radius, minimum_companion_mask_radius
+                    ),
+                    relative_pos=True,
+                    yx_center=None,
+                )
+            )
+        detected_signal_mask = np.logical_or.reduce(detected_signal_masks)
     else:
         detected_signal_mask = None
         # detected_signal_mask = np.zeros(detection_image[0].shape, dtype='bool')
@@ -250,6 +325,7 @@ def make_contrast_curve(
         bin_width=bin_width,
         operation="mad_std",
         known_companion_mask=detected_signal_mask,
+        minimum_annulus_pixels=minimum_annulus_pixels,
     )
     normalized_detection_image = detection_image[2] / snr_norm_profile
 
@@ -266,6 +342,7 @@ def make_contrast_curve(
             bin_width=bin_width,
             operation="mad_std",
             known_companion_mask=detected_signal_mask,
+            minimum_annulus_pixels=minimum_annulus_pixels,
         )
         normalized_detection_image = detection_image[2] / snr_norm_profile
     else:
@@ -291,6 +368,7 @@ def make_contrast_curve(
         bin_width=bin_width,
         operation="percentiles",
         known_companion_mask=detected_signal_mask,
+        minimum_annulus_pixels=minimum_annulus_pixels,
     )
     _, min_uncertainty_values = make_radial_profile(
         local_detection_image[1],
@@ -298,6 +376,7 @@ def make_contrast_curve(
         bin_width=bin_width,
         operation="min",
         known_companion_mask=detected_signal_mask,
+        minimum_annulus_pixels=minimum_annulus_pixels,
     )
 
     # contrast_norm_profile, contrast_norm_values = make_radial_profile(
@@ -1057,6 +1136,50 @@ def plot_distribution(
     plt.show()
 
 
+def _failed_gaussian_fit_result(yx_position, yx_center, cutout_shape):
+    """Build a `fit_2d_gaussian` result whose parameters are all NaN.
+
+    Returned instead of raising when a candidate cannot be fitted, so one
+    pathological position costs that candidate's row rather than the whole
+    target. `fit_ok=False` propagates into the candidate tables, where the
+    existing shape validation drops the row.
+
+    Parameters
+    ----------
+    yx_position : tuple of float
+        Candidate position in original image coordinates, used verbatim as the
+        reported (unfitted) position.
+    yx_center : tuple of float
+        Image center, for the relative position.
+    cutout_shape : tuple of int
+        Shape of the attempted cutout, so `mask` matches a successful result.
+
+    Returns
+    -------
+    dict
+        Same keys as a successful `fit_2d_gaussian` result.
+    """
+    nan_model = models.Gaussian2D(
+        amplitude=np.nan, x_mean=np.nan, y_mean=np.nan,
+        x_stddev=np.nan, y_stddev=np.nan, theta=np.nan,
+    )
+    return {
+        "parameters": nan_model,
+        "model": np.full(cutout_shape, np.nan),
+        "cutout": np.full(cutout_shape, np.nan),
+        "yx_fit_position_orig": (float(yx_position[0]), float(yx_position[1])),
+        "yx_fit_relative": (
+            float(yx_position[0]) - yx_center[0],
+            float(yx_position[1]) - yx_center[1],
+        ),
+        "mask": np.zeros(cutout_shape, dtype=bool),
+        "fwhm_area": np.nan,
+        "param_cov_xy": None,
+        "param_names": [],
+        "fit_ok": False,
+    }
+
+
 def fit_2d_gaussian(
     image,
     yx_position=None,
@@ -1080,24 +1203,25 @@ def fit_2d_gaussian(
         cy, cx = yx_position
     cutout = Cutout2D(image, (cx, cy), box_size)
 
-    if np.all(np.isnan(cutout.data)):
-        # The cutout contains only NaNs.
-        # This likely has happened because the cutout of the
-        # normalized_detection_image contains only NaNs, which
-        # is a result of make_radial_profile creating a central
-        # mask of NaNs. This can happen with a candidate close
-        # to the search_region_inner_bound.
+    finite_mask = np.logical_and(np.isfinite(cutout.data), cutout.data != 0.0)
 
-        raise RuntimeError(
-            f"The cutout image at position (y, x) = ({cy}, {cx}) "
-            "contains only NaNs. The issue might be caused by "
-            "make_radial_profile that is used for "
-            "normalized_detection_image. Perhaps there is a "
-            "candidate too close to the search_region_inner_bound? "
+    # Too few finite pixels to constrain even the 3-parameter fallback below.
+    # Historically an all-NaN cutout raised, which aborted the whole target: it
+    # is produced by make_radial_profile blanking every annulus a candidate's
+    # own companion mask covers, so a single candidate near the inner working
+    # angle could destroy an otherwise complete reduction.
+    if np.count_nonzero(finite_mask) < 6:
+        logger.warning(
+            "Gaussian fit at (y, x) = (%s, %s) has only %d usable pixels in its "
+            "%dx%d cutout; reporting an unfitted candidate. A fully masked cutout "
+            "usually means a candidate sits inside its own companion mask.",
+            cy, cx, int(np.count_nonzero(finite_mask)), box_size, box_size,
         )
+        return _failed_gaussian_fit_result((cy, cx), yx_center, cutout.shape)
 
-    # stamp = image[cy - box_size:cy + box_size, cx - box_size:cx + box_size].copy()
-    xx, yy = np.meshgrid(np.arange(box_size), np.arange(box_size))
+    # Cutout2D trims at the frame edge, so the model grid has to follow the
+    # cutout rather than box_size or the boolean indexing below misaligns.
+    xx, yy = np.meshgrid(np.arange(cutout.shape[1]), np.arange(cutout.shape[0]))
     yx_position_cutout = np.unravel_index(np.nanargmax(cutout.data), cutout.shape)
     gbounds = {
         "amplitude": (1e-9, None),
@@ -1109,8 +1233,6 @@ def fit_2d_gaussian(
     relative_yx = absolute_yx_to_relative_yx(yx_position, yx_center)
     rhophi = relative_yx_to_rhophi(relative_yx)
     phi = rhophi[1] * np.pi / 180.0
-
-    finite_mask = np.logical_and(np.isfinite(cutout.data), cutout.data != 0.0)
 
     g_init = models.Gaussian2D(
         amplitude=np.max(cutout.data[finite_mask]),
@@ -1160,8 +1282,41 @@ def fit_2d_gaussian(
             cov_xy = None
         return cov_xy, names
 
-    fitter = fitting.LevMarLSQFitter(calc_uncertainties=True)
-    par = fitter(g_init, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask])
+    # LevMarLSQFitter enforces bounds by clipping inside the objective, so a
+    # parameter pushed past a bound lands in a flat region whose numerical
+    # Jacobian column is identically zero; MINPACK then returns NaN parameters
+    # and astropy raises NonFiniteValueError. TRF is genuinely bounded, which
+    # matters because Fit A leaves both widths and the orientation free and
+    # routinely drives x_stddev into its lower bound on speckle structure.
+    fitter = fitting.TRFLSQFitter(calc_uncertainties=True)
+    try:
+        par = fitter(g_init, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask])
+    except Exception as error:
+        # Speckles are not Gaussian. When the free fit still fails, retry with
+        # the shape locked to the instrument PSF so only position and amplitude
+        # stay free; the outcome is flagged either way, never raised.
+        logger.warning(
+            "Free 2D Gaussian fit at (y, x) = (%s, %s) failed (%s); retrying with "
+            "the PSF shape held fixed.", cy, cx, type(error).__name__,
+        )
+        g_retry = g_init.copy()
+        g_retry.x_stddev = x_stddev
+        g_retry.y_stddev = y_stddev
+        g_retry.x_stddev.fixed = True
+        g_retry.y_stddev.fixed = True
+        g_retry.theta.fixed = True
+        fitter = fitting.TRFLSQFitter(calc_uncertainties=True)
+        try:
+            par = fitter(
+                g_retry, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask]
+            )
+        except Exception as retry_error:
+            logger.warning(
+                "Constrained 2D Gaussian fit at (y, x) = (%s, %s) failed as well "
+                "(%s); reporting an unfitted candidate.",
+                cy, cx, type(retry_error).__name__,
+            )
+            return _failed_gaussian_fit_result((cy, cx), yx_center, cutout.shape)
     model = par(xx, yy)
     param_cov_xy, param_names = _extract_param_cov_xy(par)
 
@@ -1212,6 +1367,7 @@ def fit_2d_gaussian(
         "fwhm_area": fwhm_area,
         "param_cov_xy": param_cov_xy,
         "param_names": param_names,
+        "fit_ok": True,
     }
 
     return parameters
@@ -1272,6 +1428,12 @@ def fit_planet_parameters(
         fix_orientation=False,
     )
     fit_a_yx_orig = snr_image_parameters["yx_fit_position_orig"]
+    if not snr_image_parameters["fit_ok"]:
+        # Fits B and C clamp their centroid to Fit A's, so without it there is
+        # nothing to measure; report the candidate as unfitted across all three.
+        failed = summarize_2d_gauss_fit_result(snr_image_parameters)
+        return failed.copy(), failed.copy(), failed.copy()
+
     fit_a_start = (
         int(round(fit_a_yx_orig[0])),
         int(round(fit_a_yx_orig[1])),
@@ -1489,6 +1651,7 @@ def summarize_2d_gauss_fit_result(
     fitted_parameters["tangential_sigma_fit"] = [rt["sigma_t_fit"]]
     fitted_parameters["radial_sigma_cr"] = [rt["sigma_r_cr"]]
     fitted_parameters["tangential_sigma_cr"] = [rt["sigma_t_cr"]]
+    fitted_parameters["fit_ok"] = [bool(result_dictionary.get("fit_ok", True))]
 
     fitted_parameters = pd.DataFrame(fitted_parameters)
     return fitted_parameters
@@ -2334,8 +2497,46 @@ class DetectionAnalysis(object):
         self.empirical_correlation = empirical_correlation
 
     def find_approximate_candidate_positions(
-        self, snr_image, candidate_threshold=4.75, mask_radius=15
+        self,
+        snr_image,
+        candidate_threshold=4.75,
+        mask_radius=15,
+        max_candidates=DEFAULT_MAX_CANDIDATES,
+        mask_connected_region=True,
+        exclusion_radius_snr_scaling=True,
+        max_exclusion_radius_factor=DEFAULT_MAX_EXCLUSION_RADIUS_FACTOR,
     ):
+        """Iteratively pick significant peaks, masking each source before the next.
+
+        Parameters
+        ----------
+        snr_image : ndarray
+            Normalized detection map.
+        candidate_threshold : float
+            Significance a pixel must exceed to be considered.
+        mask_radius : float
+            Base radius of the disk blanked around an accepted peak; the radius
+            actually used scales with the peak's SNR unless disabled below.
+        max_candidates : int
+            Upper bound on the number of peaks returned, highest-SNR first. A
+            saturated frame (a bright binary, a badly centred reduction) can
+            otherwise yield hundreds, and every one of them costs a full
+            re-normalization downstream.
+        mask_connected_region : bool
+            Also blank the contiguous above-threshold region the peak belongs to.
+            Cheap, but on real data a bright source's contamination is a swarm of
+            separate blobs with sub-threshold gaps, so this alone is not enough —
+            the SNR scaling below is what reaches them.
+        exclusion_radius_snr_scaling : bool
+            Scale the exclusion radius as ``sqrt(snr / candidate_threshold)``. A
+            fixed radius is tuned for a marginal detection, but a 100σ binary
+            contaminates a far larger area, and each leftover blob re-enters the
+            loop as a spurious candidate. Marginal peaks keep the base radius, so
+            genuine close pairs are not merged.
+        max_exclusion_radius_factor : float
+            Cap on the scaling, as a multiple of ``mask_radius``. Without it a
+            very bright source would blank most of the search region.
+        """
         snr_image = np.ma.masked_array(snr_image)
 
         yx_dim = snr_image.shape
@@ -2344,8 +2545,13 @@ class DetectionAnalysis(object):
         significant_pixel_mask = np.logical_and(
             snr_image.data > candidate_threshold,
             np.isfinite(snr_image.data))
-        
+
         snr_image.mask = ~significant_pixel_mask
+
+        if mask_connected_region:
+            connected_labels, _ = ndimage.label(significant_pixel_mask)
+        else:
+            connected_labels = None
 
         candidates = {
             "x": [],
@@ -2357,9 +2563,12 @@ class DetectionAnalysis(object):
             "snr": [],
         }
 
-        candidate_index = 0
+        truncated = False
         while not np.all(snr_image.mask):
-            # candidates['candidate_index'].append(candidate_index)
+            if len(candidates["snr"]) >= max_candidates:
+                truncated = True
+                break
+
             candidates["snr"].append(snr_image.max())
 
             highest_value_position = np.unravel_index(
@@ -2379,12 +2588,31 @@ class DetectionAnalysis(object):
             candidate_mask = regressor_selection.make_signal_mask(
                 snr_image.shape,
                 highest_value_position,
-                mask_radius,
+                _scaled_exclusion_radius(
+                    candidates["snr"][-1],
+                    candidate_threshold,
+                    mask_radius,
+                    max_exclusion_radius_factor,
+                    enabled=exclusion_radius_snr_scaling,
+                ),
                 relative_pos=False,
                 yx_center=None,
             )
+            if connected_labels is not None:
+                peak_label = connected_labels[highest_value_position]
+                if peak_label > 0:
+                    candidate_mask = np.logical_or(
+                        candidate_mask, connected_labels == peak_label
+                    )
             snr_image.mask[candidate_mask] = True
-            candidate_index += 1
+
+        if truncated:
+            logger.warning(
+                "Candidate search stopped at the %d-candidate limit with "
+                "significant pixels remaining. The detection map is likely "
+                "dominated by a bright source or a reduction artefact.",
+                max_candidates,
+            )
 
         candidates = pd.DataFrame(candidates)
         self.candidates = candidates
@@ -2396,6 +2624,8 @@ class DetectionAnalysis(object):
         candidate_threshold=3.5,
         iterative_search_exclusion_radius=15,
         detection_products=None,
+        minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
+        max_candidates=DEFAULT_MAX_CANDIDATES,
     ):
         if detection_products is None:
             detection_products = self.detection_products
@@ -2420,12 +2650,22 @@ class DetectionAnalysis(object):
             detection_products["normalized_detection_cube"][detection_product_index],
             candidate_threshold=candidate_threshold,
             mask_radius=iterative_search_exclusion_radius,
+            max_candidates=max_candidates,
         )
 
-        # Exclude "detections" very close to the IWA of the reduction
-        mask_too_close = candidates["separation"] < smallest_separation_in_pixel
-        candidates = candidates[~mask_too_close]
-
+        # The reduction's own inner bound is not a usable floor on its own: with
+        # `search_region_inner_bound=1` the normalization is finite from 1 px, so
+        # this guard admitted the coronagraph centre residual as a candidate.
+        separation_floor = max(
+            float(smallest_separation_in_pixel), float(minimum_candidate_separation)
+        )
+        mask_too_close = candidates["separation"] < separation_floor
+        if mask_too_close.any():
+            logger.info(
+                "Dropping %d candidate(s) inside %.1f px of the star; the stellar "
+                "PSF core is not a detection region.",
+                int(mask_too_close.sum()), separation_floor,
+            )
         candidates = candidates[~mask_too_close].sort_values(
             "separation", ignore_index=False
         )
@@ -2603,6 +2843,8 @@ class DetectionAnalysis(object):
         wavelength_indices=None,
         candidate_threshold=4.0,
         iterative_search_exclusion_radius=15,
+        minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
+        max_candidates=DEFAULT_MAX_CANDIDATES,
     ):
         if detection_cube is None:
             detection_cube = self.detection_cube
@@ -2619,6 +2861,8 @@ class DetectionAnalysis(object):
                     detection_products=detection_products,
                     candidate_threshold=candidate_threshold,
                     iterative_search_exclusion_radius=iterative_search_exclusion_radius,
+                    minimum_candidate_separation=minimum_candidate_separation,
+                    max_candidates=max_candidates,
                 )
             )
 
@@ -2637,6 +2881,9 @@ class DetectionAnalysis(object):
         search_radius=15,
         mask_deviating=False,
         independent_channels=False,
+        minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
+        candidate_exclusion_radius=None,
+        max_candidates=DEFAULT_MAX_CANDIDATES,
     ):
         """
         Consolidate candidate detections with 2D Gaussian fitting and duplicate removal.
@@ -2743,7 +2990,11 @@ class DetectionAnalysis(object):
                 detection_products=detection_products,
                 wavelength_indices=wavelength_indices,
                 candidate_threshold=candidate_threshold,
-                iterative_search_exclusion_radius=search_radius,
+                iterative_search_exclusion_radius=_resolve_exclusion_radius(
+                    candidate_exclusion_radius, search_radius
+                ),
+                minimum_candidate_separation=minimum_candidate_separation,
+                max_candidates=max_candidates,
             )
 
         if len(candidates) == 0:
@@ -3851,6 +4102,9 @@ class DetectionAnalysis(object):
         candidate_threshold=4.75,
         inner_mask_radius=1,
         search_radius=15,
+        minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
+        candidate_exclusion_radius=None,
+        max_candidates=DEFAULT_MAX_CANDIDATES,
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
@@ -4030,7 +4284,11 @@ class DetectionAnalysis(object):
             detection_products=detection_products,
             wavelength_indices=[0],
             candidate_threshold=candidate_threshold,
-            iterative_search_exclusion_radius=search_radius,
+            iterative_search_exclusion_radius=_resolve_exclusion_radius(
+                candidate_exclusion_radius, search_radius
+            ),
+            minimum_candidate_separation=minimum_candidate_separation,
+            max_candidates=max_candidates,
         )
         
         _, candidates_fit_initial = self.complete_candidate_table(
@@ -4041,6 +4299,9 @@ class DetectionAnalysis(object):
             candidate_threshold=candidate_threshold,
             search_radius=search_radius,
             mask_deviating=mask_deviating,
+            minimum_candidate_separation=minimum_candidate_separation,
+            candidate_exclusion_radius=candidate_exclusion_radius,
+            max_candidates=max_candidates,
         )
 
         if candidates_initial is None or len(candidates_initial) == 0:
@@ -4068,7 +4329,11 @@ class DetectionAnalysis(object):
                 detection_products=detection_products_masked,
                 wavelength_indices=[0], # only collapsed wavelength after template matching
                 candidate_threshold=candidate_threshold,
-                iterative_search_exclusion_radius=search_radius,
+                iterative_search_exclusion_radius=_resolve_exclusion_radius(
+                    candidate_exclusion_radius, search_radius
+                ),
+                minimum_candidate_separation=minimum_candidate_separation,
+                max_candidates=max_candidates,
             )
 
             _, candidates_fit_final = self.complete_candidate_table(
@@ -4079,6 +4344,9 @@ class DetectionAnalysis(object):
                 candidate_threshold=candidate_threshold,
                 search_radius=search_radius,
                 mask_deviating=mask_deviating,
+                minimum_candidate_separation=minimum_candidate_separation,
+                candidate_exclusion_radius=candidate_exclusion_radius,
+                max_candidates=max_candidates,
             )
             
             # Check if candidates survived the second iteration validation
@@ -4241,6 +4509,9 @@ class DetectionAnalysis(object):
         candidate_threshold=4.75,
         inner_mask_radius=1,
         search_radius=15,
+        minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
+        candidate_exclusion_radius=None,
+        max_candidates=DEFAULT_MAX_CANDIDATES,
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
@@ -4260,29 +4531,45 @@ class DetectionAnalysis(object):
     ):
         if self.templates:
             for key in self.templates:
-                self.run_template_matching(
-                    template=self.templates[key],
-                    detection_threshold=detection_threshold,
-                    candidate_threshold=candidate_threshold,
-                    inner_mask_radius=inner_mask_radius,
-                    search_radius=search_radius,
-                    good_fraction_threshold=good_fraction_threshold,
-                    theta_deviation_threshold=theta_deviation_threshold,
-                    yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
-                    data_full=data_full,
-                    flux_psf_full=flux_psf_full,
-                    pa=pa,
-                    instrument=instrument,
-                    temporal_components_fraction=temporal_components_fraction,
-                    wavelength_indices=wavelength_indices,
-                    inverse_variance_full=inverse_variance_full,
-                    bad_frames=bad_frames,
-                    bad_pixel_mask_full=bad_pixel_mask_full,
-                    xy_image_centers=xy_image_centers,
-                    amplitude_modulation_full=amplitude_modulation_full,
-                    file_paths=file_paths,
-                    save=save,
-                )
+                try:
+                    self.run_template_matching(
+                        template=self.templates[key],
+                        detection_threshold=detection_threshold,
+                        candidate_threshold=candidate_threshold,
+                        inner_mask_radius=inner_mask_radius,
+                        search_radius=search_radius,
+                        minimum_candidate_separation=minimum_candidate_separation,
+                        candidate_exclusion_radius=candidate_exclusion_radius,
+                        max_candidates=max_candidates,
+                        good_fraction_threshold=good_fraction_threshold,
+                        theta_deviation_threshold=theta_deviation_threshold,
+                        yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
+                        data_full=data_full,
+                        flux_psf_full=flux_psf_full,
+                        pa=pa,
+                        instrument=instrument,
+                        temporal_components_fraction=temporal_components_fraction,
+                        wavelength_indices=wavelength_indices,
+                        inverse_variance_full=inverse_variance_full,
+                        bad_frames=bad_frames,
+                        bad_pixel_mask_full=bad_pixel_mask_full,
+                        xy_image_centers=xy_image_centers,
+                        amplitude_modulation_full=amplitude_modulation_full,
+                        file_paths=file_paths,
+                        save=save,
+                    )
+                except Exception:
+                    # One template failing must not cost the templates after it
+                    # (they run in dict order) nor the combined tables built from
+                    # whichever templates did succeed.
+                    logger.exception(
+                        "Template matching failed for the '%s' template; continuing "
+                        "with the remaining templates.", key,
+                    )
+                    template = self.templates[key]
+                    template.companion_table = None
+                    template.validated_companion_table = None
+                    template.validated_companion_table_short = None
 
     def plot_template_matched_contrasts(self):
 
@@ -4342,6 +4629,9 @@ class DetectionAnalysis(object):
         search_radius=15,
         mask_deviating=False,
         independent_channels=False,
+        minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
+        candidate_exclusion_radius=None,
+        max_candidates=DEFAULT_MAX_CANDIDATES,
     ):
         """Detect and fit the companion in each wavelength channel separately,
         then combine the channels that individually clear ``candidate_threshold``
@@ -4358,7 +4648,11 @@ class DetectionAnalysis(object):
         candidates = self.find_candidates_all_wavelengths(
             wavelength_indices=wavelength_indices,
             candidate_threshold=candidate_threshold,
-            iterative_search_exclusion_radius=search_radius,
+            iterative_search_exclusion_radius=_resolve_exclusion_radius(
+                candidate_exclusion_radius, search_radius
+            ),
+            minimum_candidate_separation=minimum_candidate_separation,
+            max_candidates=max_candidates,
         )
         if candidates is None or len(candidates) == 0:
             return None
@@ -4369,6 +4663,9 @@ class DetectionAnalysis(object):
             search_radius=search_radius,
             mask_deviating=mask_deviating,
             independent_channels=independent_channels,
+            minimum_candidate_separation=minimum_candidate_separation,
+            candidate_exclusion_radius=candidate_exclusion_radius,
+            max_candidates=max_candidates,
         )
         if candidates_fit is None:
             return None
@@ -4679,6 +4976,8 @@ class DetectionAnalysis(object):
         detection_threshold=5., candidate_threshold=4.75,
         use_spectral_correlation=False,
         inner_mask_radius=1, search_radius=15, good_fraction_threshold=0.05,
+        minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
+        candidate_exclusion_radius=None, max_candidates=DEFAULT_MAX_CANDIDATES,
         theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5],
         save_initial_detection_products=True,
         per_channel_min_channel_fraction=0.5,
@@ -4713,6 +5012,9 @@ class DetectionAnalysis(object):
             candidate_threshold=candidate_threshold,
             inner_mask_radius=inner_mask_radius,
             search_radius=search_radius,
+            minimum_candidate_separation=minimum_candidate_separation,
+            candidate_exclusion_radius=candidate_exclusion_radius,
+            max_candidates=max_candidates,
             good_fraction_threshold=good_fraction_threshold,
             theta_deviation_threshold=theta_deviation_threshold,
             yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
@@ -4731,17 +5033,34 @@ class DetectionAnalysis(object):
             save=True,
         )
         
-        self.plot_template_matched_contrasts()
+        try:
+            self.plot_template_matched_contrasts()
+        except Exception:
+            # Diagnostics only; never worth losing the tables below over.
+            logger.exception("Contrast plotting failed; continuing.")
 
         # Per-channel astrometry (template-independent) drives the reported
         # position/σ; the template collapse is optimal for detection SNR, not
         # for astrometry. Measured once here and merged into both overall tables.
-        self.per_channel_astrometry = self.measure_per_channel_astrometry(
-            wavelength_indices=wavelength_indices,
-            candidate_threshold=candidate_threshold,
-            search_radius=search_radius,
-            independent_channels=per_channel_independent_channels,
-        )
+        # It is a refinement of an astrometry the collapse already provides, so
+        # a failure here must not cost the overall tables — which is exactly what
+        # used to happen, since they are written after this call.
+        try:
+            self.per_channel_astrometry = self.measure_per_channel_astrometry(
+                wavelength_indices=wavelength_indices,
+                candidate_threshold=candidate_threshold,
+                search_radius=search_radius,
+                independent_channels=per_channel_independent_channels,
+                minimum_candidate_separation=minimum_candidate_separation,
+                candidate_exclusion_radius=candidate_exclusion_radius,
+                max_candidates=max_candidates,
+            )
+        except Exception:
+            logger.exception(
+                "Per-channel astrometry failed; falling back to the "
+                "template-collapse astrometry for the combined tables."
+            )
+            self.per_channel_astrometry = None
         if self.per_channel_astrometry is not None:
             output_dir_matching = os.path.join(
                 self.reduction_parameters.result_folder, "template_matching/"

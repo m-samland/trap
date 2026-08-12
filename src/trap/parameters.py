@@ -238,6 +238,18 @@ class DetectionParameters:
     stellar_parameters: StellarParameters = field(default_factory=StellarParameters)
     search_radius: int = 11
     inner_mask_radius: int = 1
+    # Pixels inside `search_region_inner_bound` are reduced to feed the annulus
+    # statistics, not because a companion there could be characterized: the
+    # stellar PSF core is coronagraph-attenuated, and a candidate closer in than
+    # this would be masked by its own companion mask when the noise profile is
+    # rebuilt. Candidates below this separation are dropped before any fit.
+    minimum_candidate_separation: float = 5.0
+    # `search_radius` doubles as the cross-template/cross-channel association
+    # radius, so widening it to swallow a bright source's footprint would also
+    # start merging genuinely distinct sources. Set this to decouple the two;
+    # None keeps the historical behaviour of reusing `search_radius`.
+    candidate_exclusion_radius: Optional[int] = None
+    max_candidates: int = 50
     good_fraction_threshold: float = 0.05
     theta_deviation_threshold: float = 25.0
     yx_fwhm_ratio_threshold: Tuple[float, float] = (1.1, 4.5)
