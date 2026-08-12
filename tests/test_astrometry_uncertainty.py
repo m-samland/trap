@@ -6,7 +6,6 @@ for the mathematical justification of every assertion in this file.
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from trap import detection
 
