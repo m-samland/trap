@@ -3,7 +3,28 @@
 All notable changes to this project will be documented in this file.  
 This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.1] - 2026-08-12
+
+Robustness release for the detection stage. A single unfittable or spurious candidate no
+longer aborts a target or costs it the combined companion tables, and a bright binary no
+longer floods the candidate list.
+
+### Added
+- **SNR-scaled candidate exclusion radius.** The radius blanked around an accepted peak
+  scales as `sqrt(snr / candidate_threshold)`, capped at `2.5 ×` the base radius. A fixed
+  radius is tuned for a marginal detection, but a bright binary's contamination is a swarm
+  of detached above-threshold blobs that re-enter the search as spurious candidates: on
+  HD_140408 (125σ binary at 35 px) this cut the candidate list from 18/14 to 9/6 per channel
+  while leaving three clean targets — including one with a real 30σ source — unchanged.
+  Connected above-threshold regions are masked alongside the disk. Controlled by
+  `exclusion_radius_snr_scaling` / `max_exclusion_radius_factor`.
+- **`DetectionParameters.candidate_exclusion_radius`** decouples the iterative search
+  exclusion radius from `search_radius`, which also serves as the cross-template and
+  cross-channel association radius — widening one used to silently widen the other. `None`
+  keeps the previous shared behaviour.
+- **`DetectionParameters.max_candidates`** (50) bounds the previously unlimited candidate
+  loop. Every candidate costs a full contrast-table renormalization, so a saturated map was
+  a runtime hazard as much as a scientific one; truncation is logged.
 
 ### Fixed
 - **A single unfittable candidate no longer aborts the whole target.** `fit_2d_gaussian`
@@ -33,23 +54,6 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
   both `overall_*.csv` files even when the per-template tables were already complete. Each
   template, the contrast plotting, and the per-channel astrometry are now individually
   log-and-continue; the combined tables are built from whatever succeeded.
-
-### Added
-- **SNR-scaled candidate exclusion radius.** The radius blanked around an accepted peak
-  scales as `sqrt(snr / candidate_threshold)`, capped at `2.5 ×` the base radius. A fixed
-  radius is tuned for a marginal detection, but a bright binary's contamination is a swarm
-  of detached above-threshold blobs that re-enter the search as spurious candidates: on
-  HD_140408 (125σ binary at 35 px) this cut the candidate list from 18/14 to 9/6 per channel
-  while leaving three clean targets — including one with a real 30σ source — unchanged.
-  Connected above-threshold regions are masked alongside the disk. Controlled by
-  `exclusion_radius_snr_scaling` / `max_exclusion_radius_factor`.
-- **`DetectionParameters.candidate_exclusion_radius`** decouples the iterative search
-  exclusion radius from `search_radius`, which also serves as the cross-template and
-  cross-channel association radius — widening one used to silently widen the other. `None`
-  keeps the previous shared behaviour.
-- **`DetectionParameters.max_candidates`** (50) bounds the previously unlimited candidate
-  loop. Every candidate costs a full contrast-table renormalization, so a saturated map was
-  a runtime hazard as much as a scientific one; truncation is logged.
 
 ## [2.0.0] - 2026-07-30
 
@@ -339,7 +343,8 @@ First release with validated astrometry. Contains breaking changes — see the e
 ### Fixed
 - No known issues.
 
-[Unreleased]: https://github.com/m-samland/trap/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/m-samland/trap/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/m-samland/trap/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/m-samland/trap/compare/v1.3.1...v2.0.0
 [1.3.1]: https://github.com/m-samland/trap/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/m-samland/trap/compare/v1.2.1...v1.3.0
