@@ -27,7 +27,6 @@ from natsort import natsorted
 from numpy import interp
 from photutils.aperture import CircularAnnulus
 from scipy import linalg, ndimage, stats
-from species import SpeciesInit
 from species.data.database import Database
 from species.read.read_model import ReadModel
 from tqdm.auto import tqdm
@@ -36,6 +35,7 @@ from trap import image_coordinates, pca_regression, regressor_selection
 from trap.image_coordinates import absolute_yx_to_relative_yx, relative_yx_to_rhophi
 from trap.parameters import _to_reduction_config
 from trap.reduction_wrapper import run_complete_reduction
+from trap.species_setup import configure_species
 from trap.template import SpectralTemplate
 from trap.utils import (
     compute_empirical_correlation_matrix,
@@ -3671,22 +3671,8 @@ class DetectionAnalysis(object):
             use_spectral_correlation (bool, optional): Flag indicating whether to use spectral correlation. Defaults to True.
         """
         
-        if species_database_directory is None:
-            ValueError("Need to specify species database directory.")
-        
-        if not os.path.exists(species_database_directory):
-            os.makedirs(species_database_directory)
-            os.chdir(species_database_directory)
-            SpeciesInit()
-
-        os.chdir(species_database_directory)
-        
-        try:
-            database = Database()
-        except:
-            logger.warning("No initialized species database found in: %s", species_database_directory)
-            SpeciesInit()
-            database = Database()
+        species_database_directory = configure_species(species_database_directory)
+        database = Database()
 
         if instrument is None:
             instrument = self.instrument
