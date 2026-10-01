@@ -12,6 +12,9 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Changed
 - **`species` comes from PyPI (`species>=0.11.0`)** instead of its git main branch, so trap can itself be released on PyPI.
 
+### Removed
+- **`trap.embed_shell`**, an unused debugging helper that failed to import without IPython ([#43](https://github.com/m-samland/trap/issues/43)).
+
 ## [2.0.1] - 2026-08-12
 
 Robustness release for the detection stage.
