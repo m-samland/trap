@@ -97,6 +97,10 @@ max-complexity = 10
 quote-style = "double"  # to match Black formatting
 indent-style = "space"
 
+[tool.pytest.ini_options]
+# A bare `pytest` collects only the suite, never examples/ or scratch scripts.
+testpaths = ["tests"]
+
 [tool.coverage.run]
 omit = [
     "_version.py",
