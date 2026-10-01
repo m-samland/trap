@@ -390,6 +390,9 @@ def extract_stamps(flux_arr, pos, pa, stamp_size, image_center=None,
     return stamps, shifts
 
 
+_MIN_EDGE_THROUGHPUT = 0.95
+
+
 def coronagraph_transmission_to_pixels(transmission, mas_per_pixel):
     """Convert a coronagraph throughput table's separation axis to pixels.
 
@@ -431,10 +434,13 @@ def coronagraph_transmission_to_pixels(transmission, mas_per_pixel):
     separation_pix = separation_mas[order] / mas_per_pixel
     throughput = throughput[order]
 
-    if not np.isclose(throughput[-1], 1.0):
+    # Measured curves approach 1.0 without reaching it (SPHERE N_ALC_JYH_S ends
+    # at 0.996-0.999 at 200 mas), so only a step that biases the correction warns.
+    if throughput[-1] < _MIN_EDGE_THROUGHPUT:
         warnings.warn(
-            "Largest-separation coronagraph throughput is not 1.0; separations "
-            "beyond the table are treated as fully transmitting (1.0).",
+            f"Largest-separation coronagraph throughput is {throughput[-1]:.3f}, but "
+            "separations beyond the table are treated as fully transmitting (1.0); "
+            "extend the table to where the throughput reaches 1.",
             stacklevel=2,
         )
 
