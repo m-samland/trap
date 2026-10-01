@@ -8,6 +8,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Fixed
 - **Template matching no longer changes the working directory.** With a relative `result_folder`, the `template_matching/` output landed inside the species database directory while the run reported success.
   Existing species directories keep working ([#39](https://github.com/m-samland/trap/issues/39)).
+- **`dill` is now a declared dependency.** A plain `pip install` left it out, so the detection stage failed to import ([#43](https://github.com/m-samland/trap/issues/43)).
 
 ### Changed
 - **`species` comes from PyPI (`species>=0.11.0`)** instead of its git main branch, so trap can itself be released on PyPI.

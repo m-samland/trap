@@ -25,6 +25,7 @@ dependencies = [
     "joblib",
     "bottleneck",
     "natsort",
+    "dill",
     "species>=0.11.0",
 ]
 dynamic = ['version']
