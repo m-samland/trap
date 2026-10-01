@@ -25,6 +25,7 @@ dependencies = [
     "joblib",
     "bottleneck",
     "natsort",
+    "dill",
     "species>=0.11.0",
 ]
 dynamic = ['version']
@@ -96,6 +97,10 @@ max-complexity = 10
 [tool.ruff.format]
 quote-style = "double"  # to match Black formatting
 indent-style = "space"
+
+[tool.pytest.ini_options]
+# A bare `pytest` collects only the suite, never examples/ or scratch scripts.
+testpaths = ["tests"]
 
 [tool.coverage.run]
 omit = [
