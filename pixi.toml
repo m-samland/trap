@@ -22,7 +22,6 @@ tqdm = "*"
 bottleneck = "*"
 natsort = "*"
 dill = "*"
-cython = "*"
 joblib = "*"
 
 # Editable install of the package itself
