@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.  
 This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Template matching no longer changes the process working directory.** `add_default_templates` chdir'd into the species database directory and never restored the cwd, and `SpectralTemplate.plot_template` chdir'd again, so every relative path the calling pipeline had configured silently changed meaning for the rest of the run.
+  With a relative `result_folder` the entire `template_matching/` tree was written under the species directory while the run reported success ([#39](https://github.com/m-samland/trap/issues/39)).
+  New `trap/species_setup.py` configures species in place via `SpeciesInit(config_file=..., database_file=...)`, which exports `SPECIES_CONFIG` for every later `Database` / `ReadModel` / `ReadFilter` / `SyntheticPhotometry` call.
+  `SpeciesInit` has no `data_folder` argument and creates the relative `./data/` from its own config against the cwd, so the config is now written with an absolute `data_folder` before it runs; the old chdir supplied that location by accident.
+  Downloads therefore still land under the database directory, and no stray `data/` appears in the caller's working directory.
+  A `species_config.ini` written by an earlier chdir-based run names its `database` and `data_folder` relatively, and species passes those straight to `h5py.File`; both are rewritten to absolute paths on first use so an existing species directory keeps working from any cwd.
+  An already-initialized database is adopted rather than re-initialized, including a config that names a database in another directory, so an ordinary run no longer rewrites the HDF5's `configuration` group at startup.
+  `plot_template` now configures species itself instead of depending on `add_default_templates` having run first.
+  `add_default_templates` also raises on a missing `species_database_directory`, which it previously constructed as an exception and discarded, and no longer hides failures behind a bare `except`.
+
+### Changed
+- **`species` comes from PyPI (`species>=0.11.0`)** instead of its git main branch.
+  0.11.0 is the first PyPI release with `SpeciesInit(config_file=...)`, which the fix above needs, and a direct git reference would keep trap off PyPI.
+
 ## [2.0.1] - 2026-08-12
 
 Robustness release for the detection stage.
