@@ -8,7 +8,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Fixed
 - **Template matching no longer changes the working directory.** With a relative `result_folder`, the `template_matching/` output landed inside the species database directory while the run reported success.
   Existing species directories keep working ([#39](https://github.com/m-samland/trap/issues/39)).
-- **A non-finite image center no longer crashes the reduction or discards a whole wavelength.** Frames with a NaN center are dropped like `bad_frames`, and a wavelength without any finite center is skipped on its own ([#40](https://github.com/m-samland/trap/issues/40)).
+- **A non-finite image center no longer crashes the reduction or discards a whole wavelength.** Frames with a NaN center are dropped like `bad_frames`, a wavelength without any finite center is skipped on its own, and a single `(x, y)` center for all frames no longer crashes ([#40](https://github.com/m-samland/trap/issues/40)).
 - **The coronagraph throughput warning no longer fires for measured curves that end just below 1.0**, such as the SPHERE `N_ALC_JYH_S` curves; it now warns only when the table ends below 0.95 ([#41](https://github.com/m-samland/trap/issues/41)).
 - **`dill` is now a declared dependency.** A plain `pip install` left it out, so the detection stage failed to import ([#43](https://github.com/m-samland/trap/issues/43)).
 

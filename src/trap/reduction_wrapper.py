@@ -1606,7 +1606,8 @@ def run_complete_reduction(
         if inverse_variance_full is not None:
             inverse_variance_full = np.delete(inverse_variance_full, bad_frames, axis=1)
 
-        if xy_image_centers is not None:
+        # A single (x, y) center applies to every frame and has no frame axis.
+        if xy_image_centers is not None and np.ndim(xy_image_centers) > 1:
             xy_image_centers = np.delete(xy_image_centers, bad_frames, axis=-2)
 
     # Configure image centers
