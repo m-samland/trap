@@ -3669,8 +3669,11 @@ class DetectionAnalysis(object):
             instrument (Instrument, optional): The instrument. Defaults to None.
             correct_transmission (bool, optional): Flag indicating whether to correct for transmission. Defaults to False.
             use_spectral_correlation (bool, optional): Flag indicating whether to use spectral correlation. Defaults to True.
+
+        Raises:
+            ValueError: If species_database_directory is None.
         """
-        
+
         species_database_directory = configure_species(species_database_directory)
         database = Database()
 
