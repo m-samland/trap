@@ -434,13 +434,13 @@ def coronagraph_transmission_to_pixels(transmission, mas_per_pixel):
     separation_pix = separation_mas[order] / mas_per_pixel
     throughput = throughput[order]
 
-    # Measured curves approach 1.0 without reaching it (SPHERE N_ALC_JYH_S ends
-    # at 0.996-0.999 at 200 mas), so only a step that biases the correction warns.
+    # Measured curves approach 1.0 without reaching it, so only a step large
+    # enough to bias the correction warns.
     if throughput[-1] < _MIN_EDGE_THROUGHPUT:
         warnings.warn(
             f"Largest-separation coronagraph throughput is {throughput[-1]:.3f}, but "
             "separations beyond the table are treated as fully transmitting (1.0); "
-            "extend the table to where the throughput reaches 1.",
+            "extend the table to larger separations.",
             stacklevel=2,
         )
 
