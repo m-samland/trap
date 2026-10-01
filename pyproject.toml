@@ -25,7 +25,7 @@ dependencies = [
     "joblib",
     "bottleneck",
     "natsort",
-    "species@git+https://github.com/tomasstolker/species", 
+    "species>=0.11.0",
 ]
 dynamic = ['version']
 

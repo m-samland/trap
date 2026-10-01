@@ -28,7 +28,7 @@ joblib = "*"
 # Editable install of the package itself
 [pypi-dependencies]
 trap = { path = ".", editable = true }
-species = { git = "https://github.com/tomasstolker/species" }
+species = ">=0.11.0"
 
 # ──────────────────────────────────────────────
 # Feature: notebook
