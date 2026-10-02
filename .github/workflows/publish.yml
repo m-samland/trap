@@ -5,6 +5,8 @@ name: Publish
 # - a published GitHub release uploads to PyPI (environment `pypi`: v* tags only,
 #   waits for a maintainer's approval);
 # - a manual run uploads a dev version to TestPyPI (environment `testpypi`).
+# Renaming this file or an environment breaks publishing until the trusted publishers on
+# PyPI and TestPyPI are updated. The release steps are in RELEASING.md.
 on:
   push:
     branches: [main, develop]
