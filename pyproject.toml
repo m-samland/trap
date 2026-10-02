@@ -1,12 +1,12 @@
 [project]
-name = "trap"
+name = "trap-hci"
 authors = [{name = "Matthias Samland", email = "m.samland@mailbox.org"}]
 description = "Detection of exoplanets in direct imaging data by causal regression of temporal systematics"
 readme = "README.md"
-license = { file = 'LICENSE' }
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
 ]
@@ -57,7 +57,7 @@ all = [
 
 [build-system]
 requires = [
-    "setuptools>=60",
+    "setuptools>=77",
     "setuptools_scm>=8.0",
     "wheel",
 ]

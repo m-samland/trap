@@ -1,18 +1,5 @@
-# Include essential project files
-include README.md
-include LICENSE
-include pyproject.toml
-include CHANGELOG.md
-include CITATION.cff
-
-# Include all Python source files
-recursive-include src *.py
-
-# Include tutorial notebooks
-include tutorial.ipynb
-
-# Include documentation
-recursive-include docs *
-
-# Exclude example files
+# setuptools_scm adds every tracked file to the sdist, so nothing needs including here.
+# Keep out generated docs and the example data.
+prune docs/_build
+prune docs/api
 prune examples

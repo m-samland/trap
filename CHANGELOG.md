@@ -13,6 +13,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 - **`dill` is now a declared dependency.** A plain `pip install` left it out, so the detection stage failed to import ([#43](https://github.com/m-samland/trap/issues/43)).
 
 ### Changed
+- **trap is published on PyPI as `trap-hci`** (`pip install trap-hci`); the import name stays `trap` ([#48](https://github.com/m-samland/trap/issues/48)).
 - **`species` comes from PyPI (`species>=0.11.0`)** instead of its git main branch, so trap can itself be released on PyPI.
 
 ### Removed

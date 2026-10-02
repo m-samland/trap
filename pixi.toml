@@ -26,7 +26,7 @@ joblib = "*"
 
 # Editable install of the package itself
 [pypi-dependencies]
-trap = { path = ".", editable = true }
+trap-hci = { path = ".", editable = true }
 species = ">=0.11.0"
 
 # ──────────────────────────────────────────────
