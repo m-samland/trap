@@ -104,6 +104,8 @@ pixi shell -e dev
 ruff check .
 ```
 
+- `pytest` runs the fast test suite. `pytest -m e2e` (or `pixi run -e dev test-e2e`) also runs the end-to-end reduction of 51 Eri b on the SPHERE-IRDIS data in `examples/test_data`, which takes a few minutes; CI runs both on every pull request.
+
 If you’re unsure where to start, check out the [good first issues](https://github.com/m-samland/trap/labels/good%20first%20issue) or open a discussion.
 
 ---

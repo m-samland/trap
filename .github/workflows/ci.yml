@@ -65,3 +65,29 @@ jobs:
       - name: Run pytest
         run: |
           pytest
+
+  e2e:
+    name: 🔭 End-to-end on 51 Eri b
+    runs-on: ubuntu-latest
+    # Only spend the minutes once the cheap checks pass.
+    needs: [lint, test]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[test]"
+
+      # Real IRDIS data from examples/test_data; a few minutes on the runner's 4 CPUs.
+      - name: Run the end-to-end test
+        run: |
+          pytest -m e2e

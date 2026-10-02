@@ -5,6 +5,9 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Added
+- **End-to-end test on real data.** `pytest -m e2e` reduces the SPHERE-IRDIS K1 sequence of 51 Eri b shipped in `examples/test_data` and checks the planet's detection, fit and contrast curve; CI runs it on every pull request, after the unit tests ([#51](https://github.com/m-samland/trap/pull/51)).
+
 ### Fixed
 - **Template matching no longer changes the working directory.** With a relative `result_folder`, the `template_matching/` output landed inside the species database directory while the run reported success.
   Existing species directories keep working ([#39](https://github.com/m-samland/trap/issues/39)).

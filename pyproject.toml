@@ -100,6 +100,11 @@ indent-style = "space"
 [tool.pytest.ini_options]
 # A bare `pytest` collects only the suite, never examples/ or scratch scripts.
 testpaths = ["tests"]
+# The end-to-end test takes minutes; run it with `pytest -m e2e` (CI does).
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: end-to-end reduction of the 51 Eri b test data in examples/test_data",
+]
 
 [tool.coverage.run]
 omit = [

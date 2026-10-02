@@ -71,8 +71,9 @@ dev = { features = ["notebook", "test"], solve-group = "dev" }
 # ──────────────────────────────────────────────
 [feature.test.tasks]
 test = "pytest"
+test-e2e = "pytest -m e2e"  # end-to-end on the 51 Eri b data; a few minutes
 # Matches what CI lints: `ruff check .` minus the excluded docs/ and untracked scratch files
-lint = "ruff check src/ tests/"
+lint = "ruff check src/ tests/ examples/test_data/"
 format = "ruff format src/"
 format-check = "ruff format --check src/"
 
