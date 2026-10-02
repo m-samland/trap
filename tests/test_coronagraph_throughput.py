@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -24,9 +26,18 @@ def test_to_pixels_accepts_pair():
     np.testing.assert_allclose(out[:, 0], [0.0, 5.0, 10.0])
 
 
-def test_to_pixels_warns_when_last_not_one():
+def test_to_pixels_warns_when_table_ends_well_below_one():
     table_mas = np.array([[0.0, 0.0], [100.0, 0.8]])
-    with pytest.warns(UserWarning):
+    with pytest.warns(UserWarning, match="extend the table"):
+        coronagraph_transmission_to_pixels(table_mas, mas_per_pixel=10.0)
+
+
+@pytest.mark.parametrize("last", [0.9985, 0.9957])
+def test_to_pixels_silent_when_table_ends_near_one(last):
+    """Measured SPHERE curves end just below 1.0 at 200 mas (#41)."""
+    table_mas = np.array([[0.0, 0.0], [200.0, last]])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         coronagraph_transmission_to_pixels(table_mas, mas_per_pixel=10.0)
 
 

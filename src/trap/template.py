@@ -1,12 +1,13 @@
 import copy
 import logging
-import os
 
 import numpy as np
 from astropy import units as u
 from species.phot.syn_phot import SyntheticPhotometry
 from species.plot.plot_spectrum import plot_spectrum
 from species.read.read_filter import ReadFilter
+
+from trap.species_setup import configure_species
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +231,11 @@ class SpectralTemplate(object):
 
             if self.instrument.instrument_type == 'photometry':
                 filters = self.instrument.filters
-                os.chdir(self.species_database_directory)
+                # plot_spectrum resolves the filter profiles through species, which
+                # needs a configured database. Configuring it here rather than
+                # relying on add_default_templates having run first makes the
+                # plotting path usable on its own.
+                configure_species(self.species_database_directory)
                 xlim = None
                 ylim = None
             else:

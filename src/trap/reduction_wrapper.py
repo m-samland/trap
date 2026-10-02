@@ -1478,7 +1478,8 @@ def run_complete_reduction(
     xy_image_centers : array_like, optional
         Array containing tuple of xy image center positions for each wavelength
         (axis=0) and time (axis=1). This option should be used when running TRAP on
-        non-aligned data.
+        non-aligned data. Frames with a non-finite center are dropped like
+        ``bad_frames``; a wavelength without any finite center is skipped.
     amplitude_modulation_full : array_like, optional
         Array containing scaling factors for the companion PSF brightness for
         each wavelength (axis=0) and time (axis=1) (e.g. derived from satellite
@@ -1584,6 +1585,20 @@ def run_complete_reduction(
             "The provided PSF images are too small for the chosen parameters."
         )
     psf_stamps = prepare_psf(flux_psf_full, psf_size=stamp_sizes)
+    # A frame without a center cannot be modelled. Wavelengths share the time
+    # axis, so it is dropped in all of them; a wavelength with no finite center
+    # at all is left to the per-wavelength skip instead of emptying the cube.
+    if xy_image_centers is not None and np.ndim(xy_image_centers) > 1:
+        xy_image_centers = np.asarray(xy_image_centers, dtype=float)
+        nan_center = ~np.isfinite(xy_image_centers).all(axis=-1).reshape(-1, xy_image_centers.shape[-2])
+        nan_center_frames = np.flatnonzero(nan_center[~nan_center.all(axis=1)].any(axis=0))
+        if nan_center_frames.size > 0:
+            logger.warning(
+                "Dropping %d of %d frames with a non-finite image center: %s",
+                nan_center_frames.size, xy_image_centers.shape[-2], nan_center_frames.tolist(),
+            )
+            bad_frames = sorted(set(np.asarray(bad_frames, dtype=int).tolist()) | set(nan_center_frames.tolist()))
+
     # Remove bad frames
     if bad_frames is not None:
         data_full = np.delete(data_full, bad_frames, axis=1)
@@ -1591,8 +1606,9 @@ def run_complete_reduction(
         if inverse_variance_full is not None:
             inverse_variance_full = np.delete(inverse_variance_full, bad_frames, axis=1)
 
-        if xy_image_centers is not None:
-            xy_image_centers = np.delete(xy_image_centers, bad_frames, axis=1)
+        # A single (x, y) center applies to every frame and has no frame axis.
+        if xy_image_centers is not None and np.ndim(xy_image_centers) > 1:
+            xy_image_centers = np.delete(xy_image_centers, bad_frames, axis=-2)
 
     # Configure image centers
     if xy_image_centers is None:
@@ -1621,10 +1637,10 @@ def run_complete_reduction(
                 xy_image_centers = np.expand_dims(xy_image_centers, axis=0)
             yx_center_injection_full = xy_image_centers[..., ::-1]
             yx_center_full = np.median(yx_center_injection_full, axis=1)
-            max_shift_x = np.max(xy_image_centers[..., 0]) - np.min(
+            max_shift_x = np.nanmax(xy_image_centers[..., 0]) - np.nanmin(
                 xy_image_centers[..., 0]
             )
-            max_shift_y = np.max(xy_image_centers[..., 1]) - np.min(
+            max_shift_y = np.nanmax(xy_image_centers[..., 1]) - np.nanmin(
                 xy_image_centers[..., 1]
             )
             max_shift = np.max([max_shift_x, max_shift_y]) * 2

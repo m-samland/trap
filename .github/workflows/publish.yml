@@ -1,0 +1,108 @@
+name: Publish
+
+# Every run builds and checks the package. Uploads use Trusted Publishing (no tokens),
+# configured on PyPI and TestPyPI for this file name and the environments below:
+# - a published GitHub release uploads to PyPI (environment `pypi`: v* tags only,
+#   waits for a maintainer's approval);
+# - a manual run uploads a dev version to TestPyPI (environment `testpypi`).
+# Renaming this file or an environment breaks publishing until the trusted publishers on
+# PyPI and TestPyPI are updated. The release steps are in RELEASING.md.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  build:
+    name: 📦 Build and check
+    runs-on: ubuntu-latest
+
+    steps:
+      # setuptools_scm needs the tags; a shallow clone builds version 0.1.dev1.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # PyPI rejects local versions (+g<hash>), which every build between tags carries.
+      - name: Build sdist and wheel
+        env:
+          SETUPTOOLS_SCM_OVERRIDES_FOR_TRAP_HCI: '{local_scheme = "no-local-version"}'
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check --strict dist/*
+
+      # An upload can never be replaced, so install the wheel on its own before it goes out.
+      - name: Smoke test the wheel
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/smoke/bin/python" -c "
+          import os, trap
+          print('trap', trap.__version__)
+          tag = os.environ['RELEASE_TAG']
+          assert not tag or trap.__version__ == tag.removeprefix('v'), f'version {trap.__version__} does not match tag {tag}'
+          "
+
+      - name: Upload the distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    name: 🧪 Upload to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/trap-hci
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: 🚀 Upload to PyPI
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/trap-hci
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

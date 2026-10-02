@@ -26,10 +26,18 @@
 
 ## Installation
 
-TRAP requires **Python 3.11, 3.12, or 3.13**. It can be installed directly from GitHub:
+TRAP requires **Python 3.11, 3.12, or 3.13**. It is published on PyPI as `trap-hci` and imported as `trap`:
 
 ```bash
-pip install git+https://github.com/m-samland/trap
+pip install trap-hci
+```
+
+The name `trap` on PyPI belongs to an unrelated package (ASTRON's Transients Pipeline), which also installs a module called `trap`, so the two cannot be installed in the same environment.
+
+To install the latest development version, the `develop` branch, instead:
+
+```bash
+pip install git+https://github.com/m-samland/trap@develop
 ```
 
 > ℹ️ TRAP parallelizes with `joblib`/loky and a memmap-backed shared-array store, so there is no cluster runtime to install separately. Large input arrays are written once to a scratch directory (`/dev/shm` when available, otherwise the system temp directory) and memory-mapped read-only by the worker processes; set `TrapReductionConfig.scratch_dir` if your machine needs a different location. To scale beyond one node, submit scheduler job arrays over wavelengths or epochs.
@@ -38,7 +46,7 @@ pip install git+https://github.com/m-samland/trap
 
 ## Quick Start
 
-A [Jupyter notebook](examples/tutorial.ipynb) and [example dataset](examples/test_data/) based on **VLT/SPHERE** observations are provided. They demonstrate the full workflow: loading data, performing temporal regression, generating detection maps, and extracting companion spectra.
+A [Jupyter notebook](https://github.com/m-samland/trap/blob/main/examples/tutorial.ipynb) and [example dataset](https://github.com/m-samland/trap/tree/main/examples/test_data) based on **VLT/SPHERE** observations are provided. They demonstrate the full workflow: loading data, performing temporal regression, generating detection maps, and extracting companion spectra.
 
 Reductions are configured with dataclasses rather than a CLI:
 
@@ -77,11 +85,12 @@ We warmly welcome contributions to **TRAP**! Here's how to get started:
 
 ### Setup for Developers
 
-Clone the repository and install it locally for development with tests:
+Development happens on the `develop` branch; `main` holds the releases. Clone the repository and install it locally for development with tests:
 
 ```bash
 git clone https://github.com/m-samland/trap.git
 cd trap
+git switch develop
 pip install -e ".[test]"
 ```
 
@@ -94,13 +103,15 @@ pixi shell -e dev
 
 ### Contributing Guidelines
 
-- Please use **feature branches or forks** for developing new features or bug fixes.
+- Please use **feature branches or forks** for developing new features or bug fixes, branched from `develop`, and open Pull Requests against `develop`.
 - **Issue and Pull Request templates** are provided—please use them.
 - Always run the code linting tool (`ruff`) before submitting a Pull Request:
 
 ```bash
 ruff check .
 ```
+
+- `pytest` runs the fast test suite. `pytest -m e2e` (or `pixi run -e dev test-e2e`) also runs the end-to-end reduction of 51 Eri b on the SPHERE-IRDIS data in `examples/test_data`, which takes a few minutes; CI runs both on every pull request.
 
 If you’re unsure where to start, check out the [good first issues](https://github.com/m-samland/trap/labels/good%20first%20issue) or open a discussion.
 
@@ -139,11 +150,11 @@ For other citation formats, visit the [ADS entry](https://ui.adsabs.harvard.edu/
 ## Versioning
 
 The peer-reviewed publication describes release version **v1.0.0** of TRAP.  
-Subsequent changes and feature additions are documented in the [CHANGELOG](CHANGELOG.md).
+Subsequent changes and feature additions are documented in the [CHANGELOG](https://github.com/m-samland/trap/blob/main/CHANGELOG.md).
 
 **v2.0.0 contains breaking changes.** The legacy `Reduction_parameters` object and its bridge
 methods were removed, `include_noise` was renamed to `estimate_noise_from_data`, and Ray was
-replaced by `joblib`/loky. See the [CHANGELOG](CHANGELOG.md) for the migration details.
+replaced by `joblib`/loky. See the [CHANGELOG](https://github.com/m-samland/trap/blob/main/CHANGELOG.md) for the migration details.
 
 ---
 

@@ -1,12 +1,12 @@
 [project]
-name = "trap"
+name = "trap-hci"
 authors = [{name = "Matthias Samland", email = "m.samland@mailbox.org"}]
 description = "Detection of exoplanets in direct imaging data by causal regression of temporal systematics"
 readme = "README.md"
-license = { file = 'LICENSE' }
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
 ]
@@ -25,7 +25,8 @@ dependencies = [
     "joblib",
     "bottleneck",
     "natsort",
-    "species@git+https://github.com/tomasstolker/species", 
+    "dill",
+    "species>=0.11.0",
 ]
 dynamic = ['version']
 
@@ -56,10 +57,9 @@ all = [
 
 [build-system]
 requires = [
-    "setuptools>=60",
+    "setuptools>=77",
     "setuptools_scm>=8.0",
     "wheel",
-    "cython"
 ]
 build-backend = "setuptools.build_meta"
 
@@ -96,6 +96,15 @@ max-complexity = 10
 [tool.ruff.format]
 quote-style = "double"  # to match Black formatting
 indent-style = "space"
+
+[tool.pytest.ini_options]
+# A bare `pytest` collects only the suite, never examples/ or scratch scripts.
+testpaths = ["tests"]
+# The end-to-end test takes minutes; run it with `pytest -m e2e` (CI does).
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: end-to-end reduction of the 51 Eri b test data in examples/test_data",
+]
 
 [tool.coverage.run]
 omit = [

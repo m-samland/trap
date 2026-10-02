@@ -3,6 +3,29 @@
 All notable changes to this project will be documented in this file.  
 This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [2.1.0] - 2026-10-02
+
+First release on PyPI, as `trap-hci` (`pip install trap-hci`); the import name stays `trap`.
+
+### Added
+- **End-to-end test on real data.** `pytest -m e2e` reduces the SPHERE-IRDIS K1 sequence of 51 Eri b shipped in `examples/test_data` and checks the planet's detection, fit and contrast curve; CI runs it on every pull request, after the unit tests ([#51](https://github.com/m-samland/trap/pull/51)).
+
+### Fixed
+- **Template matching no longer changes the working directory.** With a relative `result_folder`, the `template_matching/` output landed inside the species database directory while the run reported success.
+  Existing species directories keep working ([#39](https://github.com/m-samland/trap/issues/39)).
+- **A non-finite image center no longer crashes the reduction or discards a whole wavelength.** Frames with a NaN center are dropped like `bad_frames`, a wavelength without any finite center is skipped on its own, and a single `(x, y)` center for all frames no longer crashes ([#40](https://github.com/m-samland/trap/issues/40)).
+- **The coronagraph throughput warning no longer fires for measured curves that end just below 1.0**, such as the SPHERE `N_ALC_JYH_S` curves; it now warns only when the table ends below 0.95 ([#41](https://github.com/m-samland/trap/issues/41)).
+- **`dill` is now a declared dependency.** A plain `pip install` left it out, so the detection stage failed to import ([#43](https://github.com/m-samland/trap/issues/43)).
+
+### Changed
+- **trap is published on PyPI as `trap-hci`** (`pip install trap-hci`); the import name stays `trap` ([#48](https://github.com/m-samland/trap/issues/48)).
+- **`species` comes from PyPI (`species>=0.11.0`)** instead of its git main branch, so trap can itself be released on PyPI.
+
+### Removed
+- **`trap.embed_shell`**, an unused debugging helper that failed to import without IPython ([#43](https://github.com/m-samland/trap/issues/43)).
+
 ## [2.0.1] - 2026-08-12
 
 Robustness release for the detection stage.
@@ -317,7 +340,8 @@ First release with validated astrometry. Contains breaking changes — see the e
 ### Fixed
 - No known issues.
 
-[Unreleased]: https://github.com/m-samland/trap/compare/v2.0.1...HEAD
+[Unreleased]: https://github.com/m-samland/trap/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/m-samland/trap/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/m-samland/trap/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/m-samland/trap/compare/v1.3.1...v2.0.0
 [1.3.1]: https://github.com/m-samland/trap/compare/v1.3.0...v1.3.1
