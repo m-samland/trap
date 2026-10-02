@@ -52,6 +52,7 @@ import pandas as pd
 from astropy.io import fits
 
 CROP_SIZE = 137
+FRAME_SIZE = 1024  # side of one IRDIS channel in the converted cubes
 CHANNEL_NAMES = ("K1", "K2")
 OUTPUT_PATTERN = "51eri_irdis_db_k12_2015-09-24_{}.fits"
 PROVENANCE_PACKAGES = ("spherical", "trap", "charis")
@@ -109,6 +110,9 @@ def main():
 
     centers_full = fits.getdata(args.converted / "image_centers_fitted_robust.fits")[channel].astype("f8")
     x0, y0 = np.round(np.nanmedian(centers_full, axis=0)).astype(int) - CROP_SIZE // 2
+    # A negative origin would wrap around in the slice instead of failing.
+    if not (0 <= x0 <= FRAME_SIZE - CROP_SIZE and 0 <= y0 <= FRAME_SIZE - CROP_SIZE):
+        sys.exit(f"a {CROP_SIZE} px box at origin (x, y) = ({x0}, {y0}) does not fit in the {FRAME_SIZE} px frame")
     centers = centers_full - [x0, y0]
 
     def cut(name, dtype):
@@ -124,11 +128,8 @@ def main():
     wavelength = fits.getdata(args.converted / "wavelengths.fits").astype("f8")[channel]
     transmission = np.loadtxt(args.transmission)
 
-    if sci.shape[-1] != CROP_SIZE or not (sci.shape[1] == centers.shape[0] == derot.size):
-        sys.exit(
-            f"shapes disagree: cube {sci.shape}, centres {centers.shape}, angles {derot.shape}; "
-            "is the crop inside the frame?"
-        )
+    if not sci.shape[1] == centers.shape[0] == derot.size:
+        sys.exit(f"frame axes disagree: cube {sci.shape[1]}, centres {centers.shape[0]}, angles {derot.size}")
 
     primary = fits.PrimaryHDU()
     header = primary.header

@@ -5,15 +5,16 @@ The input is the K1 cut-out in ``examples/test_data`` (see
 2015-09-24 DB_K12 sequence, with the inverse variance, bad-pixel map, per-frame
 centres and coronagraph transmission that spherical passes to TRAP. The planet sits
 close to the detection limit in this sequence, so neither the frames nor the inverse
-variance can be dropped to save time: with every second frame, or without the
-inverse variance, the planet is no longer the strongest signal.
+variance can be dropped to save time: with every second frame the planet is no longer
+the strongest signal, and without the inverse variance its S/N drops from 5.8 to 4.8.
 
-The reference values below were frozen from a run of this test on macOS (arm64).
-They reproduce the spherical reference reduction of 2026-09-14 (trap 2.0.1 on the
-full frames) to all printed digits. The tolerances absorb floating-point differences
-between platforms and still catch any change to the reduction or the fit.
+The reference values below were frozen from a run of this test on macOS (arm64) and
+hold on Linux in CI. They reproduce the spherical reference reduction of 2026-09-14
+(trap 2.0.1 on the full frames) to all printed digits. The tolerances absorb
+floating-point differences between platforms and still catch any change to the
+reduction or the fit.
 
-Takes about two minutes on four cores, so it is deselected by default; run it with
+Takes two to four minutes on four cores, so it is deselected by default; run it with
 ``pytest -m e2e``.
 """
 
@@ -47,38 +48,40 @@ FIT_CONTRAST = 7.539e-06
 
 
 @pytest.fixture(scope="module")
-def inputs():
+def data_file():
     if not DATA.exists():
         pytest.skip(f"{DATA.name} is not available (examples/ is not part of the sdist)")
     with fits.open(DATA) as hdul:
-        return {
-            "data_full": hdul["SCI"].data.astype("f8"),
-            "inverse_variance_full": hdul["IVAR"].data.astype("f8"),
-            "bad_pixel_mask_full": hdul["BADPIX"].data.astype(bool),
-            "xy_image_centers": hdul["CENTERS"].data.astype("f8"),
-            "flux_psf_full": hdul["PSF"].data.astype("f8"),
-            "pa": hdul["DEROT_ANGLE"].data.astype("f8"),
-            "wavelengths": (hdul["WAVELENGTH"].data * u.nm).to(u.micron),
-            "transmission": hdul["TRANSMISSION"].data.astype("f8"),
-        }
+        yield hdul
 
 
 @pytest.fixture(scope="module")
-def analysis(inputs, tmp_path_factory):
-    """Reduce the sequence and normalise the detection map, as spherical does."""
-    inputs = dict(inputs)
-    wavelengths = inputs.pop("wavelengths")
-    transmission = inputs.pop("transmission")
+def trap_inputs(data_file):
+    """The arrays spherical passes to both the reduction and the detection stage."""
+    return {
+        "data_full": data_file["SCI"].data.astype("f8"),
+        "inverse_variance_full": data_file["IVAR"].data.astype("f8"),
+        "bad_pixel_mask_full": data_file["BADPIX"].data.astype(bool),
+        "xy_image_centers": data_file["CENTERS"].data.astype("f8"),
+        "flux_psf_full": data_file["PSF"].data.astype("f8"),
+        "pa": data_file["DEROT_ANGLE"].data.astype("f8"),
+    }
+
+
+@pytest.fixture(scope="module")
+def result_folder(data_file, trap_inputs, tmp_path_factory):
+    """Reduce the sequence once, as spherical does, and return the output folder."""
     config = trap_config_for_irdis()
     reduction_config = config.reduction.merge(
         search_region_inner_bound=31,
         search_region_outer_bound=43,
         yx_known_companion_position=list(YX_PLANET),
-        coronagraph_transmission=transmission,
+        coronagraph_transmission=data_file["TRANSMISSION"].data.astype("f8"),
         result_folder=str(tmp_path_factory.mktemp("e2e_51eri")),
         use_multiprocess=True,
         ncpus=min(4, os.cpu_count() or 1),
     )
+    wavelengths = (data_file["WAVELENGTH"].data * u.nm).to(u.micron)
     run_complete_reduction(
         instrument=config.get_instrument("DB_K12", wavelengths=wavelengths),
         reduction_parameters=reduction_config,
@@ -86,15 +89,21 @@ def analysis(inputs, tmp_path_factory):
         wavelength_indices=[0],
         overwrite=True,
         use_progress_bar=False,
-        **inputs,
+        **trap_inputs,
     )
+    return reduction_config.result_folder
+
+
+def _read(result_folder):
     analysis = DetectionAnalysis()
-    analysis.read_output(
-        COMPONENT_FRACTION,
-        result_folder=reduction_config.result_folder,
-        reduction_type="temporal",
-        read_parameters=True,
-    )
+    analysis.read_output(COMPONENT_FRACTION, result_folder=result_folder, reduction_type="temporal", read_parameters=True)
+    return analysis
+
+
+@pytest.fixture
+def analysis(result_folder):
+    """A fresh normalised analysis per test, so no test sees another's changes."""
+    analysis = _read(result_folder)
     analysis.contrast_table_and_normalization(save=False, mask_above_sigma=5.0)
     return analysis
 
@@ -129,13 +138,13 @@ def test_contrast_curve(analysis):
     assert at_37 == pytest.approx(CONTRAST_CURVE_37PX, rel=0.05)
 
 
-def test_candidate_fit_recovers_the_planet(analysis, inputs):
-    inputs = {k: v for k, v in inputs.items() if k not in ("wavelengths", "transmission")}
+def test_candidate_fit_recovers_the_planet(result_folder, trap_inputs):
+    analysis = _read(result_folder)
     analysis.detection_and_characterization(
         temporal_components_fraction=[COMPONENT_FRACTION],
         candidate_threshold=4.75,
         detection_threshold=5.0,
-        **inputs,
+        **trap_inputs,
     )
     table = analysis.validated_companion_table_short
     assert table is not None and len(table) == 1
