@@ -26,11 +26,13 @@
 
 ## Installation
 
-TRAP requires **Python 3.11, 3.12, or 3.13**. It can be installed directly from GitHub:
+TRAP requires **Python 3.11, 3.12, or 3.13**. It is published on PyPI as `trap-hci` and imported as `trap`:
 
 ```bash
-pip install git+https://github.com/m-samland/trap
+pip install trap-hci
 ```
+
+The name `trap` on PyPI belongs to an unrelated package (ASTRON's Transients Pipeline), which also installs a module called `trap`, so the two cannot be installed in the same environment.
 
 > ℹ️ TRAP parallelizes with `joblib`/loky and a memmap-backed shared-array store, so there is no cluster runtime to install separately. Large input arrays are written once to a scratch directory (`/dev/shm` when available, otherwise the system temp directory) and memory-mapped read-only by the worker processes; set `TrapReductionConfig.scratch_dir` if your machine needs a different location. To scale beyond one node, submit scheduler job arrays over wavelengths or epochs.
 
