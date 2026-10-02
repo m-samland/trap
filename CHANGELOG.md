@@ -5,6 +5,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-02
+
+First release on PyPI, as `trap-hci` (`pip install trap-hci`); the import name stays `trap`.
+
 ### Added
 - **End-to-end test on real data.** `pytest -m e2e` reduces the SPHERE-IRDIS K1 sequence of 51 Eri b shipped in `examples/test_data` and checks the planet's detection, fit and contrast curve; CI runs it on every pull request, after the unit tests ([#51](https://github.com/m-samland/trap/pull/51)).
 
@@ -336,7 +340,8 @@ First release with validated astrometry. Contains breaking changes — see the e
 ### Fixed
 - No known issues.
 
-[Unreleased]: https://github.com/m-samland/trap/compare/v2.0.1...HEAD
+[Unreleased]: https://github.com/m-samland/trap/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/m-samland/trap/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/m-samland/trap/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/m-samland/trap/compare/v1.3.1...v2.0.0
 [1.3.1]: https://github.com/m-samland/trap/compare/v1.3.0...v1.3.1
