@@ -57,6 +57,10 @@ DEFAULT_MINIMUM_CANDIDATE_SEPARATION = 5.0
 # much as a scientific one.
 DEFAULT_MAX_CANDIDATES = 50
 
+# Mirrors `DetectionParameters.template_names=None`. Order is the order the
+# templates are fitted and written in.
+DEFAULT_TEMPLATE_NAMES = ("L-type", "T-type", "flat")
+
 # Cap on the SNR-scaled candidate exclusion radius, as a multiple of the base
 # radius. 2.5 takes IRDIS's 11 px base to ~28 px, which is where a 100-sigma
 # binary's blob swarm stops on the HD_140408 test case; more starts eating real
@@ -2015,6 +2019,34 @@ def _override_astrometry_from_per_channel(
     return out
 
 
+def resolve_template_names(template_names=None):
+    """Return the validated tuple of default templates to build.
+
+    Parameters:
+        template_names (sequence of str, optional): Names from
+            ``DEFAULT_TEMPLATE_NAMES``. None selects all of them.
+
+    Returns:
+        tuple of str: The requested names in ``DEFAULT_TEMPLATE_NAMES`` order.
+
+    Raises:
+        ValueError: If template_names is empty or contains an unknown name.
+    """
+    if template_names is None:
+        return DEFAULT_TEMPLATE_NAMES
+    if isinstance(template_names, str):
+        template_names = (template_names,)
+    requested = set(template_names)
+    if not requested:
+        raise ValueError("template_names must name at least one template, or be None for all.")
+    unknown = requested.difference(DEFAULT_TEMPLATE_NAMES)
+    if unknown:
+        raise ValueError(
+            f"Unknown template name(s) {sorted(unknown)}; choose from {list(DEFAULT_TEMPLATE_NAMES)}."
+        )
+    return tuple(name for name in DEFAULT_TEMPLATE_NAMES if name in requested)
+
+
 class DetectionAnalysis(object):
     """Class for analyzing TRAP detection results and candidate characterization.
     
@@ -3658,6 +3690,7 @@ class DetectionAnalysis(object):
         instrument=None,
         correct_transmission=False,
         use_spectral_correlation=True,
+        template_names=None,
     ):
         """
         Add default templates to the template collection.
@@ -3669,10 +3702,14 @@ class DetectionAnalysis(object):
             instrument (Instrument, optional): The instrument. Defaults to None.
             correct_transmission (bool, optional): Flag indicating whether to correct for transmission. Defaults to False.
             use_spectral_correlation (bool, optional): Flag indicating whether to use spectral correlation. Defaults to True.
+            template_names (sequence of str, optional): Which of ``DEFAULT_TEMPLATE_NAMES``
+                to build. Defaults to None, which builds all of them.
 
         Raises:
-            ValueError: If species_database_directory is None.
+            ValueError: If species_database_directory is None, or if template_names
+                is empty or names a template that is not a default one.
         """
+        template_names = resolve_template_names(template_names)
 
         species_database_directory = configure_species(species_database_directory)
         database = Database()
@@ -3692,30 +3729,33 @@ class DetectionAnalysis(object):
             "radius": 1.1,
             "distance": 30.0,
         }
-
-        database.add_model(model="drift-phoenix", teff_range=(1400.0, 1600.0))
-        hot_planet_read_model = ReadModel(
-            model="drift-phoenix", wavel_range=(0.85, 3.6)
-        )
-        hot_planet_model_param = {
-            "teff": 1500.0,
-            "logg": 4.0,
-            "feh": 0.0,
-            "radius": 1.1,
-            "distance": 30.0,
-        }
-
         cool_planet_modelbox = cool_planet_read_model.get_model(
             model_param=cool_planet_model_param
         )
-        hot_planet_modelbox = hot_planet_read_model.get_model(
-            model_param=hot_planet_model_param
-        )
+
+        if "L-type" in template_names:
+            database.add_model(model="drift-phoenix", teff_range=(1400.0, 1600.0))
+            hot_planet_read_model = ReadModel(
+                model="drift-phoenix", wavel_range=(0.85, 3.6)
+            )
+            hot_planet_model_param = {
+                "teff": 1500.0,
+                "logg": 4.0,
+                "feh": 0.0,
+                "radius": 1.1,
+                "distance": 30.0,
+            }
+            hot_planet_modelbox = hot_planet_read_model.get_model(
+                model_param=hot_planet_model_param
+            )
 
         flat_model = copy.deepcopy(cool_planet_modelbox)
         flat_model.flux = np.ones_like(flat_model.wavelength)
 
-        if stellar_modelbox is None:
+        # The flat template divides a flat companion by a flat star, so it needs
+        # no stellar model; skipping it avoids the bt-nextgen grid entirely.
+        needs_stellar_model = "L-type" in template_names or "T-type" in template_names
+        if stellar_modelbox is None and needs_stellar_model:
             if stellar_parameters is None:
                 stellar_modelbox = copy.deepcopy(flat_model)
             else:
@@ -3754,47 +3794,50 @@ class DetectionAnalysis(object):
         else:
             t_type_slope_fit = True
 
-        self.templates["L-type"] = SpectralTemplate(
-            name="L-type",
-            instrument=instrument,
-            companion_modelbox=hot_planet_modelbox,
-            stellar_modelbox=stellar_modelbox,
-            wavelength_indices=self.wavelength_indices,
-            correct_transmission=correct_transmission,
-            fit_offset=False,
-            fit_slope=False,
-            number_of_pca_regressors=0,
-            use_spectral_correlation=use_spectral_correlation,
-            species_database_directory=species_database_directory,
-        )
+        if "L-type" in template_names:
+            self.templates["L-type"] = SpectralTemplate(
+                name="L-type",
+                instrument=instrument,
+                companion_modelbox=hot_planet_modelbox,
+                stellar_modelbox=stellar_modelbox,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=False,
+                fit_slope=False,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation,
+                species_database_directory=species_database_directory,
+            )
 
-        self.templates["T-type"] = SpectralTemplate(
-            name="T-type",
-            instrument=instrument,
-            companion_modelbox=cool_planet_modelbox,
-            stellar_modelbox=stellar_modelbox,
-            wavelength_indices=self.wavelength_indices,
-            correct_transmission=correct_transmission,
-            fit_offset=True,
-            fit_slope=t_type_slope_fit,
-            number_of_pca_regressors=0,
-            use_spectral_correlation=use_spectral_correlation,
-            species_database_directory=species_database_directory,
-        )
+        if "T-type" in template_names:
+            self.templates["T-type"] = SpectralTemplate(
+                name="T-type",
+                instrument=instrument,
+                companion_modelbox=cool_planet_modelbox,
+                stellar_modelbox=stellar_modelbox,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=True,
+                fit_slope=t_type_slope_fit,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation,
+                species_database_directory=species_database_directory,
+            )
 
-        self.templates["flat"] = SpectralTemplate(
-            name="flat",
-            instrument=instrument,
-            companion_modelbox=flat_model,
-            stellar_modelbox=flat_model,
-            wavelength_indices=self.wavelength_indices,
-            correct_transmission=correct_transmission,
-            fit_offset=False,
-            fit_slope=False,
-            number_of_pca_regressors=0,
-            use_spectral_correlation=use_spectral_correlation,
-            species_database_directory=species_database_directory,
-        )
+        if "flat" in template_names:
+            self.templates["flat"] = SpectralTemplate(
+                name="flat",
+                instrument=instrument,
+                companion_modelbox=flat_model,
+                stellar_modelbox=flat_model,
+                wavelength_indices=self.wavelength_indices,
+                correct_transmission=correct_transmission,
+                fit_offset=False,
+                fit_slope=False,
+                number_of_pca_regressors=0,
+                use_spectral_correlation=use_spectral_correlation,
+                species_database_directory=species_database_directory,
+            )
 
     def template_matching_detection(
         self,
@@ -4970,7 +5013,8 @@ class DetectionAnalysis(object):
         theta_deviation_threshold=25, yx_fwhm_ratio_threshold=[1.1, 4.5],
         save_initial_detection_products=True,
         per_channel_min_channel_fraction=0.5,
-        per_channel_independent_channels=False):
+        per_channel_independent_channels=False,
+        template_names=None):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = _to_reduction_config(reduction_parameters)
@@ -4994,6 +5038,7 @@ class DetectionAnalysis(object):
             instrument=instrument,
             correct_transmission=False,
             use_spectral_correlation=use_spectral_correlation,
+            template_names=template_names,
         )
 
         self.match_all_templates(
