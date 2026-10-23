@@ -5,6 +5,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Added
+- **`DetectionParameters.template_names` chooses which templates are fitted.** Set it to a subset of `("L-type", "T-type", "flat")`, for example `("flat",)` for data whose channels share one filter, where L-type duplicates flat and T-type is undefined.
+  The default `None` fits all three, as before ([#56](https://github.com/m-samland/trap/issues/56)).
+
 ## [2.1.0] - 2026-10-02
 
 First release on PyPI, as `trap-hci` (`pip install trap-hci`); the import name stays `trap`.
