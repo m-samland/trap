@@ -265,6 +265,10 @@ class DetectionParameters:
     # so the per-channel inverse-variance combination must not be allowed to shrink
     # sigma below the best contributing channel unless independence is established.
     per_channel_independent_channels: bool = False
+    # Which default templates ("L-type", "T-type", "flat") to fit; None fits all.
+    # A mode whose channels share one filter needs ("flat",): there L-type
+    # duplicates flat and the T-type offset fit is singular.
+    template_names: Optional[Tuple[str, ...]] = None
 
     def merge(self, **kw) -> "DetectionParameters":
         """Return a copy with selected fields overridden."""
