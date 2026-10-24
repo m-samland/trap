@@ -5,6 +5,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-24
+
+Template selection for template matching, so data whose channels share one filter fit only the meaningful templates.
+
 ### Added
 - **`DetectionParameters.template_names` chooses which templates are fitted.** Set it to a subset of `("L-type", "T-type", "flat")`, for example `("flat",)` for data whose channels share one filter, where L-type duplicates flat and T-type is undefined.
   The default `None` fits all three, as before ([#56](https://github.com/m-samland/trap/issues/56)).
@@ -344,7 +348,8 @@ First release with validated astrometry. Contains breaking changes — see the e
 ### Fixed
 - No known issues.
 
-[Unreleased]: https://github.com/m-samland/trap/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/m-samland/trap/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/m-samland/trap/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/m-samland/trap/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/m-samland/trap/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/m-samland/trap/compare/v1.3.1...v2.0.0
