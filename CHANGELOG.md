@@ -7,6 +7,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ### Changed
 - **Temporal reductions run about 1.5 times faster.** The per-pixel fit and the centring of the reference pixels are computed more efficiently; results are unchanged to rounding, so existing reductions do not need to be redone.
+- **The spatial model runs about 6 times faster.** Its per-frame principal components now come from one decomposition per position; results are unchanged to rounding.
+
+### Fixed
+- **`spatial_model` and `temporal_plus_spatial_model` run again.** The spatial model failed on numpy 2, and the spatial model after TRAP failed in map mode ([#27](https://github.com/m-samland/trap/issues/27)).
 
 ## [2.2.0] - 2026-10-24
 

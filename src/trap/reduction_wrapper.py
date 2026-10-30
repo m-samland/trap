@@ -354,6 +354,9 @@ def trap_one_position(
                 inverse_variance_reduction_area=inverse_variance_reduction_area,
                 multiwavelength_data=multiwavelength_data,
                 multiwavelength_masks=multiwavelength_masks,
+                return_noise_model=(
+                    reduction_parameters.temporal_plus_spatial_model and not reduction_parameters.second_stage_trap
+                ),
             )
 
         # if result is not None:
