@@ -289,11 +289,6 @@ class TrapReductionConfig:
     search_region: Optional[Any] = None  # Binary mask of relative position to search for planets
     search_region_inner_bound: int = 1
     search_region_outer_bound: Optional[int] = 85
-    # Several (inner, outer) rings in place of the single annulus, for systems whose
-    # companions sit at very different separations. Each ring should extend a few pixels
-    # beyond the companions it contains: the detection map is normalized per separation
-    # with a 3 px wide annulus, which has fewer pixels at a ring edge.
-    search_region_bounds: Optional[Tuple[Tuple[float, float], ...]] = None
     reduction_mask_min_pixels: int = 30
     auto_footprint: bool = False
     oversampling: int = 1
@@ -390,6 +385,14 @@ class TrapReductionConfig:
     # Output control
     return_input_data: bool = False
     verbose: bool = False
+
+    # Appended last: saved reduction_config.obj files are loaded by slot position, so a
+    # field inserted earlier would shift the values of older pickles.
+    # Several (inner, outer) rings in place of the single annulus, for systems whose
+    # companions sit at very different separations. Each ring should extend a few pixels
+    # beyond the companions it contains: the detection map is normalized per separation
+    # with a 3 px wide annulus, which has fewer pixels at a ring edge.
+    search_region_bounds: Optional[Tuple[Tuple[float, float], ...]] = None
 
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
@@ -495,11 +498,13 @@ def _validate_search_region_bounds(config):
         If a ring is empty or negative, no ring is given, or an explicit
         ``search_region`` mask is set as well.
     """
-    if config.search_region_bounds is None:
+    # Configs unpickled from reductions made before the field existed have no slot for it.
+    bounds = getattr(config, "search_region_bounds", None)
+    if bounds is None:
         return None
     if config.search_region is not None:
         raise ValueError("Set either search_region or search_region_bounds, not both.")
-    rings = [(float(inner), float(outer)) for inner, outer in config.search_region_bounds]
+    rings = [(float(inner), float(outer)) for inner, outer in bounds]
     if not rings:
         raise ValueError("search_region_bounds needs at least one (inner, outer) ring.")
     for inner, outer in rings:
