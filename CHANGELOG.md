@@ -11,6 +11,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ### Fixed
 - **`spatial_model` and `temporal_plus_spatial_model` run again.** The spatial model failed on numpy 2, and the spatial model after TRAP failed in map mode ([#27](https://github.com/m-samland/trap/issues/27)).
+- **The spatial model uses `spatial_components_fraction`.** It always fitted 5 components; it now uses that fraction of the reference frames available to each frame (`spatial_components_fraction_after_trap` for the spatial model after TRAP), so spatial results change.
 
 ## [2.2.0] - 2026-10-24
 

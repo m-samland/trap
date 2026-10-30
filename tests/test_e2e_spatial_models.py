@@ -58,14 +58,16 @@ def _reduce(data_file, result_folder, **settings):
     )
 
 
-def test_spatial_model_runs_at_a_single_position(data_file, tmp_path):
+def test_spatial_model_uses_the_spatial_component_fraction(data_file, tmp_path):
     results = _reduce(
-        data_file, tmp_path, temporal_model=False, spatial_model=True,
+        data_file, tmp_path, temporal_model=False, spatial_model=True, spatial_components_fraction=0.2,
         reduce_single_position=True, guess_position=YX_PLANET,
     )
     spatial = results["0.2"]["0"]["spatial"]
     assert np.isfinite(spatial.measured_contrast)
     assert np.isfinite(spatial.contrast_uncertainty) and spatial.contrast_uncertainty > 0
+    # About 0.2 of the roughly 240 frames outside the protection angle, not a fixed 5.
+    assert 30 <= spatial.number_of_pca_regressors <= 60
 
 
 def _contrast_map(folder, suffix):

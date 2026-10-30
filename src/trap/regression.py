@@ -1024,7 +1024,7 @@ def run_trap_with_model_temporal(
         if model is not None:
             diagnostic_image[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]] = (
                 P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1], P[0])
-            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
+            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / np.sqrt(P_sigma_squared[-1]))
 
     # This is not correct for local model, the range to fit is different for each pixel and should be added to
     # a uniform cube, and later take into account ignoring Nans!
@@ -1170,14 +1170,15 @@ def run_trap_with_model_spatial(
         planet_relative_yx_pos[0]**2 + planet_relative_yx_pos[1]**2)
 
     fwhm = runtime.fwhm if runtime is not None else reduction_parameters.fwhm
-    _, time_masks = det_max_ncomp_specific(
+    max_ncomp, time_masks = det_max_ncomp_specific(
         r_planet=separation,
         fwhm=fwhm,
         delta=reduction_parameters.protection_angle,
         pa=pa)
-
-    # int(np.round(max_ncomp[idx][0] * reduction_parameters.spatial_components_fraction))
-    number_of_pca_regressors = 5
+    # A fraction of the reference frames available to each frame, as the temporal model
+    # uses a fraction of all frames.
+    components_per_frame = np.round(
+        max_ncomp[:, 0] * reduction_parameters.spatial_components_fraction).astype(int)
 
     # Scalings that act on each frame alone let the basis of every frame come from one Gram
     # matrix of all frames, instead of one SVD of the training frames per frame.
@@ -1210,6 +1211,7 @@ def run_trap_with_model_spatial(
             logger.debug("Returning None for lack of frames")
             return None
 
+        number_of_pca_regressors = components_per_frame[idx]
         B = None
         if shared_gram:
             B = pca_regression.leading_left_singular_vectors(
@@ -1278,7 +1280,7 @@ def run_trap_with_model_spatial(
             noise_model_cube = None
 
         if model is not None:
-            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
+            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / np.sqrt(P_sigma_squared[-1]))
 
         refined_speckle_subtraction = np.empty((yx_dim[0], yx_dim[1]))
         refined_speckle_subtraction[:] = np.nan
@@ -1347,7 +1349,7 @@ def run_trap_with_model_spatial(
         reduced_result=reduced_result,
         reduction_mask=reduction_mask,
         residuals=residuals,
-        number_of_pca_regressors=number_of_pca_regressors,
+        number_of_pca_regressors=int(np.median(components_per_frame)),
         true_contrast=true_contrast,
         yx_center=yx_center,
         signal_weights=signal_weights,
@@ -1718,7 +1720,7 @@ def run_trap_with_model_wavelength(
         if model is not None:
             diagnostic_image[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]] = (
                 P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1], P[0])
-            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
+            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / np.sqrt(P_sigma_squared[-1]))
 
     # This is not correct for local model, the range to fit is different for each pixel and should be added to
     # a uniform cube, and later take into account ignoring Nans!

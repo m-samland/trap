@@ -44,3 +44,10 @@ def test_rank_deficient_selection_returns_none():
     matrix = rng.standard_normal((N_PIXEL, 2)) @ rng.standard_normal((2, N_FRAME))
     basis = leading_left_singular_vectors(matrix, matrix.T @ matrix, np.arange(N_FRAME), N_COMPONENTS)
     assert basis is None
+
+
+def test_zero_components_gives_an_empty_basis():
+    rng = np.random.default_rng(3)
+    matrix = rng.standard_normal((N_PIXEL, N_FRAME))
+    basis = leading_left_singular_vectors(matrix, matrix.T @ matrix, np.arange(N_FRAME), 0)
+    assert basis.shape == (N_PIXEL, 0)

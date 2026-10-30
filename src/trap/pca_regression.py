@@ -153,6 +153,8 @@ def leading_left_singular_vectors(matrix, gram, columns, n_components):
     """
     columns = np.asarray(columns)
     k = min(n_components, len(columns), matrix.shape[0])
+    if k == 0:
+        return np.empty((matrix.shape[0], 0))
     eigenvalues, eigenvectors = eigh(
         gram[np.ix_(columns, columns)], subset_by_index=[len(columns) - k, len(columns) - 1], check_finite=False
     )
