@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
 from numba import jit
-from scipy.linalg import cholesky, solve_triangular, svd
+from scipy.linalg import blas, cholesky, lapack, solve_triangular, svd
 from sklearn import preprocessing
 
 from . import regressor_selection
@@ -44,7 +44,15 @@ def matrix_scaling(matrix, scaling):
     elif scaling == 'spat-standard':
         matrix = preprocessing.scale(matrix, with_mean=True, with_std=True, axis=1)
     elif scaling == 'temp-median':
-        matrix = preprocessing.robust_scale(matrix, with_centering=True, with_scaling=False)
+        # numpy's median gives scikit-learn's values several times faster: below 600 rows
+        # numpy's nanmedian goes through masked-array sorting. Columns with NaN keep the
+        # NaN-ignoring median that robust_scale uses.
+        matrix = np.asarray(matrix)
+        center = np.median(matrix, axis=0)
+        has_nan = np.isnan(center)
+        if has_nan.any():
+            center[has_nan] = np.nanmedian(matrix[:, has_nan], axis=0)
+        matrix = matrix - center
     elif scaling == 'spat-median':
         matrix = preprocessing.robust_scale(matrix, with_centering=True, with_scaling=False, axis=1)
     elif scaling == 'temp-quartile':
@@ -114,6 +122,50 @@ def compute_V_inverse(training_matrix, lambdas, variance, variance_prior_scaling
     V_inverse = Cinv - np.linalg.multi_dot((Cinv, B, lambdaplusBTCinvB_inv, B.T, Cinv))
 
     return V_inverse
+
+
+def fit_planet_coefficient(design_matrix, data, inverse_covariance=None):
+    """Weighted least-squares fit whose last column is the companion, and that coefficient's variance.
+
+    Gives the results of ``solve_linear_equation_simple(design_matrix.T, data, inverse_covariance)``
+    up to rounding, at about a third of the cost: one Cholesky factorisation of the normal
+    matrix, G = L L^T, replaces an LU solve and a full inverse. Only the companion variance
+    is needed, and because L^-1 is lower triangular its last column has the single entry
+    1 / L[-1, -1], so (G^-1)[-1, -1] = 1 / L[-1, -1]**2. Problems that are not finite or not
+    numerically positive definite go through `solve_linear_equation_simple` unchanged.
+
+    Parameters
+    ----------
+    design_matrix : array_like
+        ``(n_time, n_parameters)`` design matrix with the companion model as last column.
+    data : array_like
+        ``(n_time,)`` data to fit.
+    inverse_covariance : array_like, optional
+        ``(n_time,)`` inverse variance of the data.
+
+    Returns
+    -------
+    coefficients : numpy.ndarray
+        ``(n_parameters,)`` fitted coefficients.
+    planet_variance : float
+        Variance of the last coefficient.
+    """
+    if inverse_covariance is None:
+        weighted_design = design_matrix
+        weighted_data = data
+    else:
+        weighted_design = design_matrix * np.sqrt(inverse_covariance)[:, None]
+        weighted_data = inverse_covariance * data
+    # dsyrk computes one triangle of a a^T; a = weighted_design.T is Fortran-ordered, so no copy.
+    normal_matrix = blas.dsyrk(1.0, weighted_design.T, lower=1)
+    right_hand_side = design_matrix.T @ weighted_data
+    if np.all(np.isfinite(normal_matrix)) and np.all(np.isfinite(right_hand_side)):
+        factor, info = lapack.dpotrf(normal_matrix, lower=1, clean=0)
+        if info == 0:
+            coefficients, _ = lapack.dpotrs(factor, right_hand_side, lower=1)
+            return coefficients, 1.0 / factor[-1, -1] ** 2
+    coefficients, variances = solve_linear_equation_simple(design_matrix.T, data, inverse_covariance)
+    return coefficients, variances[-1]
 
 
 def solve_linear_equation_simple(design_matrix, data, inverse_covariance=None):

@@ -1813,44 +1813,30 @@ def run_trap_with_model_temporal_optimized(
         scaling=reduction_parameters.pca_scaling)
     _n_pca = runtime.number_of_pca_regressors if runtime is not None else reduction_parameters.number_of_pca_regressors
     B = B_full[:, :_n_pca]
-    constant_offset = np.ones(ntime)
+    # One design matrix for all pixels: the components and the constant are shared, only
+    # the companion light curve in the last column changes from pixel to pixel.
+    A = np.empty((ntime, B.shape[1] + 2))
+    A[:, :-2] = B
+    A[:, -2] = 1.0
 
     for idx, _ in enumerate(reduction_pix_indeces):
         # Pixel data to fit
         y = data[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
         # Lightcurve model fitting planet at pixel
-        model_for_pixel = model[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
-
-        if _n_pca != 0:
-            model_matrix = np.vstack((constant_offset, model_for_pixel))
-            A = np.hstack((B, model_matrix.T))
-        else:
-            model_matrix = np.vstack((constant_offset, model_for_pixel))
-            A = model_matrix.T
+        A[:, -1] = model[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]]
 
         if inverse_variance_reduction_area is not None:
             inverse_covariance = inverse_variance_reduction_area[:, idx]
         else:
             inverse_covariance = None
         try:
-            P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
-                design_matrix=A.T,
-                data=y,
-                inverse_covariance=inverse_covariance)
+            P, planet_variance = pca_regression.fit_planet_coefficient(A, y, inverse_covariance)
         except np.linalg.LinAlgError:
-            P = np.empty(A.shape[1])
-            P[:] = np.nan
-            P_sigma_squared = np.empty(A.shape[1])
-            P_sigma_squared[:] = np.nan
+            P = np.full(A.shape[1], np.nan)
+            planet_variance = np.nan
 
-        if P[0] is not np.nan:
-            reconstructed_lightcurve = np.dot(A, P)
-        else:
-            reconstructed_lightcurve = np.empty(ntime)
-            reconstructed_lightcurve[:] = np.nan
-
-        fitted_model[idx] = reconstructed_lightcurve
-        reduced_result[idx] = (P[-1], P_sigma_squared[-1])
+        fitted_model[idx] = A @ P
+        reduced_result[idx] = (P[-1], planet_variance)
 
     residuals = (data[:, reduction_mask].T - fitted_model)
 

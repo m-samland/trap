@@ -5,6 +5,9 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Changed
+- **Temporal reductions run about 1.5 times faster.** The per-pixel fit and the centring of the reference pixels are computed more efficiently; results are unchanged to rounding, so existing reductions do not need to be redone.
+
 ## [2.2.0] - 2026-10-24
 
 Template selection for template matching, so data whose channels share one filter fit only the meaningful templates.
