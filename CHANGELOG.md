@@ -5,13 +5,16 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Added
+- **The search region can be several rings.** `TrapReductionConfig.search_region_bounds` takes `(inner, outer)` pairs in pixels and reduces only those separations, for systems with companions at very different separations.
+  Leave a few pixels between each companion and the edge of its ring, because the detection map is normalized per separation.
+
 ### Changed
-- **Temporal reductions run about 1.5 times faster.** The per-pixel fit and the centring of the reference pixels are computed more efficiently; results are unchanged to rounding, so existing reductions do not need to be redone.
-- **The spatial model runs about 6 times faster.** Its per-frame principal components now come from one decomposition per position; results are unchanged to rounding.
+- **Temporal reductions are faster.** Results are unchanged to rounding, so existing reductions do not need to be redone ([#62](https://github.com/m-samland/trap/issues/62)).
 
 ### Fixed
-- **`spatial_model` and `temporal_plus_spatial_model` run again.** The spatial model failed on numpy 2, and the spatial model after TRAP failed in map mode ([#27](https://github.com/m-samland/trap/issues/27)).
-- **The spatial model uses `spatial_components_fraction`.** It always fitted 5 components; it now uses that fraction of the reference frames available to each frame (`spatial_components_fraction_after_trap` for the spatial model after TRAP), so spatial results change.
+- **`spatial_model` and `temporal_plus_spatial_model` run again and use their configured number of components.** They had stopped running on numpy 2 and in map mode, and the spatial model always fitted 5 components; it now uses `spatial_components_fraction` (`spatial_components_fraction_after_trap` after TRAP), so spatial results change.
+  Map-mode reductions with either model no longer run out of memory ([#27](https://github.com/m-samland/trap/issues/27), [#63](https://github.com/m-samland/trap/issues/63), [#64](https://github.com/m-samland/trap/issues/64)).
 
 ## [2.2.0] - 2026-10-24
 
