@@ -9,6 +9,9 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 - **The search region can be several rings.** `TrapReductionConfig.search_region_bounds` takes `(inner, outer)` pairs in pixels and reduces only those separations, for systems with companions at very different separations.
   Leave a few pixels between each companion and the edge of its ring, because the detection map is normalized per separation.
 
+### Changed
+- **Temporal reductions run about 1.5 times faster.** Results are unchanged to rounding, so existing reductions do not need to be redone ([#62](https://github.com/m-samland/trap/issues/62)).
+
 ## [2.2.0] - 2026-10-24
 
 Template selection for template matching, so data whose channels share one filter fit only the meaningful templates.
