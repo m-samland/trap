@@ -1024,7 +1024,7 @@ def run_trap_with_model_temporal(
         if model is not None:
             diagnostic_image[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]] = (
                 P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1], P[0])
-            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / np.sqrt(P_sigma_squared[-1]))
+            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
 
     # This is not correct for local model, the range to fit is different for each pixel and should be added to
     # a uniform cube, and later take into account ignoring Nans!
@@ -1280,7 +1280,7 @@ def run_trap_with_model_spatial(
             noise_model_cube = None
 
         if model is not None:
-            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / np.sqrt(P_sigma_squared[-1]))
+            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
 
         refined_speckle_subtraction = np.empty((yx_dim[0], yx_dim[1]))
         refined_speckle_subtraction[:] = np.nan
@@ -1720,7 +1720,7 @@ def run_trap_with_model_wavelength(
         if model is not None:
             diagnostic_image[:, reduction_pix_indeces[idx, 0], reduction_pix_indeces[idx, 1]] = (
                 P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1], P[0])
-            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / np.sqrt(P_sigma_squared[-1]))
+            reduced_result[idx] = (P[-1], P_sigma_squared[-1], P[-1] / P_sigma_squared[-1])
 
     # This is not correct for local model, the range to fit is different for each pixel and should be added to
     # a uniform cube, and later take into account ignoring Nans!
