@@ -107,3 +107,12 @@ def test_spatial_model_runs_once_for_several_fractions(data_file, tmp_path):
         analysis = DetectionAnalysis()
         analysis.read_output(fraction, result_folder=str(tmp_path), reduction_type=reduction_type)
         assert list(analysis.wavelength_indices) == [0]
+
+
+def test_spatial_only_reduction_with_several_fractions_runs_the_spatial_model_once(data_file, tmp_path):
+    results = _reduce(
+        data_file, tmp_path, fractions=(0.1, 0.2), temporal_model=False, spatial_model=True,
+        reduce_single_position=True, guess_position=YX_PLANET,
+    )
+    assert list(results) == ["0.1"]
+    assert "spatial" in results["0.1"]["0"]

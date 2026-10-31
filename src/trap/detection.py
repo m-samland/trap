@@ -2046,7 +2046,7 @@ def resolve_template_names(template_names=None):
     return tuple(name for name in DEFAULT_TEMPLATE_NAMES if name in requested)
 
 
-_COUNT_AND_FRACTION = r"ncomp\d{{3}}_frac{fraction}"
+_COUNT_AND_FRACTION = r"ncomp\d{{3,}}_frac{fraction}"
 _RUN_NAME_PATTERNS = {
     "temporal": _COUNT_AND_FRACTION + r"_temporal",
     "temporal_plus_spatial": _COUNT_AND_FRACTION + r"_delta\d+\.\d{{2}}_spatialfrac(?P<spatial>\d+\.\d{{2}})_temporal_plus_spatial",
@@ -2180,6 +2180,7 @@ class DetectionAnalysis(object):
         reduction_parameters=None,
         instrument=None,
         spatial_component_fraction=None,
+        prefix=None,
     ):
         """Read TRAP reduction output files and set up detection analysis.
         
@@ -2204,6 +2205,10 @@ class DetectionAnalysis(object):
         spatial_component_fraction : float, optional
             Spatial component fraction of a "temporal_plus_spatial" run, needed when the
             folder holds that run at several spatial fractions.
+        prefix : str, optional
+            ``TrapReductionConfig.prefix`` of the run to read. By default the prefix of
+            the shared ``reduction_config.obj``, which belongs to the run that wrote it
+            last; pass it when runs with different prefixes share a folder.
         """
         if result_folder is None:
             self.result_folder = self.reduction_parameters.result_folder
@@ -2232,7 +2237,8 @@ class DetectionAnalysis(object):
                 self.instrument = instrument
         self.instrument.compute_fwhm()
 
-        prefix = getattr(getattr(self, "reduction_parameters", None), "prefix", None) or ""
+        if prefix is None:
+            prefix = getattr(getattr(self, "reduction_parameters", None), "prefix", None) or ""
         file_paths = detection_file_paths(
             self.result_folder, reduction_type, component_fraction,
             spatial_component_fraction=spatial_component_fraction, prefix=prefix,

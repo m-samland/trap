@@ -137,3 +137,24 @@ def test_prefixed_run_finds_its_own_objects(tmp_path):
     analysis = DetectionAnalysis()
     analysis.read_output(0.2, result_folder=str(tmp_path))
     assert analysis.reduction_parameters.annulus_width == 9
+
+
+def test_component_counts_of_any_length_are_found(tmp_path):
+    name = "detection_lam00_ncomp1000_frac0.20_temporal.fits"
+    _touch(tmp_path, name)
+    assert _names(detection_file_paths(tmp_path, "temporal", 0.2)) == [name]
+
+
+def test_read_output_takes_an_explicit_prefix(tmp_path):
+    """The shared config holds the prefix of whichever run wrote it last."""
+    config = trap_config_for_irdis()
+    instrument = config.get_instrument("DB_K12", wavelengths=np.array([2.11, 2.25]) * u.micron)
+    save_object(instrument, os.path.join(tmp_path, "instrument.obj"))
+    save_object(config.reduction.merge(prefix="B_"), os.path.join(tmp_path, "reduction_config.obj"))
+    fits.writeto(os.path.join(tmp_path, "detection_lam00_ncomp051_frac0.20_temporal.fits"), np.ones((3, 5, 5)))
+    fits.writeto(os.path.join(tmp_path, "detection_B_lam00_ncomp051_frac0.20_temporal.fits"), np.full((3, 5, 5), 2.0))
+    analysis = DetectionAnalysis()
+    analysis.read_output(0.2, result_folder=str(tmp_path), prefix="")
+    assert np.nanmax(analysis.detection_cube) == 1.0
+    analysis.read_output(0.2, result_folder=str(tmp_path))
+    assert np.nanmax(analysis.detection_cube) == 2.0

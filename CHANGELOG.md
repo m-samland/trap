@@ -13,7 +13,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Fixed
 - **`spatial_model` and `temporal_plus_spatial_model` run again.** The spatial model failed on numpy 2, and the spatial model after TRAP failed in map mode ([#27](https://github.com/m-samland/trap/issues/27)).
 - **Each reduction run keeps its own settings.** Runs write `reduction_config_{run}.obj` and `instrument_{run}.obj` next to the shared files, and the detection reads them, so several runs in one result folder no longer read each other's settings; folders from earlier versions still read ([#55](https://github.com/m-samland/trap/issues/55)).
-- **`DetectionAnalysis.read_output` reads exactly one run.** It finds the spatial model after TRAP by its temporal fraction (pass `spatial_component_fraction` when several spatial fractions share a folder), finds outputs written with a `prefix`, and raises an error instead of combining files of different runs.
+- **`DetectionAnalysis.read_output` reads exactly one run.** It finds the spatial model after TRAP by its temporal fraction (pass `spatial_component_fraction` when several spatial fractions share a folder), finds outputs written with a `prefix` (pass `prefix` when runs with different prefixes share a folder), and raises an error instead of combining files of different runs.
 - **The spatial model uses `spatial_components_fraction`.** It always fitted 5 components; it now uses that fraction of the reference frames available to each frame (`spatial_components_fraction_after_trap` for the spatial model after TRAP), so spatial results change.
 
 ## [2.2.0] - 2026-10-24

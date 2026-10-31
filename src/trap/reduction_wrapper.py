@@ -521,7 +521,8 @@ def run_name(basename, key):
     It is the detection map's name without ``detection_``, the wavelength and ``.fits``,
     and names the settings stored for that run.
     """
-    return f"{re.sub(r'lam\d{2}_', '', basename, count=1)}_{key}"
+    without_wavelength = re.sub(r"lam\d{2}_", "", basename, count=1)
+    return f"{without_wavelength}_{key}"
 
 
 def _models_to_run(reduction_parameters):
@@ -1986,6 +1987,8 @@ def _run_reduction_loops(
     requested_parameters = reduction_parameters
     for comp_index, ncomp in enumerate(number_of_components):
         reduction_parameters = _reduction_parameters_for_fraction(requested_parameters, comp_index)
+        if not _models_to_run(reduction_parameters):
+            continue
         logger.debug("Number of principal comp. used: %s of %d", ncomp, data_full.shape[1])
 
         if reduction_parameters.reduce_single_position:
