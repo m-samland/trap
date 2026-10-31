@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+from trap.detection import DetectionAnalysis
 from trap.parameters import trap_config_for_irdis
 from trap.reduction_wrapper import run_complete_reduction
 
@@ -33,7 +34,7 @@ def data_file():
         yield hdul
 
 
-def _reduce(data_file, result_folder, **settings):
+def _reduce(data_file, result_folder, fractions=(0.2,), **settings):
     config = trap_config_for_irdis()
     reduction_config = config.reduction.merge(
         coronagraph_transmission=data_file["TRANSMISSION"].data.astype("f8"),
@@ -51,7 +52,7 @@ def _reduce(data_file, result_folder, **settings):
         pa=data_file["DEROT_ANGLE"].data.astype("f8"),
         instrument=config.get_instrument("DB_K12", wavelengths=(data_file["WAVELENGTH"].data * u.nm).to(u.micron)),
         reduction_parameters=reduction_config,
-        temporal_components_fraction=[0.2],
+        temporal_components_fraction=list(fractions),
         wavelength_indices=[0],
         overwrite=True,
         use_progress_bar=False,
@@ -88,3 +89,30 @@ def test_spatial_model_after_trap_runs_in_map_mode_and_keeps_the_planet(data_fil
     center = combined.shape[-1] // 2
     planet = (center + round(YX_PLANET[0]), center + round(YX_PLANET[1]))
     assert combined[planet] == pytest.approx(temporal[planet], rel=0.25)
+
+
+def test_spatial_model_runs_once_for_several_fractions(data_file, tmp_path):
+    _reduce(
+        data_file, tmp_path, fractions=(0.1, 0.2), spatial_model=True,
+        search_region_inner_bound=36, search_region_outer_bound=37,
+    )
+    assert len(list(tmp_path.glob("detection_lam00_*_spatial.fits"))) == 1
+    assert len(list(tmp_path.glob("detection_lam00_*_temporal.fits"))) == 2
+    assert sorted(path.name for path in tmp_path.glob("reduction_config_*.obj")) == [
+        "reduction_config_delta0.50_spatialfrac0.30_spatial.obj",
+        "reduction_config_ncomp026_frac0.10_temporal.obj",
+        "reduction_config_ncomp051_frac0.20_temporal.obj",
+    ]
+    for fraction, reduction_type in ((0.1, "temporal"), (0.2, "temporal"), (0.3, "spatial")):
+        analysis = DetectionAnalysis()
+        analysis.read_output(fraction, result_folder=str(tmp_path), reduction_type=reduction_type)
+        assert list(analysis.wavelength_indices) == [0]
+
+
+def test_spatial_only_reduction_with_several_fractions_runs_the_spatial_model_once(data_file, tmp_path):
+    results = _reduce(
+        data_file, tmp_path, fractions=(0.1, 0.2), temporal_model=False, spatial_model=True,
+        reduce_single_position=True, guess_position=YX_PLANET,
+    )
+    assert list(results) == ["0.1"]
+    assert "spatial" in results["0.1"]["0"]

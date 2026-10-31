@@ -15,6 +15,9 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Fixed
 - **`spatial_model` and `temporal_plus_spatial_model` run again and use their configured number of components.** They had stopped running on numpy 2 and in map mode, and the spatial model always fitted 5 components; it now uses `spatial_components_fraction` (`spatial_components_fraction_after_trap` after TRAP), so spatial results change, and the spatial model runs about 6 times faster.
   Map-mode reductions with either model no longer run out of memory ([#27](https://github.com/m-samland/trap/issues/27), [#63](https://github.com/m-samland/trap/issues/63), [#64](https://github.com/m-samland/trap/issues/64)).
+- **`DetectionAnalysis.read_output` reads exactly one run, with that run's settings.** Reductions also write `reduction_config_{run}.obj` and `instrument_{run}.obj`, which `read_output` prefers over the shared files; pass `spatial_component_fraction` or `prefix` when a folder holds several such runs.
+  It now raises an error when a folder holds two runs it cannot tell apart, for example maps left by an earlier reduction with a different frame count; delete the stale files.
+  The spatial model is computed once, with the first temporal component fraction, so single-position results list it only under that fraction ([#55](https://github.com/m-samland/trap/issues/55), [#65](https://github.com/m-samland/trap/issues/65)).
 
 ## [2.2.0] - 2026-10-24
 
