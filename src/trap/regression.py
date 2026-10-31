@@ -1170,11 +1170,25 @@ def run_trap_with_model_spatial(
         planet_relative_yx_pos[0]**2 + planet_relative_yx_pos[1]**2)
 
     fwhm = runtime.fwhm if runtime is not None else reduction_parameters.fwhm
-    _, time_masks = det_max_ncomp_specific(
+    max_ncomp, time_masks = det_max_ncomp_specific(
         r_planet=separation,
         fwhm=fwhm,
         delta=reduction_parameters.protection_angle,
         pa=pa)
+    # A fraction of the reference frames available to each frame, as the temporal model
+    # uses a fraction of all frames.
+    components_per_frame = np.round(
+        max_ncomp[:, 0] * reduction_parameters.spatial_components_fraction).astype(int)
+
+    # Scalings that act on each frame alone let the basis of every frame come from one Gram
+    # matrix of all frames, instead of one SVD of the training frames per frame.
+    shared_gram = not local_model and pca_scaling in (None, 'temp-mean', 'temp-standard', 'temp-median', 'temp-quartile')
+    if shared_gram:
+        frames = (data if training_data is None else training_data)[:, reduction_mask].T
+        if pca_scaling is not None:
+            frames = pca_regression.matrix_scaling(frames, scaling=pca_scaling)
+        gram = frames.T @ frames
+        shared_gram = bool(np.all(np.isfinite(gram)))
 
     for idx, psf_model_frame in enumerate(model):
         if local_model:
@@ -1197,13 +1211,20 @@ def run_trap_with_model_spatial(
             logger.debug("Returning None for lack of frames")
             return None
 
-        if training_data is None:
-            training_matrix = data[time_mask][:, reduction_mask]  # .copy()
-        else:
-            training_matrix = training_data[time_mask][:, reduction_mask]
-        # Transpose training matrix as opposed to temporal approach
-        B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
-            training_matrix.T, n_components=None, scaling=pca_scaling)
+        number_of_pca_regressors = components_per_frame[idx]
+        B = None
+        if shared_gram:
+            B = pca_regression.leading_left_singular_vectors(
+                frames, gram, np.flatnonzero(time_mask), number_of_pca_regressors)
+        if B is None:
+            if training_data is None:
+                training_matrix = data[time_mask][:, reduction_mask]  # .copy()
+            else:
+                training_matrix = training_data[time_mask][:, reduction_mask]
+            # Transpose training matrix as opposed to temporal approach
+            B_full, lambdas_full, S_full, V_full = pca_regression.compute_SVD(
+                training_matrix.T, n_components=None, scaling=pca_scaling)
+            B = B_full[:, :number_of_pca_regressors]
         # cummulative_variance = np.cumsum(S_full) / np.sum(S_full)
 
         # try:
@@ -1213,9 +1234,6 @@ def run_trap_with_model_spatial(
         #     print('Returning None because nPCA could not be determined')
         #     return None
 
-        # int(np.round(max_ncomp[idx][0] * reduction_parameters.spatial_components_fraction))
-        number_of_pca_regressors = 5
-        B = B_full[:, :number_of_pca_regressors]
         # S = S_full[:number_of_pca_regressors]
         # V = V_full[:number_of_pca_regressors, :]
 
@@ -1226,27 +1244,28 @@ def run_trap_with_model_spatial(
         #         plt.plot(np.cumsum(S_full) / np.sum(S_full))
         #         plt.show()
 
-        if make_reconstructed_lightcurve:
-            if model is None:
-                A = np.hstack((B, constant_offset[:, None]))
-            else:
-                A = np.hstack((B, model_matrix.T))
+        # The fit is needed for the contrast and the refined speckle subtraction below,
+        # whether or not the reconstructed cubes are kept.
+        if model is None:
+            A = np.hstack((B, constant_offset[:, None]))
+        else:
+            A = np.hstack((B, model_matrix.T))
 
-            if inverse_variance_reduction_area is not None:
-                inverse_covariance = inverse_variance_reduction_area[idx]
-            else:
-                inverse_covariance = None
-            P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
-                design_matrix=A.T,
-                data=y,
-                inverse_covariance=inverse_covariance)
+        if inverse_variance_reduction_area is not None:
+            inverse_covariance = inverse_variance_reduction_area[idx]
+        else:
+            inverse_covariance = None
+        P_wo_marginalization, P_wo_sigma_squared = pca_regression.solve_linear_equation_simple(
+            design_matrix=A.T,
+            data=y,
+            inverse_covariance=inverse_covariance)
 
-            reconstructed_lightcurve = np.dot(A, P_wo_marginalization)
+        reconstructed_lightcurve = np.dot(A, P_wo_marginalization)
 
-            if model is None:
-                reconstructed_systematics = reconstructed_lightcurve
-            else:
-                reconstructed_systematics = np.dot(A[:, :-1], P_wo_marginalization[:-1])
+        if model is None:
+            reconstructed_systematics = reconstructed_lightcurve
+        else:
+            reconstructed_systematics = np.dot(A[:, :-1], P_wo_marginalization[:-1])
 
         P = P_wo_marginalization
         P_sigma_squared = P_wo_sigma_squared
@@ -1283,14 +1302,17 @@ def run_trap_with_model_spatial(
         else:
             inverse_covariance_total = inverse_covariance_systematics
 
-        _, sigma_squared_systematics[idx] = pca_regression.solve_linear_equation_simple(
+        # One-parameter fits return length-1 arrays, which numpy 2 no longer casts to scalars.
+        _, systematics_variance = pca_regression.solve_linear_equation_simple(
             design_matrix=psf_model[finite_mask].T,
             data=data_to_fit[finite_mask],
             inverse_covariance=inverse_covariance_systematics)
-        psf_amplitude[idx], psf_sigma_squared[idx] = pca_regression.solve_linear_equation_simple(
+        amplitude, amplitude_variance = pca_regression.solve_linear_equation_simple(
             design_matrix=psf_model[finite_mask].T,
             data=data_to_fit[finite_mask],
             inverse_covariance=inverse_covariance_total)
+        sigma_squared_systematics[idx] = systematics_variance[0]
+        psf_amplitude[idx], psf_sigma_squared[idx] = amplitude[0], amplitude_variance[0]
 
     # Residuals are transposed with respect to temporal model
     if make_reconstructed_lightcurve:
@@ -1327,7 +1349,7 @@ def run_trap_with_model_spatial(
         reduced_result=reduced_result,
         reduction_mask=reduction_mask,
         residuals=residuals,
-        number_of_pca_regressors=number_of_pca_regressors,
+        number_of_pca_regressors=int(np.median(components_per_frame)),
         true_contrast=true_contrast,
         yx_center=yx_center,
         signal_weights=signal_weights,
@@ -1756,7 +1778,8 @@ def run_trap_with_model_temporal_optimized(
         regressor_matrix=None,
         regressor_pool_mask=None,
         multiwavelength_data=None,
-        multiwavelength_masks=None):
+        multiwavelength_masks=None,
+        return_noise_model=False):
     """Core function of the TRAP analysis. Builds the temporal regression
     model and perform model fitting for all time series vectors in the
     `reduction_mask` as described in Samland et al. 2020.
@@ -1785,6 +1808,10 @@ def run_trap_with_model_temporal_optimized(
         Boolean mask of pixels to include as regressors.
         If None, `regressor_pool_mask` will be constructed from provided
         masks.
+    return_noise_model : bool, optional
+        If True, the result carries ``noise_model_cube``, the fitted systematics
+        (everything but the companion term) in the reduction pixels, as the spatial
+        model after TRAP needs it. Default is False.
 
     Returns
     -------
@@ -1818,6 +1845,8 @@ def run_trap_with_model_temporal_optimized(
     A = np.empty((ntime, B.shape[1] + 2))
     A[:, :-2] = B
     A[:, -2] = 1.0
+    if return_noise_model:
+        noise_model = np.empty((n_reduction_pix, ntime))
 
     for idx, _ in enumerate(reduction_pix_indeces):
         # Pixel data to fit
@@ -1837,6 +1866,8 @@ def run_trap_with_model_temporal_optimized(
 
         fitted_model[idx] = A @ P
         reduced_result[idx] = (P[-1], planet_variance)
+        if return_noise_model:
+            noise_model[idx] = A[:, :-1] @ P[:-1]
 
     residuals = (data[:, reduction_mask].T - fitted_model)
 
@@ -1853,10 +1884,16 @@ def run_trap_with_model_temporal_optimized(
     else:
         signal_weights = None
 
+    if return_noise_model:
+        noise_model_cube = np.full(data.shape, np.nan)
+        noise_model_cube[:, reduction_mask] = noise_model.T
+    else:
+        noise_model_cube = None
+
     result = Result(
         data=None,
         model_cube=None,
-        noise_model_cube=None,
+        noise_model_cube=noise_model_cube,
         diagnostic_image=None,
         reduced_result=reduced_result,
         reduction_mask=None,

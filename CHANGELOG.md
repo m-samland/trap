@@ -12,6 +12,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Changed
 - **Temporal reductions run about 1.5 times faster.** Results are unchanged to rounding, so existing reductions do not need to be redone ([#62](https://github.com/m-samland/trap/issues/62)).
 
+### Fixed
+- **`spatial_model` and `temporal_plus_spatial_model` run again and use their configured number of components.** They had stopped running on numpy 2 and in map mode, and the spatial model always fitted 5 components; it now uses `spatial_components_fraction` (`spatial_components_fraction_after_trap` after TRAP), so spatial results change, and the spatial model runs about 6 times faster.
+  Map-mode reductions with either model no longer run out of memory ([#27](https://github.com/m-samland/trap/issues/27), [#63](https://github.com/m-samland/trap/issues/63), [#64](https://github.com/m-samland/trap/issues/64)).
+
 ## [2.2.0] - 2026-10-24
 
 Template selection for template matching, so data whose channels share one filter fit only the meaningful templates.

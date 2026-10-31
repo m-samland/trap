@@ -354,6 +354,9 @@ def trap_one_position(
                 inverse_variance_reduction_area=inverse_variance_reduction_area,
                 multiwavelength_data=multiwavelength_data,
                 multiwavelength_masks=multiwavelength_masks,
+                return_noise_model=(
+                    reduction_parameters.temporal_plus_spatial_model and not reduction_parameters.second_stage_trap
+                ),
             )
 
         # if result is not None:
@@ -495,6 +498,21 @@ def trap_one_position(
             result.reduction_parameters = reduction_parameters
         results["temporal_plus_spatial"] = result
 
+    if not reduction_parameters.reduce_single_position:
+        results = _release_position_arrays(results)
+    return results
+
+
+def _release_position_arrays(results):
+    """Drop the per-pixel arrays of each result; the map only reads scalars from them.
+
+    Every position's result is kept until the map is assembled, so a full-size noise
+    model or residual array per position adds up to tens of gigabytes over a map.
+    """
+    for result in results.values():
+        if result is not None:
+            for name in ("data", "model_cube", "noise_model_cube", "residuals", "reduced_result"):
+                setattr(result, name, None)
     return results
 
 

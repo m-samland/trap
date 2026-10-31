@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
 from numba import jit
-from scipy.linalg import blas, cholesky, lapack, solve_triangular, svd
+from scipy.linalg import blas, cholesky, eigh, lapack, solve_triangular, svd
 from sklearn import preprocessing
 
 from . import regressor_selection
@@ -122,6 +122,48 @@ def compute_V_inverse(training_matrix, lambdas, variance, variance_prior_scaling
     V_inverse = Cinv - np.linalg.multi_dot((Cinv, B, lambdaplusBTCinvB_inv, B.T, Cinv))
 
     return V_inverse
+
+
+def leading_left_singular_vectors(matrix, gram, columns, n_components):
+    """First left singular vectors of ``matrix[:, columns]``, from the Gram matrix of all columns.
+
+    The spatial model needs, for every frame, the leading principal components of a
+    different subset of the other frames. The eigenvectors of ``gram[columns][:, columns]``
+    are the right singular vectors of ``matrix[:, columns]``, so its left singular vectors
+    follow without one SVD per subset. They span the same subspace as the SVD's to within
+    its rounding sensitivity, which is all the regression depends on.
+
+    Parameters
+    ----------
+    matrix : array_like
+        ``(n_pixel, n_frame)`` scaled pixel values, one column per frame.
+    gram : array_like
+        ``matrix.T @ matrix``.
+    columns : array_like
+        Indices of the frames to decompose.
+    n_components : int
+        Number of components; fewer are returned if fewer frames or pixels are available.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        ``(n_pixel, k)`` orthonormal vectors ordered by decreasing singular value, or None
+        if the selected frames have fewer than ``k`` significant components, in which case
+        the caller should use the SVD.
+    """
+    columns = np.asarray(columns)
+    k = min(n_components, len(columns), matrix.shape[0])
+    if k == 0:
+        return np.empty((matrix.shape[0], 0))
+    eigenvalues, eigenvectors = eigh(
+        gram[np.ix_(columns, columns)], subset_by_index=[len(columns) - k, len(columns) - 1], check_finite=False
+    )
+    eigenvalues, eigenvectors = eigenvalues[::-1], eigenvectors[:, ::-1]
+    # Directions with singular values below about 1e-5 of the largest are not resolved
+    # through the squared matrix.
+    if not eigenvalues[-1] > 1e-10 * eigenvalues[0]:
+        return None
+    return matrix[:, columns] @ (eigenvectors / np.sqrt(eigenvalues))
 
 
 def fit_planet_coefficient(design_matrix, data, inverse_covariance=None):
