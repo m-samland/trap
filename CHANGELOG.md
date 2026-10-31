@@ -5,6 +5,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-31
+
+Faster temporal reductions, working spatial models, a search region of several rings, and detection that reads exactly one reduction run.
+
 ### Added
 - **The search region can be several rings.** `TrapReductionConfig.search_region_bounds` takes `(inner, outer)` pairs in pixels and reduces only those separations, for systems with companions at very different separations.
   Leave a few pixels between each companion and the edge of its ring, because the detection map is normalized per separation.
