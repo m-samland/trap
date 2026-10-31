@@ -6,11 +6,18 @@ outputs. `detection_file_paths` parses the existing names exactly, returns one f
 wavelength for the run asked for, and refuses to stack files from different runs.
 """
 
+import os
 from pathlib import Path
 
+import astropy.units as u
+import numpy as np
 import pytest
+from astropy.io import fits
 
-from trap.detection import detection_file_paths
+from trap.detection import DetectionAnalysis, detection_file_paths
+from trap.parameters import trap_config_for_irdis
+from trap.reduction_wrapper import run_name
+from trap.utils import save_object
 
 
 def _touch(folder, *names):
@@ -87,3 +94,46 @@ def test_nothing_found_raises_file_not_found(tmp_path):
     with pytest.raises(FileNotFoundError) as error:
         detection_file_paths(tmp_path, "temporal_plus_spatial", 0.2)
     assert str(tmp_path) in str(error.value) and "temporal_plus_spatial" in str(error.value)
+
+
+def test_run_name_drops_the_wavelength_and_adds_the_model():
+    assert run_name("lam00_ncomp051_frac0.20", "temporal") == "ncomp051_frac0.20_temporal"
+    assert run_name("run1_lam00_ncomp051_frac0.20", "temporal") == "run1_ncomp051_frac0.20_temporal"
+    assert run_name("lam00_delta0.50_spatialfrac0.30", "spatial") == "delta0.50_spatialfrac0.30_spatial"
+
+
+def _folder_with_shared_objects(folder):
+    config = trap_config_for_irdis()
+    instrument = config.get_instrument("DB_K12", wavelengths=np.array([2.11, 2.25]) * u.micron)
+    save_object(instrument, os.path.join(folder, "instrument.obj"))
+    save_object(config.reduction.merge(annulus_width=5), os.path.join(folder, "reduction_config.obj"))
+    fits.writeto(os.path.join(folder, "detection_lam00_ncomp051_frac0.20_temporal.fits"), np.ones((3, 5, 5)))
+    return config
+
+
+def test_read_output_prefers_the_run_objects(tmp_path):
+    config = _folder_with_shared_objects(tmp_path)
+    save_object(config.reduction.merge(annulus_width=7), os.path.join(tmp_path, "reduction_config_ncomp051_frac0.20_temporal.obj"))
+    analysis = DetectionAnalysis()
+    analysis.read_output(0.2, result_folder=str(tmp_path))
+    assert analysis.reduction_parameters.annulus_width == 7
+
+
+def test_legacy_folder_falls_back_to_shared_objects(tmp_path):
+    _folder_with_shared_objects(tmp_path)
+    analysis = DetectionAnalysis()
+    analysis.read_output(0.2, result_folder=str(tmp_path))
+    assert analysis.reduction_parameters.annulus_width == 5
+
+
+def test_prefixed_run_finds_its_own_objects(tmp_path):
+    config = trap_config_for_irdis()
+    instrument = config.get_instrument("DB_K12", wavelengths=np.array([2.11, 2.25]) * u.micron)
+    save_object(instrument, os.path.join(tmp_path, "instrument.obj"))
+    save_object(config.reduction.merge(prefix="run1_", annulus_width=5), os.path.join(tmp_path, "reduction_config.obj"))
+    fits.writeto(os.path.join(tmp_path, "detection_run1_lam00_ncomp051_frac0.20_temporal.fits"), np.ones((3, 5, 5)))
+    name = run_name("run1_lam00_ncomp051_frac0.20", "temporal")
+    save_object(config.reduction.merge(prefix="run1_", annulus_width=9), os.path.join(tmp_path, f"reduction_config_{name}.obj"))
+    analysis = DetectionAnalysis()
+    analysis.read_output(0.2, result_folder=str(tmp_path))
+    assert analysis.reduction_parameters.annulus_width == 9

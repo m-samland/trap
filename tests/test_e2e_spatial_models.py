@@ -98,6 +98,11 @@ def test_spatial_model_runs_once_for_several_fractions(data_file, tmp_path):
     )
     assert len(list(tmp_path.glob("detection_lam00_*_spatial.fits"))) == 1
     assert len(list(tmp_path.glob("detection_lam00_*_temporal.fits"))) == 2
+    assert sorted(path.name for path in tmp_path.glob("reduction_config_*.obj")) == [
+        "reduction_config_delta0.50_spatialfrac0.30_spatial.obj",
+        "reduction_config_ncomp026_frac0.10_temporal.obj",
+        "reduction_config_ncomp051_frac0.20_temporal.obj",
+    ]
     for fraction, reduction_type in ((0.1, "temporal"), (0.2, "temporal"), (0.3, "spatial")):
         analysis = DetectionAnalysis()
         analysis.read_output(fraction, result_folder=str(tmp_path), reduction_type=reduction_type)

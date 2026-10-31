@@ -2260,6 +2260,16 @@ class DetectionAnalysis(object):
         self.basename = filenames[0].replace(
             "_lam{:02d}".format(self.wavelength_indices[0]), ""
         )
+        # Settings of this run, written by reductions since the shared files are
+        # overwritten by every run in the folder; older folders only have those.
+        run = prefix + filenames[0][character_index + len("lam00_"):-len(".fits")]
+        run_config_path = os.path.join(self.result_folder, f"reduction_config_{run}.obj")
+        run_instrument_path = os.path.join(self.result_folder, f"instrument_{run}.obj")
+        if read_parameters and os.path.exists(run_config_path):
+            self.reduction_parameters = load_object(run_config_path)
+        if read_instrument and os.path.exists(run_instrument_path):
+            self.instrument = load_object(run_instrument_path)
+            self.instrument.compute_fwhm()
         self.file_paths["detection_image_path"] = os.path.join(
             self.result_folder, self.basename
         )

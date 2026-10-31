@@ -10,6 +10,7 @@ import datetime
 import logging
 import multiprocessing
 import os
+import re
 import warnings
 from collections import OrderedDict
 
@@ -512,6 +513,15 @@ def _reduction_parameters_for_fraction(reduction_parameters, comp_index):
     if comp_index > 0 and reduction_parameters.spatial_model:
         return reduction_parameters.merge(spatial_model=False)
     return reduction_parameters
+
+
+def run_name(basename, key):
+    """Name of one model's run without the wavelength, e.g. ``ncomp051_frac0.20_temporal``.
+
+    It is the detection map's name without ``detection_``, the wavelength and ``.fits``,
+    and names the settings stored for that run.
+    """
+    return f"{re.sub(r'lam\d{2}_', '', basename, count=1)}_{key}"
 
 
 def _models_to_run(reduction_parameters):
@@ -2120,6 +2130,13 @@ def _run_reduction_loops(
                             output_paths[key].detection_image,
                         )
                         return None
+
+            # Each run keeps its own settings; the shared files are overwritten by the next run.
+            if not reduction_parameters.reduce_single_position and wavelength_index == wavelength_indices[0]:
+                for key in _models_to_run(reduction_parameters):
+                    name = run_name(basename[key], key)
+                    save_object(instrument, os.path.join(result_folder, f"instrument_{name}.obj"))
+                    save_object(reduction_parameters, os.path.join(result_folder, f"reduction_config_{name}.obj"))
 
             # if reduction_parameters.temporal_plus_spatial_model:
             #     contrast_plot_comparison_path = os.path.join(
