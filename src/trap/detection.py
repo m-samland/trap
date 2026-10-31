@@ -2116,7 +2116,11 @@ def detection_file_paths(result_folder, reduction_type, component_fraction, spat
         by_wavelength.setdefault(int(match["wavelength"]), []).append(name)
     duplicates = [names for names in by_wavelength.values() if len(names) > 1]
     if duplicates:
-        raise ValueError(f"Detection maps of more than one run for the same wavelength in {result_folder}: {duplicates}")
+        raise ValueError(
+            f"Detection maps of more than one run for the same wavelength in {result_folder}: {duplicates}. "
+            "Files left by an earlier reduction with a different number of components, for example after the "
+            "frame selection changed, are not overwritten; delete the stale files or reduce into a new folder."
+        )
     return [os.path.join(result_folder, by_wavelength[index][0]) for index in sorted(by_wavelength)]
 
 

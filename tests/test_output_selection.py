@@ -88,6 +88,7 @@ def test_duplicate_wavelength_is_an_error(tmp_path):
     with pytest.raises(ValueError) as error:
         detection_file_paths(tmp_path, "temporal", 0.2)
     assert first in str(error.value) and second in str(error.value)
+    assert "delete the stale files" in str(error.value)
 
 
 def test_nothing_found_raises_file_not_found(tmp_path):
