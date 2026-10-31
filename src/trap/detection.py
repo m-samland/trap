@@ -8,9 +8,9 @@ Routines used in TRAP
 import copy
 import logging
 import os
+import re
 import warnings
 from collections import OrderedDict
-from glob import glob
 
 import bottleneck as bn
 import matplotlib.pyplot as plt
@@ -23,7 +23,6 @@ from astropy.nddata import Cutout2D
 from astropy.stats import mad_std
 from astropy.table import Table
 from matplotlib.backends.backend_pdf import PdfPages
-from natsort import natsorted
 from numpy import interp
 from photutils.aperture import CircularAnnulus
 from scipy import linalg, ndimage, stats
@@ -2047,6 +2046,80 @@ def resolve_template_names(template_names=None):
     return tuple(name for name in DEFAULT_TEMPLATE_NAMES if name in requested)
 
 
+_COUNT_AND_FRACTION = r"ncomp\d{{3}}_frac{fraction}"
+_RUN_NAME_PATTERNS = {
+    "temporal": _COUNT_AND_FRACTION + r"_temporal",
+    "temporal_plus_spatial": _COUNT_AND_FRACTION + r"_delta\d+\.\d{{2}}_spatialfrac(?P<spatial>\d+\.\d{{2}})_temporal_plus_spatial",
+    "spatial": r"delta\d+\.\d{{2}}_spatialfrac{fraction}_spatial",
+}
+
+
+def detection_file_paths(result_folder, reduction_type, component_fraction, spatial_component_fraction=None,
+                         prefix="", correlated_residuals=False):
+    """Detection maps of exactly one reduction run, one per wavelength, sorted by wavelength index.
+
+    The file names written by `~trap.reduction_wrapper.run_complete_reduction` are parsed
+    exactly, so the spatial model after TRAP is selected by its temporal fraction, outputs
+    written with a ``prefix`` are found, and correlated-residual or injected-fake outputs
+    are never mixed in.
+
+    Parameters
+    ----------
+    result_folder : str or path-like
+        Folder holding the reduction outputs.
+    reduction_type : {"temporal", "temporal_plus_spatial", "spatial"}
+        Model whose outputs to select.
+    component_fraction : float
+        Temporal component fraction; for ``"spatial"`` the spatial component fraction.
+    spatial_component_fraction : float, optional
+        Spatial component fraction of a ``"temporal_plus_spatial"`` run. Needed only when
+        the folder holds that run at several spatial fractions.
+    prefix : str, optional
+        ``TrapReductionConfig.prefix`` of the run.
+    correlated_residuals : bool, optional
+        Select the outputs that account for correlated residuals.
+
+    Returns
+    -------
+    list of str
+        Paths of the detection maps.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no file of the run is found.
+    ValueError
+        If the files belong to more than one run.
+    """
+    if reduction_type not in _RUN_NAME_PATTERNS:
+        raise ValueError(f"Unknown reduction_type {reduction_type!r}; expected one of {sorted(_RUN_NAME_PATTERNS)}.")
+    run = _RUN_NAME_PATTERNS[reduction_type].format(fraction=re.escape(f"{component_fraction:.2f}"))
+    pattern = re.compile(
+        rf"^detection{'_corr' if correlated_residuals else ''}_{re.escape(prefix)}lam(?P<wavelength>\d{{2}})_{run}\.fits$"
+    )
+    matches = [(match, name) for name in sorted(os.listdir(result_folder)) if (match := pattern.match(name))]
+    if reduction_type == "temporal_plus_spatial":
+        if spatial_component_fraction is not None:
+            matches = [(m, n) for m, n in matches if m["spatial"] == f"{spatial_component_fraction:.2f}"]
+        spatial_fractions = sorted({m["spatial"] for m, _ in matches})
+        if len(spatial_fractions) > 1:
+            raise ValueError(
+                f"{result_folder} holds the {reduction_type} run at spatial fractions {spatial_fractions}; "
+                "choose one with spatial_component_fraction."
+            )
+    if not matches:
+        raise FileNotFoundError(
+            f"No {reduction_type} detection maps for component fraction {component_fraction:.2f} in {result_folder}."
+        )
+    by_wavelength = {}
+    for match, name in matches:
+        by_wavelength.setdefault(int(match["wavelength"]), []).append(name)
+    duplicates = [names for names in by_wavelength.values() if len(names) > 1]
+    if duplicates:
+        raise ValueError(f"Detection maps of more than one run for the same wavelength in {result_folder}: {duplicates}")
+    return [os.path.join(result_folder, by_wavelength[index][0]) for index in sorted(by_wavelength)]
+
+
 class DetectionAnalysis(object):
     """Class for analyzing TRAP detection results and candidate characterization.
     
@@ -2106,6 +2179,7 @@ class DetectionAnalysis(object):
         read_instrument=True,
         reduction_parameters=None,
         instrument=None,
+        spatial_component_fraction=None,
     ):
         """Read TRAP reduction output files and set up detection analysis.
         
@@ -2127,6 +2201,9 @@ class DetectionAnalysis(object):
             Reduction configuration. Only used if read_parameters=False.
         instrument : Instrument, optional
             Instrument object. Only used if read_parameters=False.
+        spatial_component_fraction : float, optional
+            Spatial component fraction of a "temporal_plus_spatial" run, needed when the
+            folder holds that run at several spatial fractions.
         """
         if result_folder is None:
             self.result_folder = self.reduction_parameters.result_folder
@@ -2155,33 +2232,24 @@ class DetectionAnalysis(object):
                 self.instrument = instrument
         self.instrument.compute_fwhm()
 
-        if correlated_residuals:
-            detection_image_name = "detection_corr_lam"
-        else:
-            detection_image_name = "detection_lam"
-
-        glob_pattern = os.path.join(
-            self.result_folder,
-            detection_image_name
-            + f"*frac{component_fraction:.2f}_{reduction_type}.fits")
-
-        detection_file_paths = natsorted(glob(glob_pattern))
-
-        assert len(detection_file_paths) > 0, "No output files found for:\n{}.".format(
-            glob_pattern
+        prefix = getattr(getattr(self, "reduction_parameters", None), "prefix", None) or ""
+        file_paths = detection_file_paths(
+            self.result_folder, reduction_type, component_fraction,
+            spatial_component_fraction=spatial_component_fraction, prefix=prefix,
+            correlated_residuals=correlated_residuals,
         )
 
         # Read in data
         detection_cube = []
-        for file in detection_file_paths:
+        for file in file_paths:
             detection_cube.append(fits.getdata(file))
         self.detection_cube = np.array(detection_cube)
 
         self.detection_cube[self.detection_cube == 0.] = np.nan
 
         # Determine indices reduced
-        filenames = [os.path.basename(file_path) for file_path in detection_file_paths]
-        character_index = filenames[0].find("lam")
+        filenames = [os.path.basename(file_path) for file_path in file_paths]
+        character_index = len(f"detection{'_corr' if correlated_residuals else ''}_{prefix}")
         self.wavelength_indices = np.array(
             [int(file[character_index + 3 : character_index + 5]) for file in filenames]
         )
