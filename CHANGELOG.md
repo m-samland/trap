@@ -5,16 +5,19 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Added
+- **The search region can be several rings.** `TrapReductionConfig.search_region_bounds` takes `(inner, outer)` pairs in pixels and reduces only those separations, for systems with companions at very different separations.
+  Leave a few pixels between each companion and the edge of its ring, because the detection map is normalized per separation.
+
 ### Changed
-- **Temporal reductions run about 1.5 times faster.** The per-pixel fit and the centring of the reference pixels are computed more efficiently; results are unchanged to rounding, so existing reductions do not need to be redone.
-- **With several temporal component fractions, the spatial model is computed once.** It does not depend on them; it runs with the first fraction, and an existing output now skips a reduction only if it belongs to a model that runs.
-- **The spatial model runs about 6 times faster.** Its per-frame principal components now come from one decomposition per position; results are unchanged to rounding.
+- **Temporal reductions are faster.** Results are unchanged to rounding, so existing reductions do not need to be redone ([#62](https://github.com/m-samland/trap/issues/62)).
 
 ### Fixed
-- **`spatial_model` and `temporal_plus_spatial_model` run again.** The spatial model failed on numpy 2, and the spatial model after TRAP failed in map mode ([#27](https://github.com/m-samland/trap/issues/27)).
-- **Each reduction run keeps its own settings.** Runs write `reduction_config_{run}.obj` and `instrument_{run}.obj` next to the shared files, and the detection reads them, so several runs in one result folder no longer read each other's settings; folders from earlier versions still read ([#55](https://github.com/m-samland/trap/issues/55)).
-- **`DetectionAnalysis.read_output` reads exactly one run.** It finds the spatial model after TRAP by its temporal fraction (pass `spatial_component_fraction` when several spatial fractions share a folder), finds outputs written with a `prefix` (pass `prefix` when runs with different prefixes share a folder), and raises an error instead of combining files of different runs.
-- **The spatial model uses `spatial_components_fraction`.** It always fitted 5 components; it now uses that fraction of the reference frames available to each frame (`spatial_components_fraction_after_trap` for the spatial model after TRAP), so spatial results change.
+- **`spatial_model` and `temporal_plus_spatial_model` run again and use their configured number of components.** They had stopped running on numpy 2 and in map mode, and the spatial model always fitted 5 components; it now uses `spatial_components_fraction` (`spatial_components_fraction_after_trap` after TRAP), so spatial results change.
+  Map-mode reductions with either model no longer run out of memory ([#27](https://github.com/m-samland/trap/issues/27), [#63](https://github.com/m-samland/trap/issues/63), [#64](https://github.com/m-samland/trap/issues/64)).
+- **`DetectionAnalysis.read_output` reads exactly one run, with that run's settings.** Reductions also write `reduction_config_{run}.obj` and `instrument_{run}.obj`, which `read_output` prefers over the shared files; pass `spatial_component_fraction` or `prefix` when a folder holds several such runs.
+  It now raises an error when a folder holds two runs it cannot tell apart, for example maps left by an earlier reduction with a different frame count; delete the stale files.
+  The spatial model is computed once, with the first temporal component fraction, so single-position results list it only under that fraction ([#55](https://github.com/m-samland/trap/issues/55), [#65](https://github.com/m-samland/trap/issues/65)).
 
 ## [2.2.0] - 2026-10-24
 
