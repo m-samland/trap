@@ -503,6 +503,29 @@ def trap_one_position(
     return results
 
 
+def _reduction_parameters_for_fraction(reduction_parameters, comp_index):
+    """Settings for the ``comp_index``-th temporal component fraction.
+
+    The spatial model does not depend on the temporal fraction, so it runs with the
+    first fraction only instead of repeating the same reduction for each.
+    """
+    if comp_index > 0 and reduction_parameters.spatial_model:
+        return reduction_parameters.merge(spatial_model=False)
+    return reduction_parameters
+
+
+def _models_to_run(reduction_parameters):
+    """Output keys of the models that ``reduction_parameters`` switches on."""
+    models = []
+    if reduction_parameters.temporal_model:
+        models.append("temporal")
+        if reduction_parameters.temporal_plus_spatial_model:
+            models.append("temporal_plus_spatial")
+    if reduction_parameters.spatial_model:
+        models.append("spatial")
+    return models
+
+
 def _release_position_arrays(results):
     """Drop the per-pixel arrays of each result; the map only reads scalars from them.
 
@@ -1534,6 +1557,9 @@ def run_complete_reduction(
         and 'spatial' key, depending on whether the `temporal_model`,
         `temporal_plus_spatial_model`, and `spatial_model` parameters set
         in `reduction_parameters` are True.
+        The spatial model does not depend on the temporal fraction and is
+        computed with the first fraction only, so its 'spatial' entry appears
+        under the first fraction.
 
         Otherwise, the return value is None.
 
@@ -1947,7 +1973,9 @@ def _run_reduction_loops(
     if reduction_parameters.reduce_single_position is True:
         all_results = OrderedDict()
 
+    requested_parameters = reduction_parameters
     for comp_index, ncomp in enumerate(number_of_components):
+        reduction_parameters = _reduction_parameters_for_fraction(requested_parameters, comp_index)
         logger.debug("Number of principal comp. used: %s of %d", ncomp, data_full.shape[1])
 
         if reduction_parameters.reduce_single_position:
@@ -2084,7 +2112,8 @@ def _run_reduction_loops(
                         result_folder, basename[key], key, sigma, corr=True
                     )
                 # If output file with basename already exists, skip reduction
-                if not overwrite and not reduction_parameters.reduce_single_position:
+                if (not overwrite and not reduction_parameters.reduce_single_position
+                        and key in _models_to_run(reduction_parameters)):
                     if os.path.exists(output_paths[key].detection_image):
                         logger.info(
                             "Reduction already exists for %s - skipping.",

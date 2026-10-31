@@ -7,6 +7,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ### Changed
 - **Temporal reductions run about 1.5 times faster.** The per-pixel fit and the centring of the reference pixels are computed more efficiently; results are unchanged to rounding, so existing reductions do not need to be redone.
+- **With several temporal component fractions, the spatial model is computed once.** It does not depend on them; it runs with the first fraction, and an existing output now skips a reduction only if it belongs to a model that runs.
 - **The spatial model runs about 6 times faster.** Its per-frame principal components now come from one decomposition per position; results are unchanged to rounding.
 
 ### Fixed
