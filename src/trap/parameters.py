@@ -386,6 +386,14 @@ class TrapReductionConfig:
     return_input_data: bool = False
     verbose: bool = False
 
+    # Appended last: saved reduction_config.obj files are loaded by slot position, so a
+    # field inserted earlier would shift the values of older pickles.
+    # Several (inner, outer) rings in place of the single annulus, for systems whose
+    # companions sit at very different separations. Each ring should extend a few pixels
+    # beyond the companions it contains: the detection map is normalized per separation
+    # with a 3 px wide annulus, which has fewer pixels at a ring edge.
+    search_region_bounds: Optional[Tuple[Tuple[float, float], ...]] = None
+
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
             raise ValueError(
@@ -479,6 +487,32 @@ def _crop_footprint(valid_pixel_mask, data_crop_size, yx_center_full):
         fill_value=0,
     )
     return cutout.data.astype(bool)
+
+
+def _validate_search_region_bounds(config):
+    """Return the rings of ``config.search_region_bounds`` as float pairs, or None.
+
+    Raises
+    ------
+    ValueError
+        If a ring is empty or negative, no ring is given, or an explicit
+        ``search_region`` mask is set as well.
+    """
+    # Configs unpickled from reductions made before the field existed have no slot for it.
+    bounds = getattr(config, "search_region_bounds", None)
+    if bounds is None:
+        return None
+    if config.search_region is not None:
+        raise ValueError("Set either search_region or search_region_bounds, not both.")
+    rings = [(float(inner), float(outer)) for inner, outer in bounds]
+    if not rings:
+        raise ValueError("search_region_bounds needs at least one (inner, outer) ring.")
+    for inner, outer in rings:
+        if inner < 0 or outer <= inner:
+            raise ValueError(
+                f"search_region_bounds ring ({inner}, {outer}) needs 0 <= inner < outer."
+            )
+    return rings
 
 
 def _derive_outer_bound(valid_mask, yx_center, min_pixels):
@@ -596,7 +630,10 @@ def build_runtime_state(
             )
 
     # --- Category B: derived once ---
-    if config.search_region_outer_bound is None:
+    search_region_rings = _validate_search_region_bounds(config)
+    if search_region_rings is not None:
+        search_region_outer_bound = int(np.ceil(max(outer for _, outer in search_region_rings)))
+    elif config.search_region_outer_bound is None:
         if valid_pixel_mask is None:
             raise ValueError(
                 "search_region_outer_bound=None requires valid_pixel_mask "
@@ -667,7 +704,14 @@ def build_runtime_state(
     )
 
     search_region = config.search_region
-    if search_region is None:
+    if search_region_rings is not None:
+        search_region = np.logical_or.reduce([
+            regressor_selection.make_annulus_mask(
+                inner, outer, yx_dim=yx_dim, oversampling=config.oversampling, yx_center=None,
+            )
+            for inner, outer in search_region_rings
+        ])
+    elif search_region is None:
         search_region = regressor_selection.make_annulus_mask(
             config.search_region_inner_bound,
             search_region_outer_bound,
