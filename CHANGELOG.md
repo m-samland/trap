@@ -6,7 +6,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ## [Unreleased]
 
 ### Changed
-- **Temporal reductions run about 1.4 times faster.** Results are unchanged to rounding, so existing reductions do not need to be redone.
+- **Temporal reductions run about 1.4 times faster.** Results are unchanged to rounding, so existing reductions do not need to be redone ([#75](https://github.com/m-samland/trap/pull/75)).
 
 ## [2.3.0] - 2026-10-31
 
