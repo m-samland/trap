@@ -66,7 +66,6 @@ def yx_position_in_cube(
     return coords
 
 
-# @njit
 def yx_position_in_cube_optimized(
         image_size, pos, pa, image_center, yx_anamorphism=np.array([1., 1.]),
         right_handed=True):

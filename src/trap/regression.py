@@ -1835,11 +1835,9 @@ def run_trap_with_model_temporal_optimized(
     training_matrix = _assemble_training_matrix(
         data, regressor_pool_mask, multiwavelength_data=multiwavelength_data, multiwavelength_masks=multiwavelength_masks
     )
-    B_full, _, _, _ = pca_regression.compute_SVD(
-        training_matrix, n_components=None,
-        scaling=reduction_parameters.pca_scaling)
     _n_pca = runtime.number_of_pca_regressors if runtime is not None else reduction_parameters.number_of_pca_regressors
-    B = B_full[:, :_n_pca]
+    B = pca_regression.leading_left_singular_vectors_qr(
+        training_matrix, n_components=_n_pca, scaling=reduction_parameters.pca_scaling)
     # One design matrix for all pixels: the components and the constant are shared, only
     # the companion light curve in the last column changes from pixel to pixel.
     A = np.empty((ntime, B.shape[1] + 2))
