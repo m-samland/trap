@@ -5,6 +5,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-02
+
+Python 3.14 support, faster temporal reductions, and no direct numba dependency.
+
 ### Changed
 - **Temporal reductions run about 1.4 times faster.** Results are unchanged to rounding, so existing reductions do not need to be redone ([#75](https://github.com/m-samland/trap/pull/75)).
 - **trap supports Python 3.12 to 3.14 and no longer supports 3.11.** It requires `species>=0.11.2`, the species release that supports 3.14; on 3.11, stay on trap 2.3.0 ([#73](https://github.com/m-samland/trap/issues/73)).
@@ -374,7 +378,9 @@ First release with validated astrometry. Contains breaking changes — see the e
 ### Fixed
 - No known issues.
 
-[Unreleased]: https://github.com/m-samland/trap/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/m-samland/trap/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/m-samland/trap/compare/v2.3.0...v2.4.0
+[2.3.0]: https://github.com/m-samland/trap/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/m-samland/trap/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/m-samland/trap/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/m-samland/trap/compare/v2.0.0...v2.0.1
