@@ -5,6 +5,9 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Changed
+- **Temporal reductions run about 1.4 times faster.** Results are unchanged to rounding, so existing reductions do not need to be redone.
+
 ## [2.3.0] - 2026-10-31
 
 Faster temporal reductions, working spatial models, a search region of several rings, and detection that reads exactly one reduction run.

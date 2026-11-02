@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
 from numba import jit
-from scipy.linalg import blas, cholesky, eigh, lapack, solve_triangular, svd
+from scipy.linalg import blas, cholesky, eigh, lapack, qr, solve_triangular, svd
 from sklearn import preprocessing
 
 from . import regressor_selection
@@ -93,6 +93,37 @@ def compute_SVD(training_matrix, n_components, scaling='temp-median', compute_ro
         lambdas = None
 
     return U, lambdas, S, V
+
+
+def leading_left_singular_vectors_qr(training_matrix, n_components, scaling='temp-median'):
+    """Leading left singular vectors of the scaled training matrix, without its right singular vectors.
+
+    With ``X^T = Q R``, ``X = R^T Q^T`` and Q has orthonormal columns, so X and the
+    ``(n_time, min(n_time, n_pixel))`` factor ``R^T`` have the same left singular vectors and
+    singular values. Its SVD replaces the SVD of the wide matrix, which also computes the
+    ``(n_time, n_pixel)`` right singular vectors that the temporal model never uses. The
+    components agree with ``compute_SVD`` to rounding, up to the sign of each component.
+
+    Parameters
+    ----------
+    training_matrix : array_like
+        ``(n_time, n_pixel)`` matrix of reference pixel light curves.
+    n_components : int or None
+        Number of components to return; None returns all of them.
+    scaling : str or None, optional
+        Passed to `matrix_scaling`. Default is 'temp-median'.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n_time, n_components)`` leading left singular vectors.
+    """
+    if scaling is not None:
+        training_matrix = matrix_scaling(training_matrix, scaling=scaling)
+    training_matrix = np.asarray(training_matrix)
+    triangular = qr(training_matrix.T, mode='r')[0][:min(training_matrix.shape)]
+    U = svd(triangular.T, full_matrices=False, check_finite=False)[0]
+    return U[:, :n_components]
 
 
 def compute_V_inverse(training_matrix, lambdas, variance, variance_prior_scaling=1.):
