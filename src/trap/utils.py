@@ -458,7 +458,7 @@ def compute_empirical_correlation_matrix(residuals, eps=1e-15):
     norms = np.sqrt(np.einsum("ij,ij->i", residuals, residuals))
     denom = np.outer(norms, norms)
     gram = residuals @ residuals.T
-    # ~(denom < eps) rather than denom >= eps, so non-finite rows give NaN as before
+    # ~(denom < eps) rather than denom >= eps, so a non-finite row gives NaN instead of 0
     return np.divide(gram, denom, out=np.zeros_like(gram), where=~(denom < eps))
 
 
