@@ -1,6 +1,6 @@
 # TRAP – Temporal Reference Analysis for Planets
 
-[![Python](https://img.shields.io/badge/Python-3.11%2C%203.12%2C%203.13-brightgreen.svg)](https://github.com/m-samland/trap)
+[![Python](https://img.shields.io/badge/Python-3.12%2C%203.13%2C%203.14-brightgreen.svg)](https://github.com/m-samland/trap)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/m-samland/trap/blob/main/LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.1051%2F0004--6361%2F201937308-blue)](https://doi.org/10.1051/0004-6361/201937308)
 
@@ -26,7 +26,7 @@
 
 ## Installation
 
-TRAP requires **Python 3.11, 3.12, or 3.13**. It is published on PyPI as `trap-hci` and imported as `trap`:
+TRAP requires **Python 3.12, 3.13, or 3.14**. It is published on PyPI as `trap-hci` and imported as `trap`:
 
 ```bash
 pip install trap-hci
