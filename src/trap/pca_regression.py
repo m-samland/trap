@@ -10,7 +10,6 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.stats import mad_std
-from numba import jit
 from scipy.linalg import blas, cholesky, eigh, lapack, solve_triangular, svd
 from sklearn import preprocessing
 
@@ -252,56 +251,6 @@ def solve_linear_equation_with_correlation(design_matrix, data, inverse_covarian
     return P, P_sigma_squared
 
 
-@jit(nopython=True)
-def solve_ordinary_lsq_optimized(design_matrix, data):
-
-    A = design_matrix
-    AVinvy = np.dot(A, data)
-    AVinvAT = np.dot(A, A.T)
-
-    P = np.linalg.solve(AVinvAT, AVinvy)
-    P_sigma_squared = np.diag(np.linalg.inv(AVinvAT))
-
-    return P, P_sigma_squared
-
-
-@jit(nopython=True)
-def multi_dot_three(A, B, C, out):  # , out):  # , out=None):
-    """
-    Find the best order for three arrays and do the multiplication.
-    For three arguments `_multi_dot_three` is approximately 15 times faster
-    than `_multi_dot_matrix_chain_order`
-    """
-    a0, a1b0 = A.shape
-    b1c0, c1 = C.shape
-    # cost1 = cost((AB)C) = a0*a1b0*b1c0 + a0*b1c0*c1
-    cost1 = a0 * b1c0 * (a1b0 + c1)
-    # cost2 = cost(A(BC)) = a1b0*b1c0*c1 + a0*a1b0*c1
-    cost2 = a1b0 * c1 * (a0 + b1c0)
-
-    # out = np.ones((A.shape[0], C.shape[-1]), dtype='float64')
-
-    if cost1 < cost2:
-        return np.dot(np.dot(A, B), C, out=out)
-    else:
-        return np.dot(A, np.dot(B, C), out=out)
-
-
-@jit(nopython=True)
-def solve_lsq_optimized(design_matrix, data, inverse_covariance_matrix):
-
-    A = design_matrix
-
-    Vinv = inverse_covariance_matrix
-    AVinvy = np.linalg.multi_dot((A, Vinv, data))
-    AVinvAT = np.linalg.multi_dot((A, Vinv, A.T))
-    P = np.linalg.solve(AVinvAT, AVinvy)
-    # Plstsq = np.linalg.lstsq(AVinvAT, AVinvy)
-    P_sigma_squared = np.diag(np.linalg.inv(AVinvAT))
-
-    return P, P_sigma_squared
-
-
 def detect_bad_frames(
         eigenvector_matrix, bad_frame_mad_cutoff=8, plot_bad_frames=False,
         number_of_components_to_consider=20):
@@ -376,7 +325,7 @@ def remove_bad_frames(
 
 
 def ols(design_matrix, data, covariance=None):
-    """
+    r"""
     Ordinary least squares.
 
     Parameters
