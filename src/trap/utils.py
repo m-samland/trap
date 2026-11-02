@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.fft as fft
 import scipy.interpolate as sinterp
-from numba import njit
 from numpy.random import default_rng
 from scipy import ndimage
 from scipy.ndimage import spline_filter
@@ -449,132 +448,18 @@ def combine_reduction_regions(small_image, large_image):
     return large_image
 
 
-@njit
-def compute_empirical_correlation_matrix_original(residuals):
-    # residuals: number of wavelengths x number of pixels
-    n_vectors = residuals.shape[0] 
-    psi_ij = np.zeros((n_vectors, n_vectors), dtype='float64')
-    for i in range(n_vectors):
-        for j in range(i, n_vectors):
-            c_ij = np.dot(residuals[i, :], residuals[j, :].T)
-            cov1 = np.dot(residuals[i, :], residuals[i, :].T)
-            cov2 = np.dot(residuals[j, :], residuals[j, :].T)
-            psi_ij[i, j] = c_ij / np.sqrt(cov1 * cov2)
-    psi_ij = psi_ij + psi_ij.T - np.diag(np.ones(n_vectors))
-
-    return psi_ij
-
-
-@njit
 def compute_empirical_correlation_matrix(residuals, eps=1e-15):
     """
     Compute the empirical correlation matrix for a collection of row-vectors.
     Each row is treated as a distinct vector, so the output shape is (n_rows, n_rows).
+    Pairs whose norm product is below ``eps`` get 0.
     """
-    n_vectors, n_features = residuals.shape
-
-    # Precompute L2 norms of each row
-    norms = np.empty(n_vectors, dtype=np.float64)
-    for i in range(n_vectors):
-        val = 0.0
-        for k in range(n_features):
-            val += residuals[i, k] * residuals[i, k]
-        norms[i] = np.sqrt(val)
-
-    # Initialize correlation matrix
-    corr_matrix = np.zeros((n_vectors, n_vectors), dtype=np.float64)
-
-    # Fill upper triangle (including diagonal)
-    for i in range(n_vectors):
-        for j in range(i, n_vectors):
-            dot_ij = 0.0
-            for k in range(n_features):
-                dot_ij += residuals[i, k] * residuals[j, k]
-            denom = norms[i] * norms[j]
-            if denom < eps:
-                corr_matrix[i, j] = 0.0  # or np.nan, depending on your preference
-            else:
-                corr_matrix[i, j] = dot_ij / denom
-
-    # Mirror the upper triangle to the lower triangle
-    for i in range(n_vectors):
-        for j in range(i):
-            corr_matrix[i, j] = corr_matrix[j, i]
-
-    return corr_matrix
-
-
-@njit
-def compute_empirical_correlation_matrix_pearsson(residuals, eps=1e-15):
-    """
-    Compute the empirical Pearson correlation matrix for a collection of row-vectors.
-    Each row is treated as an independent vector, so the output shape is (n_rows, n_rows).
-    
-    This version matches what np.corrcoef(..., rowvar=True) does:
-    (1) Subtract the mean of each row.
-    (2) Divide by the standard deviation of each row.
-    (3) Compute the dot product among normalized rows.
-    
-    Parameters
-    ----------
-    residuals : np.ndarray, shape (n_vectors, n_features)
-        Each row is treated as a separate vector.
-    eps : float
-        Small positive constant to avoid zero divisions.
-    
-    Returns
-    -------
-    corr_matrix : np.ndarray, shape (n_vectors, n_vectors)
-        Pearson correlation among the row vectors.
-    """
-    n_vectors, n_features = residuals.shape
-
-    # Allocate space for mean- and std-subtracted data
-    # We'll create a copy to avoid altering the original array in-place
-    data_centered = np.empty_like(residuals, dtype=np.float64)
-    row_stds = np.empty(n_vectors, dtype=np.float64)
-
-    # 1) For each row, compute mean, subtract it, and compute the standard deviation
-    for i in range(n_vectors):
-        # Compute mean
-        mean_val = 0.0
-        for k in range(n_features):
-            mean_val += residuals[i, k]
-        mean_val /= n_features
-        
-        # Subtract mean
-        sum_sq = 0.0
-        for k in range(n_features):
-            centered_val = residuals[i, k] - mean_val
-            data_centered[i, k] = centered_val
-            sum_sq += centered_val * centered_val
-        
-        # Standard deviation
-        row_stds[i] = np.sqrt(sum_sq)  # population vs. sample doesn't matter for correlation shape
-
-    # 2) Initialize the correlation matrix
-    corr_matrix = np.zeros((n_vectors, n_vectors), dtype=np.float64)
-
-    # 3) Fill upper triangle (including diagonal)
-    for i in range(n_vectors):
-        for j in range(i, n_vectors):
-            denom = row_stds[i] * row_stds[j]
-            # If either row has near-zero std, set correlation to 0 to avoid inf/nan
-            if denom < eps:
-                corr_matrix[i, j] = 0.0
-            else:
-                # Dot product of the mean-subtracted data
-                dot_ij = 0.0
-                for k in range(n_features):
-                    dot_ij += data_centered[i, k] * data_centered[j, k]
-                corr_matrix[i, j] = dot_ij / denom
-
-    # Mirror the upper triangle to the lower triangle
-    for i in range(n_vectors):
-        for j in range(i):
-            corr_matrix[i, j] = corr_matrix[j, i]
-
-    return corr_matrix
+    residuals = np.asarray(residuals, dtype=np.float64)
+    norms = np.sqrt(np.einsum("ij,ij->i", residuals, residuals))
+    denom = np.outer(norms, norms)
+    gram = residuals @ residuals.T
+    # ~(denom < eps) rather than denom >= eps, so non-finite rows give NaN as before
+    return np.divide(gram, denom, out=np.zeros_like(gram), where=~(denom < eps))
 
 
 def matern32_kernel(distance, length_scale):

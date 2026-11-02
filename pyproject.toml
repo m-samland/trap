@@ -10,12 +10,11 @@ classifiers = [
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
 ]
-requires-python = ">=3.11, <3.14"
+requires-python = ">=3.12, <3.15"
 dependencies = [
     "numpy>=2,<3", 
     "scipy",
     "matplotlib",
-    "numba",
     "pandas",
     "scikit-learn",
     "astropy>7.0",
@@ -26,7 +25,7 @@ dependencies = [
     "bottleneck",
     "natsort",
     "dill",
-    "species>=0.11.0",
+    "species>=0.11.2",
 ]
 dynamic = ['version']
 
