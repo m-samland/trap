@@ -54,6 +54,15 @@ reaps it and emits "A worker stopped while some jobs were given to the executor"
 
 logger = logging.getLogger(__name__)
 
+def _psf_is_unusable(flux_psf):
+    """Whether a PSF template cannot model a companion.
+
+    An all-zero template gives a zero companion model, whose fit has infinite variance
+    and zero weight in every pixel, so no contrast can be averaged at any position.
+    """
+    return np.any(~np.isfinite(flux_psf)) or not np.any(flux_psf)
+
+
 def trap_one_position(
     guess_position,
     data,
@@ -1816,9 +1825,9 @@ def run_complete_reduction(
                     yx_center_full=yx_center_full,
                     yx_center_injection_full=yx_center_injection_full,
                 )
-                # Wavelengths with non-finite PSF or centers are skipped by the
-                # reduction loop below; skip dumping them as well.
-                if np.any(~np.isfinite(flux_psf)) or np.any(~np.isfinite(yx_center_injection)):
+                # Wavelengths with an unusable PSF or non-finite centers are skipped
+                # by the reduction loop below; skip dumping them as well.
+                if _psf_is_unusable(flux_psf) or np.any(~np.isfinite(yx_center_injection)):
                     continue
                 if amplitude_modulation_full is None:
                     amplitude_modulation = np.ones(data_full.shape[1])
@@ -1871,7 +1880,7 @@ def run_complete_reduction(
                 yx_center_full=yx_center_full,
                 yx_center_injection_full=yx_center_injection_full,
             )
-            if np.any(~np.isfinite(flux_psf)) or np.any(~np.isfinite(yx_center_injection)):
+            if _psf_is_unusable(flux_psf) or np.any(~np.isfinite(yx_center_injection)):
                 continue
             if amplitude_modulation_full is None:
                 amplitude_modulation = np.ones(data_full.shape[1])
@@ -2253,11 +2262,10 @@ def _run_reduction_loops(
             else:
                 amplitude_modulation = amplitude_modulation_full[wavelength_index, :]
 
-            # Do not reduce data for wavelength if flux PSF or center position contains NaNs
-            flux_psf_not_finite = np.any(~np.isfinite(flux_psf))
+            # Do not reduce data for wavelength if flux PSF is unusable or center position contains NaNs
             yx_center_injection_not_finite = np.any(~np.isfinite(yx_center_injection))
-            if flux_psf_not_finite:
-                logger.warning("Skipping wavelength %s. NaNs detected in flux PSF.", wavelength_index)
+            if _psf_is_unusable(flux_psf):
+                logger.warning("Skipping wavelength %s. Flux PSF contains NaNs or is all zero.", wavelength_index)
                 continue
             if yx_center_injection_not_finite:
                 logger.warning(

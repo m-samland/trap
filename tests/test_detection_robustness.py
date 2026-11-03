@@ -6,9 +6,13 @@ companion mask blanked every annulus it needed. Both aborted the entire target
 and, with it, the combined companion tables.
 """
 
+from types import SimpleNamespace
+
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
+from astropy import units as u
 from astropy.modeling import models
 
 from trap import detection
@@ -270,3 +274,147 @@ class TestTemplateErrorIsolation:
         assert analysis.visited == ["bad", "good"]
         assert analysis.templates["good"].companion_table == "result"
         assert analysis.templates["bad"].companion_table is None
+
+
+def _analysis_with_fitted_candidates(monkeypatch, norm_snr):
+    """Candidates 20 px apart on x, with the given norm-SNR amplitudes."""
+    analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+    x_relative = 20.0 * np.arange(len(norm_snr))
+    fitted = pd.DataFrame({"x_relative": x_relative, "y_relative": 0.0})
+    monkeypatch.setattr(
+        analysis,
+        "fit_candidates",
+        lambda **kwargs: {
+            "snr_image": fitted,
+            "contrast_image": fitted.copy(),
+            "norm_snr_image": pd.DataFrame({"amplitude": norm_snr}),
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        detection,
+        "_combine_channels_rt_frame",
+        lambda group_rows, **kwargs: group_rows.assign(separation=group_rows["x_relative"]),
+    )
+    return analysis, pd.DataFrame({"x_relative": x_relative})
+
+
+class TestCandidateWithoutFiniteChannel:
+    def test_is_dropped_and_others_kept(self, monkeypatch, caplog):
+        analysis, candidates = _analysis_with_fitted_candidates(monkeypatch, [5.0, np.nan, 7.0])
+        kept, fit = analysis.complete_candidate_table(
+            candidates=candidates, detection_cube=np.empty(0), detection_products={}, wavelength_indices=[0]
+        )
+        assert kept["x_relative"].tolist() == [0.0, 40.0]
+        assert fit["snr_image"]["x_relative"].tolist() == [0.0, 40.0]
+        assert "Dropping the candidate" in caplog.text
+
+    def test_all_dropped_is_no_candidates(self, monkeypatch):
+        analysis, candidates = _analysis_with_fitted_candidates(monkeypatch, [np.nan])
+        kept, fit = analysis.complete_candidate_table(
+            candidates=candidates, detection_cube=np.empty(0), detection_products={}, wavelength_indices=[0]
+        )
+        assert kept is None and fit is None
+
+
+class TestRereduceMissingChannel:
+    @pytest.mark.parametrize("missing", ["none", "absent"])
+    def test_missing_channel_gives_nan_entry(self, monkeypatch, caplog, missing):
+        channel = {"temporal": SimpleNamespace(measured_contrast=2e-5, contrast_uncertainty=1e-6)}
+        results = {"0": channel, "2": channel}
+        if missing == "none":
+            results["1"] = None
+        monkeypatch.setattr(detection, "run_complete_reduction", lambda **kwargs: {"0.15": results})
+        analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+        analysis.reduction_type = "temporal"
+        analysis.reduction_parameters = SimpleNamespace(merge=lambda **kwargs: None)
+        analysis.instrument = SimpleNamespace(wavelengths=np.array([1.0, 1.1, 1.2]) * u.micron)
+        table = {"sep (pix)": np.array([5.0, 50.0]), "snr_normalization": np.array([1.0, 1.0])}
+        analysis.wavelength_indices = np.array([0, 1, 2] if missing == "none" else [0, 2])
+        analysis.detection_products = {"contrast_tables": [table] * len(analysis.wavelength_indices)}
+        analysis.contrast_table_and_normalization = lambda **kwargs: None
+
+        spectrum = analysis.rereduce_single_position(
+            candidate_index=0,
+            yx_candidate_position=(0.0, 20.0),
+            data_full=np.empty(0),
+            flux_psf_full=np.empty(0),
+            pa=None,
+            wavelength_indices=[0, 1, 2],
+            temporal_components_fraction=0.15,
+        )
+        assert spectrum["contrast"].tolist()[0] == 2e-5
+        assert np.isnan(spectrum["contrast"].iloc[1])
+        assert spectrum["contrast"].tolist()[2] == 2e-5
+        assert "1 channels [1]" in caplog.text
+
+    def test_channel_without_a_normalization_profile_gives_nan_factor(self, monkeypatch):
+        channel = {"temporal": SimpleNamespace(measured_contrast=2e-5, contrast_uncertainty=1e-6)}
+        monkeypatch.setattr(detection, "run_complete_reduction", lambda **kwargs: {"0.15": {"0": channel}})
+        analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+        analysis.reduction_type = "temporal"
+        analysis.reduction_parameters = SimpleNamespace(merge=lambda **kwargs: None)
+        analysis.instrument = SimpleNamespace(wavelengths=np.array([1.0]) * u.micron)
+        analysis.wavelength_indices = np.array([0])
+        table = {"sep (pix)": np.array([5.0]), "snr_normalization": np.array([np.nan])}
+        analysis.detection_products = {"contrast_tables": [table]}
+        analysis.contrast_table_and_normalization = lambda **kwargs: None
+
+        spectrum = analysis.rereduce_single_position(
+            candidate_index=0, yx_candidate_position=(0.0, 20.0), data_full=np.empty(0), flux_psf_full=np.empty(0),
+            pa=None, wavelength_indices=[0], temporal_components_fraction=0.15,
+        )
+        assert spectrum["contrast"].iloc[0] == 2e-5
+        assert np.isnan(spectrum["uncertainty"].iloc[0])
+
+
+class TestAddModelIfMissing:
+    @staticmethod
+    def _database(tmp_path, teff=(700.0, 800.0), wavelength=(0.1, 250.0)):
+        path = tmp_path / "species_database.hdf5"
+        with h5py.File(path, "w") as hdf5_file:
+            hdf5_file["models/grid/teff"] = np.array(teff)
+            hdf5_file["models/grid/wavelength"] = np.array(wavelength)
+            hdf5_file["models/grid/flux"] = np.ones(2)
+        added = []
+        database = SimpleNamespace(database=path, add_model=lambda **kwargs: added.append(kwargs))
+        return database, added
+
+    def test_present_grid_is_not_written(self, tmp_path):
+        database, added = self._database(tmp_path)
+        size = database.database.stat().st_size
+        detection._add_model_if_missing(database, "grid", (700.0, 800.0))
+        assert added == []
+        assert database.database.stat().st_size == size
+
+    def test_absent_grid_is_added(self, tmp_path):
+        database, added = self._database(tmp_path)
+        detection._add_model_if_missing(database, "other", (700.0, 800.0))
+        assert added == [{"model": "other", "teff_range": (700.0, 800.0)}]
+
+    @pytest.mark.parametrize("kwargs", [{"teff": (720.0, 800.0)}, {"wavelength": (1.0, 2.0)}])
+    def test_narrower_grid_is_added_again(self, tmp_path, kwargs):
+        database, added = self._database(tmp_path, **kwargs)
+        detection._add_model_if_missing(database, "grid", (700.0, 800.0))
+        assert len(added) == 1
+
+    def test_grid_interrupted_before_its_flux_is_added_again(self, tmp_path):
+        database, added = self._database(tmp_path)
+        with h5py.File(database.database, "a") as hdf5_file:
+            del hdf5_file["models/grid/flux"]
+        detection._add_model_if_missing(database, "grid", (700.0, 800.0))
+        assert len(added) == 1
+
+
+def test_per_channel_astrometry_uses_only_channels_with_a_map(monkeypatch):
+    analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+    analysis.wavelength_indices = np.array([1, 3])
+    seen = {}
+
+    def find_candidates_all_wavelengths(**kwargs):
+        seen.update(kwargs)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(analysis, "find_candidates_all_wavelengths", find_candidates_all_wavelengths, raising=False)
+    assert analysis.measure_per_channel_astrometry(wavelength_indices=[1, 2, 3]) is None
+    assert seen["wavelength_indices"] == [1, 3]

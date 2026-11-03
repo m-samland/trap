@@ -13,6 +13,7 @@ import warnings
 from collections import OrderedDict
 
 import bottleneck as bn
+import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -55,6 +56,8 @@ DEFAULT_MINIMUM_CANDIDATE_SEPARATION = 5.0
 # contrast-table renormalization, so an unbounded list is a runtime hazard as
 # much as a scientific one.
 DEFAULT_MAX_CANDIDATES = 50
+
+TEMPLATE_WAVELENGTH_RANGE = (0.85, 3.6)
 
 # Mirrors `DetectionParameters.template_names=None`. Order is the order the
 # templates are fitted and written in.
@@ -1660,6 +1663,33 @@ def summarize_2d_gauss_fit_result(
     return fitted_parameters
 
 
+def _grid_in_database(database_path, model, teff_range):
+    """Whether the species database holds ``model`` over ``teff_range`` and the template wavelengths."""
+    with h5py.File(database_path, "r") as hdf5_file:
+        group = f"models/{model}"
+        # species writes the group first and the flux last, so an interrupted add
+        # leaves a group that add_model must be allowed to repair.
+        if any(f"{group}/{name}" not in hdf5_file for name in ("teff", "wavelength", "flux")):
+            return False
+        teff = hdf5_file[f"{group}/teff"][()]
+        wavelength = hdf5_file[f"{group}/wavelength"][()]
+    return bool(
+        teff.min() <= teff_range[0] and teff.max() >= teff_range[1]
+        and wavelength.min() <= TEMPLATE_WAVELENGTH_RANGE[0] and wavelength.max() >= TEMPLATE_WAVELENGTH_RANGE[1]
+    )
+
+
+def _add_model_if_missing(database, model, teff_range):
+    """Add a model grid only if the database lacks it.
+
+    ``add_model`` deletes and rewrites the grid, and HDF5 does not return the deleted
+    space to the file. Doing that at every detection grew a database holding 0.24 GB to
+    105 GB, and made every detection a writer that blocks other processes on the file lock.
+    """
+    if not _grid_in_database(database.database, model, teff_range):
+        database.add_model(model=model, teff_range=teff_range)
+
+
 def _combine_channels_rt_frame(
     group_rows, search_radius, snr_values=None, independent_channels=False
 ):
@@ -3152,6 +3182,15 @@ class DetectionAnalysis(object):
             group_positions = np.where(group_mask)[0]
             group_rows = snr_table.iloc[group_positions]
             group_snr = norm_amp[group_positions]
+            assigned[group_positions] = True
+
+            if not np.isfinite(group_snr).any():
+                logger.warning(
+                    "Dropping the candidate at (y, x) = (%.2f, %.2f): none of its %d "
+                    "channels has a finite SNR.",
+                    positions[idx][1], positions[idx][0], len(group_positions),
+                )
+                continue
 
             combined = _combine_channels_rt_frame(
                 group_rows,
@@ -3163,8 +3202,10 @@ class DetectionAnalysis(object):
             # (contrast / norm-SNR) tables.
             keeper = int(group_positions[int(np.nanargmax(group_snr))])
             unique_candidate_indices.append(keeper)
-            assigned[group_positions] = True
             combined_rows.append(combined)
+
+        if not combined_rows:
+            return None, None
 
         final_position_table = pd.concat(combined_rows, ignore_index=True)
 
@@ -3246,14 +3287,22 @@ class DetectionAnalysis(object):
             temporal_components_fraction = [temporal_components_fraction]
 
         component_key = str(temporal_components_fraction[0])
-        for key in all_results[component_key]:
-            contrast.append(
-                all_results[component_key][key][self.reduction_type].measured_contrast
-            )
-            uncertainty.append(
-                all_results[component_key][key][
-                    self.reduction_type
-                ].contrast_uncertainty
+        missing_channels = []
+        for wavelength_index in wavelength_indices:
+            # A channel is absent or None when its PSF is unusable or too few pixels
+            # remain at this position.
+            channel_result = all_results[component_key].get(str(wavelength_index))
+            if channel_result is None:
+                missing_channels.append(int(wavelength_index))
+                contrast.append(np.nan)
+                uncertainty.append(np.nan)
+                continue
+            contrast.append(channel_result[self.reduction_type].measured_contrast)
+            uncertainty.append(channel_result[self.reduction_type].contrast_uncertainty)
+        if missing_channels:
+            logger.warning(
+                "No result at position %s in %d channels %s; their spectrum entries are NaN.",
+                yx_candidate_position, len(missing_channels), missing_channels,
             )
 
         contrast = np.array(contrast)
@@ -3276,12 +3325,21 @@ class DetectionAnalysis(object):
             self.contrast_table_and_normalization(save=False, inplace=True)
 
         normalization_factors = []
-        for contrast_table_index in range(len(wavelength_indices)):
+        for wavelength_index in wavelength_indices:
+            # Tables exist only for the channels with a detection map.
+            table_positions = np.flatnonzero(np.asarray(self.wavelength_indices) == wavelength_index)
+            if table_positions.size == 0:
+                normalization_factors.append(np.nan)
+                continue
+            contrast_table_index = table_positions[0]
             mask = np.isfinite(
                 self.detection_products["contrast_tables"][contrast_table_index][
                     "snr_normalization"
                 ]
             )
+            if not mask.any():
+                normalization_factors.append(np.nan)
+                continue
             separation = self.detection_products["contrast_tables"][
                 contrast_table_index
             ]["sep (pix)"][mask]
@@ -3805,9 +3863,9 @@ class DetectionAnalysis(object):
         if instrument is None:
             instrument = self.instrument
 
-        database.add_model(model="petitcode-cool-cloudy", teff_range=(700.0, 800.0))
+        _add_model_if_missing(database, "petitcode-cool-cloudy", (700.0, 800.0))
         cool_planet_read_model = ReadModel(
-            model="petitcode-cool-cloudy", wavel_range=(0.85, 3.6)
+            model="petitcode-cool-cloudy", wavel_range=TEMPLATE_WAVELENGTH_RANGE
         )
         cool_planet_model_param = {
             "teff": 760.0,
@@ -3822,9 +3880,9 @@ class DetectionAnalysis(object):
         )
 
         if "L-type" in template_names:
-            database.add_model(model="drift-phoenix", teff_range=(1400.0, 1600.0))
+            _add_model_if_missing(database, "drift-phoenix", (1400.0, 1600.0))
             hot_planet_read_model = ReadModel(
-                model="drift-phoenix", wavel_range=(0.85, 3.6)
+                model="drift-phoenix", wavel_range=TEMPLATE_WAVELENGTH_RANGE
             )
             hot_planet_model_param = {
                 "teff": 1500.0,
@@ -3847,9 +3905,9 @@ class DetectionAnalysis(object):
             if stellar_parameters is None:
                 stellar_modelbox = copy.deepcopy(flat_model)
             else:
-                database.add_model(model="bt-nextgen", teff_range=(3000.0, 30000.0))
+                _add_model_if_missing(database, "bt-nextgen", (3000.0, 30000.0))
                 star_read_model = ReadModel(
-                    model="bt-nextgen", wavel_range=(0.85, 3.6)
+                    model="bt-nextgen", wavel_range=TEMPLATE_WAVELENGTH_RANGE
                 )
 
                 # Snap stellar parameters to the model-grid boundaries so values
@@ -4424,7 +4482,7 @@ class DetectionAnalysis(object):
             max_candidates=max_candidates,
         )
 
-        if candidates_initial is None or len(candidates_initial) == 0:
+        if candidates_fit_initial is None:
             template.companion_table = None
             template.validated_companion_table = None
             template.validated_companion_table_short = None
@@ -4765,6 +4823,9 @@ class DetectionAnalysis(object):
         """
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
+        # Later steps walk the channels by position in the detection products,
+        # which hold only channels with a map: a skipped channel has none.
+        wavelength_indices = [index for index in wavelength_indices if index in self.wavelength_indices]
         candidates = self.find_candidates_all_wavelengths(
             wavelength_indices=wavelength_indices,
             candidate_threshold=candidate_threshold,

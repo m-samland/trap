@@ -62,6 +62,8 @@ def stub_species(monkeypatch):
     loaded = []
 
     class _Database:
+        database = None
+
         def add_model(self, model, teff_range=None):
             loaded.append(model)
 
@@ -77,6 +79,7 @@ def stub_species(monkeypatch):
 
     monkeypatch.setattr(detection, "configure_species", lambda directory: directory)
     monkeypatch.setattr(detection, "Database", _Database)
+    monkeypatch.setattr(detection, "_grid_in_database", lambda *args: False)
     monkeypatch.setattr(detection, "ReadModel", _ReadModel)
     monkeypatch.setattr(detection, "SpectralTemplate", _Template)
     return loaded

@@ -23,6 +23,7 @@ dependencies = [
     "tqdm",
     "joblib",
     "bottleneck",
+    "h5py",
     "natsort",
     "dill",
     "species>=0.11.2",
