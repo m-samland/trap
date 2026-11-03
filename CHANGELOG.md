@@ -10,6 +10,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 - **A channel with an all-zero PSF is skipped** instead of stopping the reduction, as a channel with a NaN PSF already was, and per-channel astrometry no longer fails on the missing channel ([#79](https://github.com/m-samland/trap/issues/79)).
 - **`rereduce_single_position` gives NaN for a channel without a result** instead of crashing, so forced spectra keep their other channels ([#80](https://github.com/m-samland/trap/issues/80)).
 - **A candidate with no finite channel is dropped with a warning** and no longer costs the template or the per-channel astrometry all its results ([#81](https://github.com/m-samland/trap/issues/81)).
+- **Each candidate in the template-matching companion tables keeps its own `peak_pixel_snr`.** With several candidates it could carry the value of another source, and validation uses it, so rerunning a detection can drop a candidate that only passed on that value or change the `peak_pixel_snr` it reports ([#83](https://github.com/m-samland/trap/issues/83)).
 
 ## [2.4.0] - 2026-11-02
 

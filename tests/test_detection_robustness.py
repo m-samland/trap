@@ -406,6 +406,43 @@ class TestAddModelIfMissing:
         assert len(added) == 1
 
 
+class _SummaryReached(Exception):
+    pass
+
+
+def test_template_matching_summary_keeps_each_candidates_own_peak(monkeypatch, tmp_path):
+    # Peaks are labelled in order of the separation of their peak pixel, while the fit
+    # table is ordered by fitted separation, which here is the reverse.
+    analysis, _ = _analysis_with_fitted_candidates(monkeypatch, [6.0, 50.0])
+    monkeypatch.setattr(
+        detection,
+        "_combine_channels_rt_frame",
+        lambda group_rows, **kwargs: group_rows.assign(separation=100.0 - group_rows["x_relative"]),
+    )
+    peaks = pd.DataFrame({"x_relative": [0.0, 20.0], "snr": [6.0, 50.0]})
+    analysis.reduction_parameters = SimpleNamespace(result_folder=str(tmp_path))
+    analysis.instrument = SimpleNamespace(wavelengths=np.array([1.0]))
+    analysis.wavelength_indices = np.array([0])
+    analysis.template_matching_detection = lambda *args, **kwargs: (np.empty(0), {})
+    analysis.find_candidates_all_wavelengths = lambda **kwargs: peaks.copy()
+    analysis.contrast_table_and_normalization = lambda **kwargs: {}
+    analysis.extract_candidate_spectra = lambda **kwargs: None
+    seen = {}
+
+    def detection_summary(candidates, candidates_fit, **kwargs):
+        seen["candidates"], seen["fit"] = candidates, candidates_fit
+        raise _SummaryReached
+
+    analysis.detection_summary = detection_summary
+    with pytest.raises(_SummaryReached):
+        analysis.run_template_matching(_Template("flat"))
+
+    fitted_x = seen["fit"]["snr_image"]["x_relative"].tolist()
+    assert fitted_x == [20.0, 0.0]
+    assert seen["candidates"]["x_relative"].tolist() == fitted_x
+    assert seen["candidates"]["snr"].tolist() == [50.0, 6.0]
+
+
 def test_per_channel_astrometry_uses_only_channels_with_a_map(monkeypatch):
     analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
     analysis.wavelength_indices = np.array([1, 3])

@@ -4514,7 +4514,7 @@ class DetectionAnalysis(object):
                 max_candidates=max_candidates,
             )
 
-            _, candidates_fit_final = self.complete_candidate_table(
+            candidates_final, candidates_fit_final = self.complete_candidate_table(
                 candidates=candidates_final,
                 detection_cube=detection_cube,
                 detection_products=detection_products_masked,
