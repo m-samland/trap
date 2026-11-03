@@ -18,7 +18,7 @@ def _psf():
     return psf / psf.sum()
 
 
-def _reduce(tmp_path, n_wavelengths, xy_image_centers):
+def _reduce(tmp_path, n_wavelengths, xy_image_centers, flux_psf_full=None):
     data = np.random.default_rng(0).normal(0.0, 1e-4, (n_wavelengths, N_FRAMES, IMAGE_SIZE, IMAGE_SIZE))
     instrument = Instrument(
         name="synthetic",
@@ -39,7 +39,7 @@ def _reduce(tmp_path, n_wavelengths, xy_image_centers):
     )
     run_complete_reduction(
         data_full=data,
-        flux_psf_full=np.stack([_psf()] * n_wavelengths),
+        flux_psf_full=np.stack([_psf()] * n_wavelengths) if flux_psf_full is None else flux_psf_full,
         pa=np.linspace(0.0, 40.0, N_FRAMES),
         instrument=instrument,
         reduction_parameters=config,
@@ -81,3 +81,13 @@ def test_frame_with_nan_center_in_one_wavelength_is_dropped_from_all(tmp_path, c
 def test_single_center_for_all_frames(tmp_path):
     detections = _reduce(tmp_path, 1, np.array([IMAGE_SIZE // 2, IMAGE_SIZE // 2], dtype=float))
     assert len(detections) == 1
+
+
+def test_channel_with_zero_psf_is_skipped_alone(tmp_path, caplog):
+    centers = np.full((2, N_FRAMES, 2), IMAGE_SIZE // 2, dtype=float)
+    flux_psf = np.stack([_psf(), np.zeros_like(_psf())])
+    with caplog.at_level(logging.WARNING, logger="trap.reduction_wrapper"):
+        detections = _reduce(tmp_path, 2, centers, flux_psf_full=flux_psf)
+    assert len(detections) == 1
+    assert "lam00" in detections[0]
+    assert "Skipping wavelength 1" in caplog.text

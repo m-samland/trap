@@ -5,6 +5,12 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Fixed
+- **Detections no longer rewrite the species model grids.** A grid already in the database is only read, so the database stops growing and processes sharing it no longer fail on the file lock. Existing databases keep their dead space until you run `h5repack` on them ([#78](https://github.com/m-samland/trap/issues/78)).
+- **A channel with an all-zero PSF is skipped** instead of stopping the reduction, as a channel with a NaN PSF already was, and per-channel astrometry no longer fails on the missing channel ([#79](https://github.com/m-samland/trap/issues/79)).
+- **`rereduce_single_position` gives NaN for a channel without a result** instead of crashing, so forced spectra keep their other channels ([#80](https://github.com/m-samland/trap/issues/80)).
+- **A candidate with no finite channel is dropped with a warning** and no longer costs the template or the per-channel astrometry all its results ([#81](https://github.com/m-samland/trap/issues/81)).
+
 ## [2.4.0] - 2026-11-02
 
 Python 3.14 support, faster temporal reductions, and no direct numba dependency.
