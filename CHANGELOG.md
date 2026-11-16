@@ -8,6 +8,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ### Added
 - **The noise normalisation of the detection maps now excludes the measured footprint of every source above 10 sigma instead of a fixed 11 px disk**, which lowers the uncertainties of bright companions by up to 1.6; `noise_mask_region_snr=None` restores the disks.
   The mask is written as `noise_mask_*.fits`.
+- **The channel correlation of the contrast maps per separation is written as `spectral_correlation_*.fits`** with the Greco and Brandt (2016) fit that template matching and the spectral library use; the empirical matrices are kept in the file for checks.
 
 ### Fixed
 - **Detections no longer rewrite the species model grids.** A grid already in the database is only read, so the database stops growing and processes sharing it no longer fail on the file lock. Existing databases keep their dead space until you run `h5repack` on them ([#78](https://github.com/m-samland/trap/issues/78)).

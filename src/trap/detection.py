@@ -37,9 +37,15 @@ from trap.noise_mask import companion_noise_masks, noise_mask_settings
 from trap.parameters import _to_reduction_config
 from trap.reduction_wrapper import run_complete_reduction
 from trap.species_setup import configure_species
+from trap.spectral_correlation import (
+    correlation_at,
+    empirical_stack,
+    fit_stack,
+    spectral_correlation_settings,
+    write_stack,
+)
 from trap.template import SpectralTemplate
 from trap.utils import (
-    compute_empirical_correlation_matrix,
     find_nearest,
     load_object,
     save_object,
@@ -73,6 +79,9 @@ DEFAULT_MAX_EXCLUSION_RADIUS_FACTOR = 2.5
 # Fewest finite pixels a separation ring may keep outside the companion mask before
 # `make_radial_profile` falls back to the unmasked ring.
 MINIMUM_ANNULUS_PIXELS = 10
+
+# VLT, for instruments that do not give a telescope diameter.
+DEFAULT_TELESCOPE_DIAMETER = 8.2 * u.m
 
 
 def _resolve_exclusion_radius(candidate_exclusion_radius, search_radius):
@@ -452,6 +461,15 @@ def make_contrast_curve(
         uncertainty_image,
         median_uncertainty_image,
     )
+
+
+def _rings_with_data(contrast_table):
+    """First and last separation in pixels with a finite noise normalisation in any channel, or None."""
+    table = contrast_table.to_pandas() if isinstance(contrast_table, Table) else contrast_table
+    separations = table["sep (pix)"].to_numpy()[np.isfinite(table["snr_normalization"].to_numpy())]
+    if len(separations) == 0:
+        return None
+    return int(separations.min()), int(separations.max())
 
 
 def _warn_about_unmasked_rings(sources, separations, fallback_separations, fwhm, wavelength_index):
@@ -2395,6 +2413,9 @@ class DetectionAnalysis(object):
         self.file_paths["noise_mask_path"] = os.path.join(
             self.result_folder, self.basename.replace("detection", "noise_mask")
         )
+        self.file_paths["spectral_correlation_path"] = os.path.join(
+            self.result_folder, self.basename.replace("detection", "spectral_correlation")
+        )
 
         # Derived from the per-wavelength files just read, so it has to be
         # rewritten every time: guarding on existence froze it at whatever the
@@ -2441,7 +2462,10 @@ class DetectionAnalysis(object):
                 defaults to the reduction config's.
             mask_above_sigma: Passed to `make_contrast_curve`.
             save: Write the products to ``file_paths``. The noise mask is written only if
-                ``file_paths`` has a ``noise_mask_path``.
+                ``file_paths`` has a ``noise_mask_path``. The channel correlation stack of
+                `make_spectral_correlation_matrices`, with the union of the noise masks over
+                channels excluded, is written only if it has a ``spectral_correlation_path``
+                and ``detection_cube`` is None.
             file_paths: Output paths; defaults to ``self.file_paths``.
             overwrite: Overwrite existing files.
             inplace: Store the products in ``self.detection_products`` instead of returning them.
@@ -2618,6 +2642,25 @@ class DetectionAnalysis(object):
                     overwrite=overwrite,
                 )
 
+            if detection_cube is None and "spectral_correlation_path" in file_paths:
+                stack = self._spectral_correlation_stack(
+                    detection_cube_used[cube_indices, 0],
+                    self.wavelength_indices[cube_indices],
+                    detection_products["noise_mask_cube"].any(axis=0),
+                    radial_bounds=_rings_with_data(contrast_table),
+                )
+                settings = spectral_correlation_settings(self.reduction_parameters)
+                write_stack(
+                    file_paths["spectral_correlation_path"],
+                    stack["matrices"],
+                    stack["fit"],
+                    stack["wavelengths"],
+                    pixel_scale_mas=self.pixel_scale_mas,
+                    width=settings["width"],
+                    flag_rms=settings["flag_rms"],
+                    overwrite=overwrite,
+                )
+
         if inplace:
             self.detection_products = detection_products
         else:
@@ -2736,84 +2779,96 @@ class DetectionAnalysis(object):
             self.detected_signal_mask = np.zeros([yx_dim[0], yx_dim[1]]).astype("bool")
 
     def make_spectral_correlation_matrices(
-        self, radial_bounds=None, bin_width=3, yx_center=None, detected_signal_mask=None
+        self, radial_bounds=None, bin_width=None, yx_center=None, detected_signal_mask=None
     ):
-        yx_dim = [self.detection_cube.shape[-2], self.detection_cube.shape[-1]]
-        separations_used = []
-        empirical_correlation_matrices = []
-        empirical_correlation = {}
+        """Compute the channel correlation of the contrast maps per separation and fit it.
 
-        self.detection_cube[self.detection_cube == 0.0] = np.nan
+        The result goes to ``self.empirical_correlation``, a dict with ``separation``
+        (pixels), ``matrices`` (the empirical matrices), ``fit`` (the table of
+        `trap.spectral_correlation.fit_stack`) and ``wavelengths`` (micron); template
+        matching reads it through `trap.spectral_correlation.correlation_at`.
 
+        Args:
+            radial_bounds: First and last ring centre in pixels; by default the rings with
+                a finite noise normalisation in ``self.detection_products``, else 1 px to
+                the array corner.
+            bin_width: Ring width in pixels; default ``spectral_correlation_width``.
+            yx_center: Centre pixel; default the array centre.
+            detected_signal_mask: Pixels excluded from every ring; by default the union over
+                channels of ``self.detection_products["noise_mask_cube"]``, else the disks
+                of `mask_companions_in_detection`.
+        """
+        detection_products = getattr(self, "detection_products", None) or {}
         if detected_signal_mask is None:
-            self.mask_companions_in_detection()
-            detected_signal_mask = self.detected_signal_mask
-
-        if radial_bounds is None:
-            separation_max = self.detection_cube.shape[-1] // 2 * np.sqrt(2)
-            radial_bounds = [1, int(separation_max)]
-
-        if yx_center is None:
-            yx_center = (
-                self.detection_cube.shape[-2] // 2.0,
-                self.detection_cube.shape[-1] // 2.0,
-            )
-        xy_center = yx_center[::-1]
-
-        # Determine first non-zero separation, to prevent results below IWA
-        # inner_bound_index = int(yx_center[0] + radial_bounds[0])
-        # try:
-        #     non_zero_separation = (
-        #         radial_bounds[0]
-        #         + np.nanmax(
-        #             np.argwhere(
-        #                 np.isnan(
-        #                     self.detection_cube[0, 0][
-        #                         inner_bound_index : inner_bound_index + 15,
-        #                         int(yx_center[1]),
-        #                     ]
-        #                 )
-        #             )
-        #         )
-        #         + 1
-        #     )
-        # except ValueError:
-        #     non_zero_separation = 0
-        # if non_zero_separation > radial_bounds[0] + 13:
-        #     non_zero_separation = 0
-
-        separations = np.arange(radial_bounds[0], radial_bounds[1])
-
-        for _, separation in enumerate(separations):
-            # annulus_data = annulus_mask[0].multiply(data)
-            # mask = annulus_mask[0].to_image(data.shape) > 0
-            r_in = separation - bin_width / 2.0
-            r_out = separation + bin_width / 2.0
-            if r_in < 0.5:
-                r_in = 0.5
-            annulus_aperture = CircularAnnulus(xy_center, r_in=r_in, r_out=r_out)
-            annulus_mask = annulus_aperture.to_mask(method="center")
-            # Make sure only pixels are used for which data exists
-            mask = annulus_mask.to_image(yx_dim) > 0
-            mask[int(xy_center[1]), int(xy_center[0])] = False
-
-            if detected_signal_mask is None:
-                mask_computation_annulus = mask
+            if "noise_mask_cube" in detection_products:
+                detected_signal_mask = np.asarray(detection_products["noise_mask_cube"]).any(axis=0)
             else:
-                mask_computation_annulus = np.logical_and(mask, ~detected_signal_mask)
+                self.mask_companions_in_detection()
+                detected_signal_mask = self.detected_signal_mask
 
-            annulus_data_1d = self.detection_cube[:, 0, mask_computation_annulus]
-           
-            # Check that residuals are present and not everything is masked
-            if np.all(np.isfinite(annulus_data_1d)) and (0 not in annulus_data_1d.shape):
-                psi_ij = compute_empirical_correlation_matrix(annulus_data_1d)
-                empirical_correlation_matrices.append(psi_ij)
-                separations_used.append(separation)
+        if radial_bounds is None and "contrast_table" in detection_products:
+            radial_bounds = _rings_with_data(detection_products["contrast_table"])
 
-        empirical_correlation["separation"] = np.array(separations_used)
-        empirical_correlation["matrices"] = np.array(empirical_correlation_matrices)
+        self.empirical_correlation = self._spectral_correlation_stack(
+            self.detection_cube[:, 0],
+            self.wavelength_indices,
+            detected_signal_mask,
+            radial_bounds=radial_bounds,
+            bin_width=bin_width,
+            yx_center=yx_center,
+        )
 
-        self.empirical_correlation = empirical_correlation
+    def _lambda_over_d_pixels(self, wavelengths):
+        """Size of lambda_c / D in pixels, lambda_c the mean of ``wavelengths`` (micron)."""
+        instrument = getattr(self, "instrument", None)
+        diameter = getattr(instrument, "telescope_diameter", None)
+        if diameter is None:
+            diameter = DEFAULT_TELESCOPE_DIAMETER
+        angle = (np.mean(wavelengths) * u.micron / diameter).to(u.dimensionless_unscaled) * u.rad
+        pixel_scale = getattr(instrument, "pixel_scale", None)
+        if pixel_scale is not None:
+            return float(angle.to_value(u.pix, equivalencies=pixel_scale))
+        return float(angle.to_value(u.mas) / self.pixel_scale_mas)
+
+    def _spectral_correlation_stack(
+        self, contrast_cube, wavelength_indices, mask, radial_bounds=None, bin_width=None, yx_center=None
+    ):
+        settings = spectral_correlation_settings(self.reduction_parameters)
+        if bin_width is None:
+            bin_width = settings["width"]
+        if radial_bounds is None:
+            radial_bounds = (1, int(contrast_cube.shape[-1] // 2 * np.sqrt(2)))
+        step = getattr(self.reduction_parameters, "normalization_width", 3)
+        separations = np.arange(radial_bounds[0], radial_bounds[1] + 1, step)
+
+        wavelengths = self.instrument.wavelengths[np.asarray(wavelength_indices)].to_value(u.micron)
+        psi, separations_used, n_pixels = empirical_stack(
+            contrast_cube, mask, separations, bin_width, yx_center=yx_center
+        )
+        table = fit_stack(
+            psi,
+            separations_used / self._lambda_over_d_pixels(wavelengths),
+            wavelengths,
+            separations=separations_used,
+            n_pixels=n_pixels,
+            flag_rms=settings["flag_rms"],
+            fit=settings["fit"],
+        )
+        if table["fitted"].any():
+            logger.info(
+                "Spectral correlation fit: sigma_rho %.3f lambda/D, sigma_lambda %.4f, %d of %d rings above rms %.2f.",
+                table["sigma_rho"].iloc[0],
+                table["sigma_lambda"].iloc[0],
+                int(table["flagged"].sum()),
+                len(table),
+                settings["flag_rms"],
+            )
+        return {
+            "separation": separations_used,
+            "matrices": psi,
+            "fit": table,
+            "wavelengths": wavelengths,
+        }
 
     def find_approximate_candidate_positions(
         self,
@@ -4307,14 +4362,12 @@ class DetectionAnalysis(object):
             if template.use_spectral_correlation:
                 separation = np.sqrt(relative_coords[0] ** 2 + relative_coords[1] ** 2)
 
-                correlation_array_index = find_nearest(
-                    array=self.empirical_correlation["separation"], value=separation
+                psi_ij = correlation_at(
+                    separation,
+                    self.empirical_correlation["matrices"],
+                    self.empirical_correlation["fit"],
+                    self.empirical_correlation["wavelengths"],
                 )
-
-                # channel_mask = np.zeros(len(self.instrument.wavelengths)).astype('bool')
-                # channel_mask[wavelength_indices] = True
-                psi_ij = self.empirical_correlation["matrices"][correlation_array_index]
-                # psi_ij = remove_channel_from_correlation_matrix(channel_mask, psi_ij)
                 cov_ij = uncertainties[:, None] * psi_ij * uncertainties[None, :]
                 # cov_ij_norm = (
                 #     uncertainties_norm[:, None] * psi_ij * uncertainties_norm[None, :]

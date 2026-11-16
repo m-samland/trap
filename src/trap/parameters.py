@@ -401,6 +401,12 @@ class TrapReductionConfig:
     noise_mask_radial_fwhm: float = 6.0
     # Margin of the footprint's azimuthal clip beyond half the field rotation, in units of the FWHM.
     noise_mask_along_fwhm: float = 8.0
+    # Width in pixels of the separation rings of the channel correlation stack; about 2 lambda/D for IFS.
+    spectral_correlation_width: float = 9.0
+    # Fit the Greco and Brandt (2016) form to the stack; otherwise the empirical matrices are used.
+    spectral_correlation_fit: bool = True
+    # Rms residual of the fit above which a ring is flagged in the stack.
+    spectral_correlation_flag_rms: float = 0.2
 
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
