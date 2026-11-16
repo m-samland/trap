@@ -410,6 +410,9 @@ class TrapReductionConfig:
     # S/N from which the fitted blob shape (axis ratio, orientation) no longer vetoes a candidate; bright
     # sources are fitted with their own residuals and come out round.
     shape_validation_max_snr: float = 50.0
+    # Radial correlation length of the speckle term in lambda/D, held fixed; None fits it. The rings
+    # of a reduction rarely span the range of separation needed to fit it apart from sigma_lambda.
+    spectral_correlation_sigma_rho: Optional[float] = 1.0
 
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):

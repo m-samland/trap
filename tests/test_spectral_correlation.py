@@ -69,14 +69,14 @@ def test_fit_recovers_the_form():
     psi = np.array([greco_brandt(r, dl, 0.5, 0.3, 1.0, 0.05) for r in rho])
     psi = psi + _symmetric_noise(len(rho), len(IFS_WAVELENGTHS), 0.02, rng)
 
-    table = fit_stack(psi, rho, IFS_WAVELENGTHS)
+    table = fit_stack(psi, rho, IFS_WAVELENGTHS, sigma_rho=None)
 
     assert abs(table["sigma_rho"].iloc[0] - 1.0) < 0.15
     assert abs(table["sigma_lambda"].iloc[0] - 0.05) < 0.01
     assert np.all(table["rms"] < 0.05)
     assert not table["flagged"].any()
     assert table["fitted"].all()
-    np.testing.assert_allclose(table["a_rho"] + table["a_lambda"] + table["a_delta"], 1.0)
+    np.testing.assert_allclose(table["a_rho"] + table["a_lambda"] + table["a_const"] + table["a_delta"], 1.0)
     for matrix in fitted_stack(table, IFS_WAVELENGTHS):
         assert np.linalg.eigvalsh(matrix).min() > 0
 
@@ -123,6 +123,7 @@ def test_correlation_at_interpolates_amplitudes():
         table["a_lambda"].mean(),
         table["sigma_rho"].iloc[0],
         table["sigma_lambda"].iloc[0],
+        table["a_const"].mean(),
     )
     assert matrix[0, 5] == pytest.approx(expected[0, 5], rel=1e-10)
     assert matrix[0, 5] == pytest.approx(greco_brandt(6.0, dl, 0.4, 0.2, 1.0, 0.05)[0, 5], abs=1e-3)
@@ -285,3 +286,56 @@ def test_empirical_stack_warns_when_no_ring_is_left(caplog, case, reason):
         psi, separations, _ = empirical_stack(cube, mask, np.arange(3, 20, 3), 3.0, min_pixels=min_pixels)
     assert len(separations) == 0 and psi.shape == (0, 4, 4)
     assert reason in caplog.text
+
+
+def test_sigma_rho_is_held_at_one_by_default():
+    dl = _relative_wavelength_difference(IFS_WAVELENGTHS)
+    rho = np.array([6.0, 7.0, 8.0])
+    psi = np.array([greco_brandt(r, dl, 0.4, 0.3, 1.0, 0.03) for r in rho])
+
+    table = fit_stack(psi, rho, IFS_WAVELENGTHS)
+
+    np.testing.assert_array_equal(table["sigma_rho"], 1.0)
+    assert np.all(table["rms"] < 0.01)
+
+
+def test_constant_term_is_recovered_without_widening_a_kernel():
+    # A narrow speckle span cannot tell a wide kernel from a constant; the constant term takes it.
+    rng = np.random.default_rng(1)
+    dl = _relative_wavelength_difference(IFS_WAVELENGTHS)
+    rho = np.array([10.0, 11.0, 12.0, 13.0])
+    psi = np.array([greco_brandt(r, dl, 0.3, 0.3, 1.0, 0.02, a_const=0.25) for r in rho])
+    psi = psi + _symmetric_noise(len(rho), len(IFS_WAVELENGTHS), 0.01, rng)
+
+    table = fit_stack(psi, rho, IFS_WAVELENGTHS)
+
+    assert table["a_const"].to_numpy() == pytest.approx(0.25, abs=0.03)
+    assert abs(table["sigma_lambda"].iloc[0] - 0.02) < 0.005
+    for matrix in fitted_stack(table, IFS_WAVELENGTHS):
+        assert np.linalg.eigvalsh(matrix).min() > 0
+
+
+def test_stack_without_constant_column_still_reads():
+    dl = _relative_wavelength_difference(IFS_WAVELENGTHS)
+    rho = np.array([3.0, 9.0])
+    psi = np.array([greco_brandt(r, dl, 0.4, 0.2, 1.0, 0.05) for r in rho])
+    table = fit_stack(psi, rho, IFS_WAVELENGTHS).drop(columns=["a_const", "free_a_const"])
+
+    matrix = correlation_at(6.0, psi, table, IFS_WAVELENGTHS)
+
+    assert np.all(np.isfinite(matrix))
+    assert fitted_stack(table, IFS_WAVELENGTHS).shape == psi.shape
+
+
+def test_header_records_fixed_sigma_rho(tmp_path):
+    from astropy.io import fits
+
+    dl = _relative_wavelength_difference(IFS_WAVELENGTHS)
+    rho = np.array([3.0, 9.0])
+    psi = np.array([greco_brandt(r, dl, 0.4, 0.2, 1.0, 0.05) for r in rho])
+    table = fit_stack(psi, rho, IFS_WAVELENGTHS)
+    path = tmp_path / "spectral_correlation_test.fits"
+
+    write_stack(path, psi, table, IFS_WAVELENGTHS, pixel_scale_mas=7.46, sigma_rho_fixed=True)
+
+    assert fits.getheader(path)["PSIRHOFX"] is True

@@ -2258,6 +2258,21 @@ def detection_file_paths(result_folder, reduction_type, component_fraction, spat
 _VALIDATION_PASSED = ("passed", "shape_skipped_bright", "shape_skipped_known", "orientation_skipped_short_arc")
 
 
+def _on_brighter_arc(table, snr, fwhm, source_snr, along_fwhm, field_rotation):
+    """True for rows within the arc footprint of a brighter row of at least ``source_snr``."""
+    y = np.asarray(table["y_relative"], dtype=float)
+    x = np.asarray(table["x_relative"], dtype=float)
+    radius = np.hypot(y, x)
+    angle = np.arctan2(y, x)
+    half_arc = radius * (field_rotation or 0.0) / 2
+    # Rows are candidates j, columns the sources k whose arcs are tested.
+    brighter = (snr[None, :] > snr[:, None]) & (snr[None, :] >= source_snr)
+    radial = np.abs(radius[:, None] - radius[None, :]) < 2 * fwhm
+    along = radius[None, :] * np.abs(np.angle(np.exp(1j * (angle[:, None] - angle[None, :]))))
+    within_arc = along < np.minimum(half_arc[None, :] + along_fwhm * fwhm, 0.5 * np.pi * radius[None, :])
+    return np.any(brighter & radial & within_arc, axis=1)
+
+
 def validate_candidates(
     companion_table,
     snr_threshold,
@@ -2268,6 +2283,8 @@ def validate_candidates(
     known_positions=None,
     field_rotation=None,
     fwhm=None,
+    arc_source_snr=None,
+    arc_along_fwhm=8.0,
 ):
     """Classify each row of a companion table by the candidate validation tests.
 
@@ -2275,6 +2292,12 @@ def validate_candidates(
     orientation) are skipped for a bright source, whose fit is dominated by its own residuals,
     and for a source at a known position. The orientation test alone is skipped where the
     rotation arc is too short to tell radial from tangential elongation. Skips need ``fwhm``.
+
+    A row that is not at a known position fails ``on_brighter_arc`` when a brighter row of at
+    least ``arc_source_snr`` lies within 2 FWHM of its separation and within that row's half
+    rotation arc plus ``arc_along_fwhm`` FWHM along the separation circle. A bright source
+    leaves residuals along its arc that the peak search finds again as candidates, and with
+    the shape tests skipped for bright rows nothing else rejects them.
 
     Args:
         companion_table: Table with ``snr``, ``good_fraction_free``, ``theta_deviation``,
@@ -2287,11 +2310,14 @@ def validate_candidates(
         known_positions: None, one (y, x) pair or an (N, 2) array of relative positions in pixels.
         field_rotation: Field rotation in radians, or None.
         fwhm: FWHM in pixels, or None.
+        arc_source_snr: S/N from which a row's arc rejects fainter rows; None disables the test.
+        arc_along_fwhm: Margin of the arc beyond half the field rotation, in FWHM.
 
     Returns:
         pandas.Series of strings aligned with the table: ``"passed"``, ``"shape_skipped_bright"``,
         ``"shape_skipped_known"``, ``"orientation_skipped_short_arc"``, or the name of the first
-        failed test (``"snr"``, ``"good_fraction"``, ``"theta_deviation"``, ``"yx_fwhm_ratio"``).
+        failed test (``"snr"``, ``"on_brighter_arc"``, ``"good_fraction"``, ``"theta_deviation"``,
+        ``"yx_fwhm_ratio"``).
     """
     table = companion_table
     n = len(table)
@@ -2309,11 +2335,15 @@ def validate_candidates(
                 known = np.any(np.hypot(dy, dx) < 2 * fwhm, axis=1)
         if field_rotation is not None:
             short_arc = np.asarray(table["separation"], dtype=float) * field_rotation / 2 < 2 * fwhm
+    on_arc = np.zeros(n, dtype=bool)
+    if fwhm is not None and arc_source_snr is not None and n > 1:
+        on_arc = _on_brighter_arc(table, snr, fwhm, arc_source_snr, arc_along_fwhm, field_rotation) & ~known
 
     ratio = np.asarray(table["yx_fwhm_ratio"], dtype=float)
     skip_shape = bright | known
     fails = [
         ("snr", ~(snr > snr_threshold)),
+        ("on_brighter_arc", on_arc),
         ("good_fraction", ~(np.asarray(table["good_fraction_free"], dtype=float) > good_fraction_threshold)),
         (
             "theta_deviation",
@@ -2799,6 +2829,7 @@ class DetectionAnalysis(object):
                     pixel_scale_mas=self.pixel_scale_mas,
                     width=correlation_settings["width"],
                     flag_rms=correlation_settings["flag_rms"],
+                    sigma_rho_fixed=correlation_settings["sigma_rho"] is not None,
                     overwrite=overwrite,
                 )
 
@@ -3056,6 +3087,7 @@ class DetectionAnalysis(object):
             n_pixels=n_pixels,
             flag_rms=settings["flag_rms"],
             fit=settings["fit"],
+            sigma_rho=settings["sigma_rho"],
         )
         if table["fitted"].any():
             logger.info(
@@ -4254,6 +4286,7 @@ class DetectionAnalysis(object):
                 axis=0,
             )
 
+        mask_settings = noise_mask_settings(self.reduction_parameters)
         validation = validate_candidates(
             companion_table.assign(snr=snr),
             snr_threshold,
@@ -4264,6 +4297,8 @@ class DetectionAnalysis(object):
             yx_known_companion_position,
             field_rotation,
             fwhm,
+            arc_source_snr=mask_settings["region_snr"],
+            arc_along_fwhm=mask_settings["along_fwhm"],
         )
         companion_table["validation"] = validation
         mask = validation.isin(_VALIDATION_PASSED)
