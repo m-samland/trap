@@ -84,6 +84,13 @@ MINIMUM_ANNULUS_PIXELS = 10
 DEFAULT_TELESCOPE_DIAMETER = 8.2 * u.m
 
 
+def _as_positions(positions):
+    """``(y, x)`` positions as an (N, 2) float array; None gives an empty one."""
+    if positions is None:
+        return np.empty((0, 2))
+    return np.atleast_2d(np.asarray(positions, dtype=float)).reshape(-1, 2)
+
+
 def _resolve_exclusion_radius(candidate_exclusion_radius, search_radius):
     """Fall back to `search_radius` when no separate exclusion radius is set."""
     if candidate_exclusion_radius is None:
@@ -2913,16 +2920,19 @@ class DetectionAnalysis(object):
             self.detected_signal_mask = np.zeros([yx_dim[0], yx_dim[1]]).astype("bool")
 
     def _known_and_validated_positions(self, validated_positions):
-        """Configured known positions and ``validated_positions`` without duplicates, or None if there are none."""
-        parts = [
-            np.atleast_2d(np.asarray(positions, dtype=float)).reshape(-1, 2)
-            for positions in (self._configured_known_positions(), validated_positions)
-            if positions is not None
-        ]
-        parts = [positions for positions in parts if len(positions)]
-        if not parts:
-            return None
+        """Configured known positions and ``validated_positions`` without duplicates, as an (N, 2) array.
+
+        Without any position the array is empty, which masks nothing; None would make
+        `contrast_table_and_normalization` fall back to the config's positions.
+        """
+        parts = [_as_positions(positions) for positions in (self._configured_known_positions(), validated_positions)]
         return np.unique(np.vstack(parts), axis=0)
+
+    def _base_positions(self, base_positions):
+        """``base_positions`` as an (N, 2) array, or the config's known positions if it is None."""
+        if base_positions is None:
+            base_positions = self.reduction_parameters.yx_known_companion_position
+        return _as_positions(base_positions)
 
     def _template_matching_correlation(self, minimum_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION):
         """Compute ``empirical_correlation`` for template matching once, before the templates run.
@@ -3260,10 +3270,11 @@ class DetectionAnalysis(object):
         mask_deviating=False,
         deviation_threshold=0.1,
         plot=False,
+        base_positions=None,
     ):
         """Fits 2D Gaussians to contrast, snr, and normalized snr images for candidate position.
-        The normalization excludes positions marked in `self.reduction_parameters.yx_known_companion_position`,
-        which is set by `find_candidates` for candidates above the `detection_threshold` parameter.
+        The normalization excludes ``base_positions`` and the candidate itself; ``base_positions``
+        defaults to `self.reduction_parameters.yx_known_companion_position`.
 
         The resulting tables include both fit results from unconstrained fits and fits with fixed `x_stddev`, `y_stddev`,
         and `theta` of the 2D Gaussian, where the `theta` parameter is given by the position angle.
@@ -3297,11 +3308,7 @@ class DetectionAnalysis(object):
                 candidate_idx
             ]
 
-            base_positions = self.reduction_parameters.yx_known_companion_position
-            if base_positions is not None:
-                combined_positions = np.vstack([base_positions, yx_position_relative])
-            else:
-                combined_positions = np.expand_dims(yx_position_relative, axis=0)
+            combined_positions = np.vstack([self._base_positions(base_positions), yx_position_relative])
 
             detection_products = self.contrast_table_and_normalization(
                 detection_cube=detection_cube,
@@ -3451,6 +3458,7 @@ class DetectionAnalysis(object):
         minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
         candidate_exclusion_radius=None,
         max_candidates=DEFAULT_MAX_CANDIDATES,
+        base_positions=None,
     ):
         """
         Consolidate candidate detections with 2D Gaussian fitting and duplicate removal.
@@ -3487,6 +3495,10 @@ class DetectionAnalysis(object):
         mask_deviating : bool, optional
             Whether to mask candidates with deviating PSF parameters during 
             2D Gaussian fitting. Default is False.
+        base_positions : array_like, optional
+            Source positions relative to the image centre excluded from the
+            renormalisation besides the candidates. Defaults to
+            ``self.reduction_parameters.yx_known_companion_position``.
 
         Returns
         -------
@@ -3574,6 +3586,7 @@ class DetectionAnalysis(object):
             detection_cube=detection_cube,
             detection_products=detection_products,
             plot=False,
+            base_positions=base_positions,
         )
         
         # Group per-wavelength detections of the same source (within
@@ -3661,6 +3674,7 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         return_all_results=False,
         verbose=False,
+        base_positions=None,
     ):
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
@@ -3729,19 +3743,11 @@ class DetectionAnalysis(object):
 
         # REDO NORMALIZATION WITHOUT CANDIDATES
         if hasattr(self, 'candidates'):
-            base_positions = self.reduction_parameters.yx_known_companion_position
-            if base_positions is not None:
-                combined_positions = np.vstack([
-                    base_positions,
-                    self.candidates[["y_relative", "x_relative"]].values,
-                ])
-            else:
-                combined_positions = self.candidates[["y_relative", "x_relative"]].values
-            self.contrast_table_and_normalization(
-                save=False, inplace=True, yx_known_companion_position=combined_positions
-            )
-        else:
-            self.contrast_table_and_normalization(save=False, inplace=True)
+            base_positions = np.vstack([
+                self._base_positions(base_positions),
+                self.candidates[["y_relative", "x_relative"]].values,
+            ])
+        self.contrast_table_and_normalization(save=False, inplace=True, yx_known_companion_position=base_positions)
 
         normalization_factors = []
         for wavelength_index in wavelength_indices:
@@ -3838,6 +3844,7 @@ class DetectionAnalysis(object):
         xy_image_centers=None,
         amplitude_modulation_full=None,
         return_spectra=False,
+        base_positions=None,
     ):
         """
         Extract high-fidelity spectra for candidate companions using full reduction.
@@ -3888,6 +3895,10 @@ class DetectionAnalysis(object):
             Amplitude modulation factors accounting for instrumental effects.
         return_spectra : bool, optional
             Whether to return the extracted spectra. Default is False.
+        base_positions : array_like, optional
+            Source positions relative to the image centre excluded from the
+            renormalisation besides the candidates. Defaults to
+            ``self.reduction_parameters.yx_known_companion_position``.
 
         Returns
         -------
@@ -4002,6 +4013,7 @@ class DetectionAnalysis(object):
                 xy_image_centers=xy_image_centers,
                 amplitude_modulation_full=amplitude_modulation_full,
                 verbose=False,
+                base_positions=base_positions,
             )
             candidate_spectra.append(candidate_spectrum)
 
@@ -4445,6 +4457,7 @@ class DetectionAnalysis(object):
         detection_threshold=5.0,
         file_paths=None,
         save=True,
+        base_positions=None,
     ):
         """
         Perform pixel-by-pixel spectral template matching for companion detection.
@@ -4476,6 +4489,10 @@ class DetectionAnalysis(object):
             are generated.
         save : bool, optional
             Whether to save detection products to disk. Default is True.
+        base_positions : array_like, optional
+            Source positions relative to the image centre excluded from the
+            normalisation of the template-matched map. Defaults to
+            ``self.reduction_parameters.yx_known_companion_position``.
 
         Returns
         -------
@@ -4713,7 +4730,7 @@ class DetectionAnalysis(object):
         detection_products_matched = self.contrast_table_and_normalization(
             detection_cube=[template_matched_image],
             cube_indices=[0],
-            yx_known_companion_position=None,
+            yx_known_companion_position=self._base_positions(base_positions),
             inplace=False,
             save=save,
             file_paths=file_paths,
@@ -4901,6 +4918,10 @@ class DetectionAnalysis(object):
             output_dir_matching, _template_output_filenames(template_name)
         )
         wavelengths = self.instrument.wavelengths[self.wavelength_indices]
+        # Every step of this template excludes the configured positions, and from the
+        # second detection pass on also this template's own initial candidates, never
+        # those of other templates, so the result does not depend on the template order.
+        configured_positions = _as_positions(self._configured_known_positions())
 
         detection_cube, detection_products = self.template_matching_detection(
             template,
@@ -4908,6 +4929,7 @@ class DetectionAnalysis(object):
             detection_threshold=detection_threshold,
             file_paths=file_paths,
             save=save,
+            base_positions=configured_positions,
         )
 
         candidates_initial = self.find_candidates_all_wavelengths(
@@ -4933,6 +4955,7 @@ class DetectionAnalysis(object):
             minimum_candidate_separation=minimum_candidate_separation,
             candidate_exclusion_radius=candidate_exclusion_radius,
             max_candidates=max_candidates,
+            base_positions=configured_positions,
         )
 
         if candidates_fit_initial is None:
@@ -4940,15 +4963,16 @@ class DetectionAnalysis(object):
             template.validated_companion_table = None
             template.validated_companion_table_short = None
         else:
-            yx_known_companion_position = candidates_fit_initial["snr_image"][
-                ["y_relative", "x_relative"]
-            ].values  # [mask]
+            template_base_positions = np.vstack([
+                configured_positions,
+                candidates_fit_initial["snr_image"][["y_relative", "x_relative"]].to_numpy(dtype=float),
+            ])
 
             # Masking out detections
             detection_products_masked = self.contrast_table_and_normalization(
                 detection_cube=detection_cube,
                 cube_indices=[0], # only collapsed wavelength after template matching
-                yx_known_companion_position=yx_known_companion_position,
+                yx_known_companion_position=template_base_positions,
                 inplace=False,
                 save=save,
                 file_paths=file_paths,
@@ -4978,6 +5002,7 @@ class DetectionAnalysis(object):
                 minimum_candidate_separation=minimum_candidate_separation,
                 candidate_exclusion_radius=candidate_exclusion_radius,
                 max_candidates=max_candidates,
+                base_positions=template_base_positions,
             )
             
             # Check if candidates survived the second iteration validation
@@ -5010,6 +5035,7 @@ class DetectionAnalysis(object):
                 xy_image_centers=xy_image_centers,
                 amplitude_modulation_full=amplitude_modulation_full,
                 return_spectra=True,
+                base_positions=template_base_positions,
             )
 
             companion_table, validated_companion_table = self.detection_summary(
@@ -5037,10 +5063,6 @@ class DetectionAnalysis(object):
 
             # yx_known_companion_position = np.unique(
             #     validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
-
-            self.reduction_parameters = self.reduction_parameters.merge(
-                yx_known_companion_position=yx_known_companion_position
-            )
 
             companion_table.to_csv(
                 os.path.join(
@@ -5267,6 +5289,7 @@ class DetectionAnalysis(object):
         minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
         candidate_exclusion_radius=None,
         max_candidates=DEFAULT_MAX_CANDIDATES,
+        base_positions=None,
     ):
         """Detect and fit the companion in each wavelength channel separately,
         then combine the channels that individually clear ``candidate_threshold``
@@ -5277,6 +5300,7 @@ class DetectionAnalysis(object):
         to the spectral collapse used for detection. Returns the combined
         per-source table (one row per source, `_combine_channels_rt_frame`
         applied) or ``None`` when no channel yields a candidate above threshold.
+        ``base_positions`` is passed to `complete_candidate_table`.
         """
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
@@ -5304,6 +5328,7 @@ class DetectionAnalysis(object):
             minimum_candidate_separation=minimum_candidate_separation,
             candidate_exclusion_radius=candidate_exclusion_radius,
             max_candidates=max_candidates,
+            base_positions=base_positions,
         )
         if candidates_fit is None:
             return None
@@ -5647,7 +5672,9 @@ class DetectionAnalysis(object):
 
         # The noise mask and the channel correlation are written at the end, from the
         # masks of the configured positions and the validated candidates.
+        configured_positions = _as_positions(self._configured_known_positions())
         self.contrast_table_and_normalization(
+            yx_known_companion_position=configured_positions,
             save=save_initial_detection_products,
             mask_above_sigma=detection_threshold,
             file_paths={
@@ -5717,6 +5744,7 @@ class DetectionAnalysis(object):
                 minimum_candidate_separation=minimum_candidate_separation,
                 candidate_exclusion_radius=candidate_exclusion_radius,
                 max_candidates=max_candidates,
+                base_positions=configured_positions,
             )
         except Exception:
             logger.exception(

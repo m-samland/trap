@@ -11,6 +11,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 - **The channel correlation of the contrast maps per separation is written as `spectral_correlation_*.fits`** with the Greco and Brandt (2016) fit that template matching and the spectral library use; the empirical matrices are kept in the file for checks.
 
 ### Fixed
+- **Template matching no longer depends on the order of the templates and masks the configured companions from the first template on.** The contrast curves and noise mask it saves now exclude the configured and validated sources, so rerun template-matching detections to update them.
 - **Candidate validation no longer rejects bright sources whose fitted blob is round, sources at a known position, or the orientation of sources where half the rotation arc is shorter than two FWHM.** The `validation` column of the companion tables says why a candidate failed ([#86](https://github.com/m-samland/trap/issues/86)).
 - **Detections no longer rewrite the species model grids.** A grid already in the database is only read, so the database stops growing and processes sharing it no longer fail on the file lock. Existing databases keep their dead space until you run `h5repack` on them ([#78](https://github.com/m-samland/trap/issues/78)).
 - **A channel with an all-zero PSF is skipped** instead of stopping the reduction, as a channel with a NaN PSF already was, and per-channel astrometry no longer fails on the missing channel ([#79](https://github.com/m-samland/trap/issues/79)).
