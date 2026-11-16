@@ -263,3 +263,25 @@ def test_no_ring_gives_the_identity_and_round_trips(tmp_path):
     assert psi_read.shape == (0, 6, 6)
     assert len(table_read) == 0 and set(table.columns) <= set(table_read.columns)
     np.testing.assert_array_equal(correlation_at(12.0, psi_read, table_read, wavelengths_read), np.identity(6))
+
+
+@pytest.mark.parametrize(
+    "case, reason",
+    [("nan", "no pixel is finite"), ("masked", "the mask covers every pixel"), ("small", "no ring keeps")],
+)
+def test_empirical_stack_warns_when_no_ring_is_left(caplog, case, reason):
+    import logging
+
+    cube = _correlated_cube(n_channels=4, size=41)
+    mask = None
+    min_pixels = 40
+    if case == "nan":
+        cube[2] = np.nan
+    elif case == "masked":
+        mask = np.ones(cube.shape[1:], dtype=bool)
+    else:
+        min_pixels = 10**6
+    with caplog.at_level(logging.WARNING, logger="trap.spectral_correlation"):
+        psi, separations, _ = empirical_stack(cube, mask, np.arange(3, 20, 3), 3.0, min_pixels=min_pixels)
+    assert len(separations) == 0 and psi.shape == (0, 4, 4)
+    assert reason in caplog.text

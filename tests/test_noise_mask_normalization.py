@@ -228,3 +228,61 @@ def test_field_rotation_from_parallactic_angles():
     assert analysis.field_rotation is None
     analysis._set_field_rotation(np.array([170.0, 179.0, -175.0]))
     assert analysis.field_rotation == pytest.approx(np.radians(15.0))
+
+
+def test_noise_mask_file_holds_the_sources(tmp_path):
+    analysis = _analysis(tmp_path)
+    analysis.contrast_table_and_normalization(save=True)
+    with fits.open(tmp_path / "noise_mask_run.fits") as hdul:
+        table = hdul["SOURCES"].data
+        assert table.columns.names == ["wavelength_index", "y_relative", "x_relative", "mask_snr", "mask_rule", "mask_pixels"]
+        rows = [
+            dict(zip(table.columns.names, (row[0], row[1], row[2], row[3], row[4], row[5])))
+            for row in table
+        ]
+    expected = analysis.detection_products["noise_mask_sources"]
+    assert len(rows) == len(expected) == 2
+    for row, source in zip(rows, expected):
+        assert row["wavelength_index"] == source["wavelength_index"]
+        assert (row["y_relative"], row["x_relative"]) == (source["y_relative"], source["x_relative"])
+        assert row["mask_snr"] == pytest.approx(source["mask_snr"])
+        assert row["mask_rule"] == source["mask_rule"]
+        assert row["mask_pixels"] == source["mask_pixels"]
+
+
+def _opposite_sources_map(separation=60.0, peak=400.0, fwhm=4.0, n=201):
+    yy, xx = np.indices((n, n), dtype=float) - n // 2
+    image = np.random.default_rng(1).normal(size=yy.shape)
+    image += _gaussian(yy, xx, 0, separation, peak, fwhm) + _gaussian(yy, xx, 0, -separation, peak, fwhm)
+    # A ridge along the whole ring joins the footprints of both sources; it is positive so
+    # that no zero crossing separates it from the source peaks.
+    image[np.abs(np.hypot(yy, xx) - separation) < 1.5] += 6.0
+    return image
+
+
+@pytest.mark.parametrize("rotation, covered", [(0.4, False), (2 * np.pi, True)])
+def test_two_bright_sources_on_one_ring(tmp_path, caplog, rotation, covered):
+    image = _opposite_sources_map()
+    yy, xx = np.indices(image.shape) - 100
+    ring = np.abs(np.hypot(yy, xx) - 60) < 1.5
+    for position in ([0, 60], [0, -60]):
+        alone = region_mask(image, position, fwhm=4.0, half_arc=60 * rotation / 2)
+        assert (alone & ring).sum() <= ring.sum() / 2
+
+    analysis = _analysis(
+        tmp_path,
+        field_rotation=rotation,
+        reduction_parameters=TrapReductionConfig(yx_known_companion_position=[[0, 60], [0, -60]]),
+    )
+    analysis.detection_cube = np.array([_detection_image(image)] * 2)
+    with caplog.at_level(logging.WARNING, logger="trap.detection"):
+        analysis.contrast_table_and_normalization()
+
+    assert [s["mask_rule"] for s in analysis.detection_products["noise_mask_sources"]][:2] == ["region", "region"]
+    mask = analysis.detection_products["noise_mask_cube"][0]
+    if covered:
+        assert (mask & ring).sum() > 0.95 * ring.sum()
+        assert "falls back to the unmasked ring" in caplog.text
+    else:
+        assert (mask & ring).sum() < 0.5 * ring.sum()
+        assert "falls back to the unmasked ring" not in caplog.text

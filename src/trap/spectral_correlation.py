@@ -82,7 +82,7 @@ def empirical_stack(cube, mask, separations, width, min_pixels=40, yx_center=Non
 
     A pixel enters a ring when its centre lies within ``width / 2`` of the separation and it
     is finite and non-zero in every channel and outside ``mask``. Rings with fewer than
-    ``min_pixels`` such pixels are dropped.
+    ``min_pixels`` such pixels are dropped, with a warning naming the reason when no ring is left.
 
     Args:
         cube: Maps of all channels, shape (n_ch, ny, nx). Not modified.
@@ -118,6 +118,14 @@ def empirical_stack(cube, mask, separations, width, min_pixels=40, yx_center=Non
         separations_used.append(separation)
         n_pixels.append(count)
 
+    if not matrices:
+        if not np.all(np.isfinite(cube) & (cube != 0), axis=0).any():
+            reason = "no pixel is finite and non-zero in every channel"
+        elif not usable.any():
+            reason = "the mask covers every pixel that is finite and non-zero in every channel"
+        else:
+            reason = f"no ring keeps {min_pixels} pixels that are finite and non-zero in every channel and unmasked"
+        logger.warning("No ring for the channel correlation: %s; template matching uses the identity.", reason)
     psi = np.array(matrices, dtype=float).reshape(-1, n_channels, n_channels)
     return psi, np.array(separations_used), np.array(n_pixels, dtype=int)
 

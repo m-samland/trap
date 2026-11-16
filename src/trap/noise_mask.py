@@ -142,6 +142,11 @@ def companion_noise_masks(
     A source whose `source_snr` reaches ``region_snr`` gets its `region_mask`, any other
     source (and every source when ``region_snr`` is None) gets its `disk_mask`.
 
+    The azimuthal clip of `region_mask` leaves at least half of every ring free of the mask
+    of one source. The guarantee is per source: the masks of several bright sources near the
+    same separation can together cover a whole ring, and the normalisation then falls back to
+    the unmasked ring and warns (`trap.detection._warn_about_unmasked_rings`).
+
     Args:
         normalized_image: 2D normalised detection map (S/N).
         positions: Sequence of ``(y, x)`` positions relative to the array centre.
