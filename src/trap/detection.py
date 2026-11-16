@@ -2227,6 +2227,89 @@ def detection_file_paths(result_folder, reduction_type, component_fraction, spat
     return [os.path.join(result_folder, by_wavelength[index][0]) for index in sorted(by_wavelength)]
 
 
+_VALIDATION_PASSED = ("passed", "shape_skipped_bright", "shape_skipped_known", "orientation_skipped_short_arc")
+
+
+def validate_candidates(
+    companion_table,
+    snr_threshold,
+    good_fraction_threshold,
+    theta_deviation_threshold,
+    yx_fwhm_ratio_threshold,
+    shape_validation_max_snr=50.0,
+    known_positions=None,
+    field_rotation=None,
+    fwhm=None,
+):
+    """Classify each row of a companion table by the candidate validation tests.
+
+    The S/N and good-fraction tests apply to every row. The shape tests (axis ratio and
+    orientation) are skipped for a bright source, whose fit is dominated by its own residuals,
+    and for a source at a known position. The orientation test alone is skipped where the
+    rotation arc is too short to tell radial from tangential elongation. Skips need ``fwhm``.
+
+    Args:
+        companion_table: Table with ``snr``, ``good_fraction_free``, ``theta_deviation``,
+            ``yx_fwhm_ratio``, ``separation``, ``y_relative`` and ``x_relative``.
+        snr_threshold: Minimum S/N.
+        good_fraction_threshold: Minimum good fraction of the free fit.
+        theta_deviation_threshold: Maximum orientation deviation in degrees.
+        yx_fwhm_ratio_threshold: Allowed (min, max) of the axis ratio.
+        shape_validation_max_snr: S/N from which the shape tests are skipped.
+        known_positions: None, one (y, x) pair or an (N, 2) array of relative positions in pixels.
+        field_rotation: Field rotation in radians, or None.
+        fwhm: FWHM in pixels, or None.
+
+    Returns:
+        pandas.Series of strings aligned with the table: ``"passed"``, ``"shape_skipped_bright"``,
+        ``"shape_skipped_known"``, ``"orientation_skipped_short_arc"``, or the name of the first
+        failed test (``"snr"``, ``"good_fraction"``, ``"theta_deviation"``, ``"yx_fwhm_ratio"``).
+    """
+    table = companion_table
+    n = len(table)
+    snr = np.asarray(table["snr"], dtype=float)
+    bright = np.zeros(n, dtype=bool)
+    known = np.zeros(n, dtype=bool)
+    short_arc = np.zeros(n, dtype=bool)
+    if fwhm is not None:
+        bright = snr >= shape_validation_max_snr
+        if known_positions is not None:
+            positions = np.atleast_2d(np.asarray(known_positions, dtype=float))
+            if positions.size:
+                dy = np.asarray(table["y_relative"], dtype=float)[:, None] - positions[None, :, 0]
+                dx = np.asarray(table["x_relative"], dtype=float)[:, None] - positions[None, :, 1]
+                known = np.any(np.hypot(dy, dx) < 2 * fwhm, axis=1)
+        if field_rotation is not None:
+            short_arc = np.asarray(table["separation"], dtype=float) * field_rotation / 2 < 2 * fwhm
+
+    ratio = np.asarray(table["yx_fwhm_ratio"], dtype=float)
+    skip_shape = bright | known
+    fails = [
+        ("snr", ~(snr > snr_threshold)),
+        ("good_fraction", ~(np.asarray(table["good_fraction_free"], dtype=float) > good_fraction_threshold)),
+        (
+            "theta_deviation",
+            ~(np.abs(np.asarray(table["theta_deviation"], dtype=float)) < theta_deviation_threshold)
+            & ~skip_shape
+            & ~short_arc,
+        ),
+        (
+            "yx_fwhm_ratio",
+            ~((ratio > yx_fwhm_ratio_threshold[0]) & (ratio < yx_fwhm_ratio_threshold[1])) & ~skip_shape,
+        ),
+    ]
+    result = np.full(n, "passed", dtype=object)
+    result[short_arc] = "orientation_skipped_short_arc"
+    result[known] = "shape_skipped_known"
+    result[bright] = "shape_skipped_bright"
+    assigned = np.zeros(n, dtype=bool)
+    for name, failed in fails:
+        take = failed & ~assigned
+        result[take] = name
+        assigned |= take
+    return pd.Series(result, index=table.index)
+
+
 class DetectionAnalysis(object):
     """Class for analyzing TRAP detection results and candidate characterization.
     
@@ -3814,6 +3897,14 @@ class DetectionAnalysis(object):
         if return_spectra:
             return candidate_spectra
 
+    def _summary_fwhm(self):
+        """Mean channel FWHM in pixels, or None when the instrument has none."""
+        fwhm = getattr(getattr(self, "instrument", None), "fwhm", None)
+        if fwhm is None:
+            logger.info("No instrument FWHM; the shape validation skips are not applied.")
+            return None
+        return float(np.mean([getattr(f, "value", f) for f in np.atleast_1d(fwhm)]))
+
     def detection_summary(
         self,
         candidates,
@@ -3826,6 +3917,10 @@ class DetectionAnalysis(object):
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25.0,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
+        shape_validation_max_snr=50.0,
+        yx_known_companion_position=None,
+        field_rotation=None,
+        fwhm=None,
     ):
         """
         Create companion tables with validation criteria and spectral information.
@@ -3869,11 +3964,22 @@ class DetectionAnalysis(object):
         yx_fwhm_ratio_threshold : list of float, optional
             Allowed range [min, max] for the ratio of y-axis to x-axis FWHM
             in unconstrained 2D Gaussian fits. Default is [1.1, 4.5].
+        shape_validation_max_snr : float, optional
+            Candidates at or above this S/N skip the two shape tests. Default is 50.
+        yx_known_companion_position : array_like, optional
+            Known source positions (relative y, x in pixels); candidates within
+            two FWHM of one skip the two shape tests.
+        field_rotation : float, optional
+            Field rotation in radians; the orientation test is skipped where the
+            half arc ``separation * field_rotation / 2`` is below two FWHM.
+        fwhm : float, optional
+            FWHM in pixels used by the two rules above; without it they are not applied.
 
         Returns
         -------
         companion_table : pandas.DataFrame
             Complete table of all candidates with columns including:
+            - 'validation': 'passed', a skip reason or the name of the first failed test
             - Position: 'x', 'y', 'x_relative', 'y_relative', 'separation', 'position_angle'
             - Uncertainties: 'x_relative_sigma', 'y_relative_sigma', 'separation_sigma', 'position_angle_sigma'
             - PSF parameters: 'x_fwhm', 'y_fwhm', 'theta_free', 'yx_fwhm_ratio'
@@ -4019,13 +4125,19 @@ class DetectionAnalysis(object):
                 axis=0,
             )
 
-        mask = (
-            (snr > snr_threshold)
-            & (companion_table["good_fraction_free"] > good_fraction_threshold)
-            & (np.abs(companion_table["theta_deviation"]) < theta_deviation_threshold)
-            & (companion_table["yx_fwhm_ratio"] > yx_fwhm_ratio_threshold[0])
-            & (companion_table["yx_fwhm_ratio"] < yx_fwhm_ratio_threshold[1])
+        validation = validate_candidates(
+            companion_table.assign(snr=snr),
+            snr_threshold,
+            good_fraction_threshold,
+            theta_deviation_threshold,
+            yx_fwhm_ratio_threshold,
+            shape_validation_max_snr,
+            yx_known_companion_position,
+            field_rotation,
+            fwhm,
         )
+        companion_table["validation"] = validation
+        mask = validation.isin(_VALIDATION_PASSED)
 
         if use_spectra:
             unique_candidates = np.unique(companion_table[mask]["candidate_id"].values)
@@ -4793,6 +4905,10 @@ class DetectionAnalysis(object):
                 good_fraction_threshold=good_fraction_threshold,
                 theta_deviation_threshold=theta_deviation_threshold,
                 yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
+                shape_validation_max_snr=getattr(self.reduction_parameters, "shape_validation_max_snr", 50.0),
+                yx_known_companion_position=getattr(self.reduction_parameters, "yx_known_companion_position", None),
+                field_rotation=getattr(self, "field_rotation", None),
+                fwhm=self._summary_fwhm(),
             )
 
             # companion_table, validated_companion_table = analysis.detection_summary(
@@ -5278,6 +5394,10 @@ class DetectionAnalysis(object):
                 good_fraction_threshold=good_fraction_threshold,
                 theta_deviation_threshold=theta_deviation_threshold,
                 yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
+                shape_validation_max_snr=getattr(self.reduction_parameters, "shape_validation_max_snr", 50.0),
+                yx_known_companion_position=getattr(self.reduction_parameters, "yx_known_companion_position", None),
+                field_rotation=getattr(self, "field_rotation", None),
+                fwhm=self._summary_fwhm(),
             )
 
             yx_known_companion_position = np.unique(

@@ -407,6 +407,9 @@ class TrapReductionConfig:
     spectral_correlation_fit: bool = True
     # Rms residual of the fit above which a ring is flagged in the stack.
     spectral_correlation_flag_rms: float = 0.2
+    # S/N from which the fitted blob shape (axis ratio, orientation) no longer vetoes a candidate; bright
+    # sources are fitted with their own residuals and come out round.
+    shape_validation_max_snr: float = 50.0
 
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
