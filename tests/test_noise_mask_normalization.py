@@ -1,6 +1,7 @@
 """Two-pass noise normalisation of the detection maps with the footprint mask of bright sources."""
 
 import logging
+import pickle
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,7 +9,7 @@ import pytest
 from astropy import units as u
 from astropy.io import fits
 
-from trap.detection import DetectionAnalysis, _warn_about_unmasked_rings, make_contrast_curve
+from trap.detection import DetectionAnalysis, _warn_about_unmasked_rings, make_contrast_curve, make_radial_profile
 from trap.noise_mask import companion_noise_masks, noise_mask_settings, region_mask
 from trap.parameters import TrapReductionConfig
 
@@ -18,10 +19,14 @@ def _gaussian(yy, xx, y0, x0, amplitude, fwhm):
     return amplitude * np.exp(-((yy - y0) ** 2 + (xx - x0) ** 2) / (2 * sigma**2))
 
 
-# The lobes sit 28 px along the ring, and the ridge between them reaches 30 px, inside the
-# 8 FWHM azimuthal clip of the region, so that enough of the ring is contaminated for the
-# disk to leave a noise excess above 15%.
-def _footprint_map(separation=60.0, peak=400.0, fwhm=4.0, lobe=-8.0, lobe_offset=28.0, n=201):
+# Field rotation whose half arc, 12 px at 60 px, lets the region reach the end of the ridge.
+ROTATION = 0.4
+
+
+# The ridge between the lobes reaches 42 px along the ring, beyond the 32 px azimuthal clip
+# of the region without field rotation and inside it with ROTATION, and contaminates enough
+# of the ring for the disk to leave a noise excess above 30%.
+def _footprint_map(separation=60.0, peak=400.0, fwhm=4.0, lobe=-8.0, lobe_offset=40.0, n=201):
     yy, xx = np.indices((n, n), dtype=float) - n // 2
     image = np.random.default_rng(0).normal(size=yy.shape)
     image += _gaussian(yy, xx, 0, separation, peak, fwhm)
@@ -45,10 +50,10 @@ def _noise_at(table, separation):
 def test_second_pass_lowers_the_noise_at_a_bright_source():
     image = _detection_image(_footprint_map())
     first_normalized, disk_table, _, _ = make_contrast_curve(image, yx_known_companion_position=[[0, 60]])
-    region = region_mask(first_normalized, (0, 60), fwhm=4.0)
+    region = region_mask(first_normalized, (0, 60), fwhm=4.0, half_arc=60 * ROTATION / 2)
     _, region_table, _, _ = make_contrast_curve(image, yx_known_companion_position=[[0, 60]], companion_mask=region)
 
-    assert _noise_at(disk_table, 60) > 1.15
+    assert _noise_at(disk_table, 60) > 1.25
     assert _noise_at(region_table, 60) == pytest.approx(1.0, rel=0.1)
 
 
@@ -61,17 +66,39 @@ def test_normalisation_without_field_rotation():
 
 
 def test_old_config_gets_defaults():
-    # A frozen slots dataclass refuses `del`; unpickling a config saved before the fields
-    # existed restores a shorter state by slot position, which leaves the new slots unset.
-    state = TrapReductionConfig().__getstate__()
-    old = TrapReductionConfig.__new__(TrapReductionConfig)
-    old.__setstate__(state[:-4])
-    assert not hasattr(old, "noise_mask_region_snr")
-    assert noise_mask_settings(old) == {"region_snr": 10.0, "threshold": 2.0, "radial_fwhm": 6.0, "along_fwhm": 8.0}
+    class OldConfig:
+        pass
+
+    assert noise_mask_settings(OldConfig()) == {"region_snr": 10.0, "threshold": 2.0, "radial_fwhm": 6.0, "along_fwhm": 8.0}
 
 
-def _analysis(tmp_path, field_rotation=None, **config):
-    analysis = DetectionAnalysis(reduction_parameters=TrapReductionConfig(yx_known_companion_position=[[0, 60]], **config))
+def _old_pickled_config(monkeypatch, **fields):
+    """A config pickled by a trap that had none of the four noise mask fields."""
+    full_state = TrapReductionConfig.__getstate__
+    monkeypatch.setattr(TrapReductionConfig, "__getstate__", lambda self: full_state(self)[:-4])
+    data = pickle.dumps(TrapReductionConfig(**fields))
+    monkeypatch.undo()
+    return pickle.loads(data)
+
+
+def test_old_pickled_config_restores_with_defaults(monkeypatch):
+    old = _old_pickled_config(monkeypatch, companion_mask_radius=7)
+    merged = old.merge(result_folder="x")
+    assert merged.result_folder == "x"
+    assert merged.companion_mask_radius == 7
+    assert (
+        merged.noise_mask_region_snr,
+        merged.noise_mask_region_threshold,
+        merged.noise_mask_radial_fwhm,
+        merged.noise_mask_along_fwhm,
+    ) == (10.0, 2.0, 6.0, 8.0)
+    assert pickle.loads(pickle.dumps(merged)).noise_mask_along_fwhm == 8.0
+
+
+def _analysis(tmp_path, field_rotation=ROTATION, reduction_parameters=None, **config):
+    if reduction_parameters is None:
+        reduction_parameters = TrapReductionConfig(yx_known_companion_position=[[0, 60]], **config)
+    analysis = DetectionAnalysis(reduction_parameters=reduction_parameters)
     analysis.instrument = SimpleNamespace(pixel_scale=u.pixel_scale(12.25 * u.mas / u.pixel), fwhm=np.array([4.0, 4.0]) * u.pixel)
     analysis.wavelength_indices = np.array([0, 1])
     analysis.detection_cube = np.array([_detection_image(_footprint_map()), _detection_image(_footprint_map(peak=6.0))])
@@ -115,14 +142,40 @@ def test_region_snr_none_keeps_the_disks(tmp_path):
     assert fits.getheader(tmp_path / "noise_mask_run.fits")["NMASKRUL"] == "disk"
 
 
+def test_old_pickled_config_runs_the_normalisation(tmp_path, monkeypatch):
+    old = _old_pickled_config(monkeypatch, yx_known_companion_position=[[0, 60]])
+    analysis = _analysis(tmp_path, reduction_parameters=old)
+    analysis.contrast_table_and_normalization()
+    assert analysis.detection_products["noise_mask_sources"][0]["mask_rule"] == "region"
+
+
+def test_field_rotation_sets_the_half_arcs(tmp_path, monkeypatch):
+    import trap.detection
+
+    received = []
+
+    def recording(*args, **kwargs):
+        received.append(kwargs["half_arcs"])
+        return companion_noise_masks(*args, **kwargs)
+
+    monkeypatch.setattr(trap.detection, "companion_noise_masks", recording)
+    _analysis(tmp_path, field_rotation=ROTATION).contrast_table_and_normalization()
+    _analysis(tmp_path, field_rotation=None).contrast_table_and_normalization()
+    assert received[0] == pytest.approx([60 * ROTATION / 2])
+    assert received[-1] is None
+
+
 def test_field_rotation_widens_the_region(tmp_path):
-    still = _analysis(tmp_path)
-    rotating = _analysis(tmp_path, field_rotation=np.radians(40.0))
+    still = _analysis(tmp_path, field_rotation=None)
+    rotating = _analysis(tmp_path, field_rotation=ROTATION)
     still.contrast_table_and_normalization()
     rotating.contrast_table_and_normalization()
     assert (
         rotating.detection_products["noise_mask_sources"][0]["mask_pixels"]
-        >= still.detection_products["noise_mask_sources"][0]["mask_pixels"]
+        > still.detection_products["noise_mask_sources"][0]["mask_pixels"]
+    )
+    assert _noise_at(rotating.detection_products["contrast_tables"][0], 60) < _noise_at(
+        still.detection_products["contrast_tables"][0], 60
     )
 
 
@@ -135,20 +188,39 @@ def test_missing_fwhm_falls_back_to_disks(tmp_path, caplog):
     assert "FWHM" in caplog.text
 
 
-def test_warning_when_a_bright_source_leaves_its_ring_too_few_pixels(caplog):
+def test_make_radial_profile_records_its_fallbacks():
+    yy, xx = np.indices((101, 101)) - 50
+    data = np.random.default_rng(0).normal(size=(101, 101))
+    covered = np.abs(np.hypot(yy, xx) - 30) < 4
+    fallbacks = []
+    make_radial_profile(data, (1, 50), known_companion_mask=covered, fallback_separations=fallbacks)
+    assert fallbacks
+    assert all(abs(separation - 30) <= 4 for separation in fallbacks)
+
+
+def test_warning_when_a_bright_source_leaves_its_ring_too_few_pixels(tmp_path, monkeypatch, caplog):
+    import trap.detection
+
     yy, xx = np.indices((201, 201)) - 100
-    snr = np.ones((201, 201))
-    covered = np.abs(np.hypot(yy, xx) - 60) < 3
-    covered[100, 40:43] = False
+    whole_ring = np.abs(np.hypot(yy, xx) - 60) < 4
+
+    def ring_mask(normalized_image, positions, **kwargs):
+        return whole_ring, [{"mask_snr": 200.0, "mask_rule": "region", "mask_pixels": int(whole_ring.sum())}]
+
+    monkeypatch.setattr(trap.detection, "companion_noise_masks", ring_mask)
     with caplog.at_level(logging.WARNING, logger="trap.detection"):
-        _warn_about_unmasked_rings(snr, covered, [{"mask_snr": 50.0}], [60.0], 0, 3)
-        assert caplog.text == ""
-        _warn_about_unmasked_rings(snr, covered, [{"mask_snr": 200.0}], [60.0], 0, 3)
+        _analysis(tmp_path).contrast_table_and_normalization()
     assert "falls back to the unmasked ring" in caplog.text
-    caplog.clear()
+
+
+def test_no_warning_for_fallbacks_far_from_bright_sources(caplog):
     with caplog.at_level(logging.WARNING, logger="trap.detection"):
-        _warn_about_unmasked_rings(snr, covered & (yy > 0), [{"mask_snr": 200.0}], [60.0], 0, 3)
+        _warn_about_unmasked_rings([{"mask_snr": 200.0}], [60.0], [50, 70], 4.0, 0)
+        _warn_about_unmasked_rings([{"mask_snr": 50.0}], [60.0], [60], 4.0, 0)
     assert caplog.text == ""
+    with caplog.at_level(logging.WARNING, logger="trap.detection"):
+        _warn_about_unmasked_rings([{"mask_snr": 200.0}], [60.0], [58, 60], 4.0, 0)
+    assert "58, 60" in caplog.text
 
 
 def test_field_rotation_from_parallactic_angles():

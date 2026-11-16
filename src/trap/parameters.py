@@ -19,7 +19,7 @@ import multiprocessing
 import os
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import MISSING, asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -412,6 +412,21 @@ class TrapReductionConfig:
     def merge(self, **kw) -> "TrapReductionConfig":
         """Return a copy with selected fields overridden."""
         return replace(self, **kw)
+
+    def __setstate__(self, state):
+        """Restore a pickled config, giving fields appended since it was saved their defaults.
+
+        The state is a list of values in slot order, so a config saved by an older trap
+        is shorter. Unset slots would make `merge` and pickling raise AttributeError.
+        """
+        for index, item in enumerate(fields(self)):
+            if index < len(state):
+                value = state[index]
+            elif item.default is not MISSING:
+                value = item.default
+            else:
+                value = item.default_factory()
+            object.__setattr__(self, item.name, value)
 
 
 # -------- runtime state (derived from config + data + instrument) -----------

@@ -119,6 +119,7 @@ def make_radial_profile(
     yx_center=None,
     known_companion_mask=None,
     minimum_annulus_pixels=MINIMUM_ANNULUS_PIXELS,
+    fallback_separations=None,
 ):
     """
     Compute the radial profile of a 2D data array.
@@ -136,6 +137,8 @@ def make_radial_profile(
       and therefore the normalized detection image — NaN across that annulus, which
       no downstream fit can recover from. Set to 0 to restore the un-guarded
       behaviour.
+    - fallback_separations (list, optional): If given, the separations at which the
+      un-masked annulus was used are appended to it.
 
     Returns:
     - profile (ndarray): The computed radial profile.
@@ -213,6 +216,8 @@ def make_radial_profile(
                         "falling back to the un-masked statistic.", separation,
                     )
                     mask_wo_companion = mask
+                    if fallback_separations is not None:
+                        fallback_separations.append(separation)
 
             # Data on which statistic is applied
             annulus_data_1d = data[mask_wo_companion]
@@ -298,6 +303,7 @@ def make_contrast_curve(
     minimum_companion_mask_radius=3.0,
     minimum_annulus_pixels=MINIMUM_ANNULUS_PIXELS,
     companion_mask=None,
+    fallback_separations=None,
 ):
     """Normalise a detection image by the robust noise of each separation ring.
 
@@ -305,6 +311,8 @@ def make_contrast_curve(
         companion_mask: Boolean map of the pixels excluded from the ring statistic. When
             given it replaces the disks of radius ``companion_mask_radius`` around
             ``yx_known_companion_position``.
+        fallback_separations: If given, the separations at which the noise behind the
+            returned normalisation fell back to the un-masked annulus are appended to it.
 
     The other arguments are described in `make_radial_profile`.
     """
@@ -349,6 +357,7 @@ def make_contrast_curve(
         operation="mad_std",
         known_companion_mask=detected_signal_mask,
         minimum_annulus_pixels=minimum_annulus_pixels,
+        fallback_separations=fallback_separations if mask_above_sigma is None else None,
     )
     normalized_detection_image = detection_image[2] / snr_norm_profile
 
@@ -366,6 +375,7 @@ def make_contrast_curve(
             operation="mad_std",
             known_companion_mask=detected_signal_mask,
             minimum_annulus_pixels=minimum_annulus_pixels,
+            fallback_separations=fallback_separations,
         )
         normalized_detection_image = detection_image[2] / snr_norm_profile
     else:
@@ -444,27 +454,31 @@ def make_contrast_curve(
     )
 
 
-def _warn_about_unmasked_rings(snr_image, noise_mask, sources, separations, wavelength_index, bin_width):
-    """Warn when the ring of a bright source keeps too few pixels outside the noise mask.
+def _warn_about_unmasked_rings(sources, separations, fallback_separations, fwhm, wavelength_index):
+    """Warn when the noise near a bright source fell back to the un-masked annulus.
 
     `make_radial_profile` then measures the noise with the source inside the ring, which
     overestimates it and lowers the S/N of the source.
+
+    Args:
+        sources: Per-source dicts of `trap.noise_mask.companion_noise_masks`.
+        separations: Separations of the sources in pixels.
+        fallback_separations: Separations at which `make_radial_profile` fell back.
+        fwhm: PSF FWHM in pixels; rings within one FWHM of a source count as its own.
+        wavelength_index: Channel, for the message.
     """
-    yx_dim = snr_image.shape
-    xy_center = (yx_dim[1] // 2.0, yx_dim[0] // 2.0)
+    fallback_separations = np.asarray(fallback_separations, dtype=float)
     for source, separation in zip(sources, separations):
         if not source["mask_snr"] > 100:
             continue
-        ring_separation = int(round(separation))
-        r_in = max(ring_separation - bin_width / 2.0, 0.5)
-        ring = CircularAnnulus(xy_center, r_in=r_in, r_out=ring_separation + bin_width / 2.0)
-        ring_mask = ring.to_mask(method="center").to_image(yx_dim) > 0
-        kept = np.count_nonzero(np.isfinite(snr_image[ring_mask & ~noise_mask]))
-        if kept < MINIMUM_ANNULUS_PIXELS:
+        affected = fallback_separations[np.abs(fallback_separations - separation) <= fwhm]
+        if affected.size:
             logger.warning(
-                "Channel %d: the ring at %d px around a source of S/N %.0f keeps %d pixels outside the noise mask, "
-                "fewer than %d, so its noise falls back to the unmasked ring and the S/N of the source is too low.",
-                wavelength_index, ring_separation, source["mask_snr"], kept, MINIMUM_ANNULUS_PIXELS,
+                "Channel %d: the rings at %s px keep fewer than %d pixels outside the noise mask of a source "
+                "of S/N %.0f at %.0f px, so their noise falls back to the unmasked ring and the S/N of the "
+                "source is too low.",
+                wavelength_index, ", ".join(str(int(r)) for r in affected), MINIMUM_ANNULUS_PIXELS,
+                source["mask_snr"], separation,
             )
 
 
@@ -2514,16 +2528,19 @@ class DetectionAnalysis(object):
                 disk_radius=companion_mask_radius,
             )
             if any(source["mask_rule"] == "region" for source in sources):
+                fallback_separations = []
                 (
                     normalized_detection_image,
                     contrast_table,
                     uncertainty_image,
                     median_uncertainty_image,
-                ) = make_contrast_curve(detection_image, companion_mask=noise_mask, **contrast_curve_arguments)
-                _warn_about_unmasked_rings(
-                    detection_image[2], noise_mask, sources, separations, wavelength_index,
-                    self.reduction_parameters.normalization_width,
+                ) = make_contrast_curve(
+                    detection_image,
+                    companion_mask=noise_mask,
+                    fallback_separations=fallback_separations,
+                    **contrast_curve_arguments,
                 )
+                _warn_about_unmasked_rings(sources, separations, fallback_separations, fwhm, wavelength_index)
             for position, source in zip(positions, sources):
                 noise_mask_sources.append(
                     {
@@ -2592,7 +2609,7 @@ class DetectionAnalysis(object):
             if "noise_mask_path" in file_paths:
                 header = fits.Header()
                 any_region = any(source["mask_rule"] == "region" for source in noise_mask_sources)
-                header["NMASKRUL"] = ("region" if any_region else "disk", "Exclusion rule of the brightest sources")
+                header["NMASKRUL"] = ("region" if any_region else "disk", "region if any source of any channel used it")
                 header["NMASKTHR"] = (settings["threshold"], "|S/N| threshold of the source footprints")
                 fits.writeto(
                     file_paths["noise_mask_path"],
