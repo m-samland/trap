@@ -33,6 +33,7 @@ from tqdm.auto import tqdm
 
 from trap import image_coordinates, pca_regression, regressor_selection
 from trap.image_coordinates import absolute_yx_to_relative_yx, relative_yx_to_rhophi
+from trap.noise_mask import companion_noise_masks, noise_mask_settings
 from trap.parameters import _to_reduction_config
 from trap.reduction_wrapper import run_complete_reduction
 from trap.species_setup import configure_species
@@ -68,6 +69,10 @@ DEFAULT_TEMPLATE_NAMES = ("L-type", "T-type", "flat")
 # binary's blob swarm stops on the HD_140408 test case; more starts eating real
 # search area.
 DEFAULT_MAX_EXCLUSION_RADIUS_FACTOR = 2.5
+
+# Fewest finite pixels a separation ring may keep outside the companion mask before
+# `make_radial_profile` falls back to the unmasked ring.
+MINIMUM_ANNULUS_PIXELS = 10
 
 
 def _resolve_exclusion_radius(candidate_exclusion_radius, search_radius):
@@ -113,7 +118,7 @@ def make_radial_profile(
     operation="mad_std",
     yx_center=None,
     known_companion_mask=None,
-    minimum_annulus_pixels=10,
+    minimum_annulus_pixels=MINIMUM_ANNULUS_PIXELS,
 ):
     """
     Compute the radial profile of a 2D data array.
@@ -291,15 +296,27 @@ def make_contrast_curve(
     yx_known_companion_position=None,
     mask_above_sigma=None,
     minimum_companion_mask_radius=3.0,
-    minimum_annulus_pixels=10,
+    minimum_annulus_pixels=MINIMUM_ANNULUS_PIXELS,
+    companion_mask=None,
 ):
+    """Normalise a detection image by the robust noise of each separation ring.
+
+    Args:
+        companion_mask: Boolean map of the pixels excluded from the ring statistic. When
+            given it replaces the disks of radius ``companion_mask_radius`` around
+            ``yx_known_companion_position``.
+
+    The other arguments are described in `make_radial_profile`.
+    """
     yx_dim = (detection_image.shape[-2], detection_image.shape[-1])
 
     if radial_bounds is None:
         separation_max = detection_image.shape[-1] // 2 * np.sqrt(2)
         radial_bounds = (1, int(separation_max))
 
-    if yx_known_companion_position is not None:
+    if companion_mask is not None:
+        detected_signal_mask = np.asarray(companion_mask, dtype=bool)
+    elif yx_known_companion_position is not None:
         yx_known_companion_position = np.array(yx_known_companion_position)
         if yx_known_companion_position.ndim == 1:
             yx_known_companion_position = yx_known_companion_position[None, :]
@@ -425,6 +442,30 @@ def make_contrast_curve(
         uncertainty_image,
         median_uncertainty_image,
     )
+
+
+def _warn_about_unmasked_rings(snr_image, noise_mask, sources, separations, wavelength_index, bin_width):
+    """Warn when the ring of a bright source keeps too few pixels outside the noise mask.
+
+    `make_radial_profile` then measures the noise with the source inside the ring, which
+    overestimates it and lowers the S/N of the source.
+    """
+    yx_dim = snr_image.shape
+    xy_center = (yx_dim[1] // 2.0, yx_dim[0] // 2.0)
+    for source, separation in zip(sources, separations):
+        if not source["mask_snr"] > 100:
+            continue
+        ring_separation = int(round(separation))
+        r_in = max(ring_separation - bin_width / 2.0, 0.5)
+        ring = CircularAnnulus(xy_center, r_in=r_in, r_out=ring_separation + bin_width / 2.0)
+        ring_mask = ring.to_mask(method="center").to_image(yx_dim) > 0
+        kept = np.count_nonzero(np.isfinite(snr_image[ring_mask & ~noise_mask]))
+        if kept < MINIMUM_ANNULUS_PIXELS:
+            logger.warning(
+                "Channel %d: the ring at %d px around a source of S/N %.0f keeps %d pixels outside the noise mask, "
+                "fewer than %d, so its noise falls back to the unmasked ring and the S/N of the source is too low.",
+                wavelength_index, ring_separation, source["mask_snr"], kept, MINIMUM_ANNULUS_PIXELS,
+            )
 
 
 def ratio_contrast_tables(table1, table2):
@@ -2199,9 +2240,15 @@ class DetectionAnalysis(object):
         self.detected_signal_mask = None
         self.templates = OrderedDict()
         self.empirical_correlation = None
+        self.field_rotation = None
 
         if instrument is not None:
             self.instrument.compute_fwhm()
+
+    def _set_field_rotation(self, pa):
+        """Store the field rotation in radians spanned by the parallactic angles ``pa`` (degrees), if given."""
+        if pa is not None:
+            self.field_rotation = float(np.ptp(np.unwrap(np.radians(np.asarray(pa, dtype=float)))))
 
     def read_output(
         self,
@@ -2331,6 +2378,9 @@ class DetectionAnalysis(object):
             os.path.splitext(self.basename)[0].replace("detection", "contrast_plot")
             + ".jpg",
         )
+        self.file_paths["noise_mask_path"] = os.path.join(
+            self.result_folder, self.basename.replace("detection", "noise_mask")
+        )
 
         # Derived from the per-wavelength files just read, so it has to be
         # rewritten every time: guarding on existence froze it at whatever the
@@ -2340,6 +2390,14 @@ class DetectionAnalysis(object):
             self.detection_cube,
             overwrite=True,
         )
+
+    def _channel_fwhm(self, wavelength_index):
+        """PSF FWHM in pixels of a channel, or None if the instrument does not provide it."""
+        fwhm = getattr(getattr(self, "instrument", None), "fwhm", None)
+        if fwhm is None:
+            return None
+        fwhm = fwhm[wavelength_index]
+        return float(getattr(fwhm, "value", fwhm))
 
     def contrast_table_and_normalization(
         self,
@@ -2352,7 +2410,35 @@ class DetectionAnalysis(object):
         overwrite=True,
         inplace=True,
     ):
-        """detection_cube contains the detection_image for all wavelengths"""
+        """Normalise the detection maps of all channels and derive their contrast curves.
+
+        The ring noise is measured twice per channel. The first pass excludes a disk around
+        every position in ``yx_known_companion_position``; the second excludes the masks of
+        `trap.noise_mask.companion_noise_masks`, computed on the first-pass normalised map,
+        which replace the disk of every source above ``noise_mask_region_snr`` by its
+        footprint. The second pass is skipped when no source gets a footprint, since its
+        mask would equal the disks.
+
+        Args:
+            detection_cube: Detection images (contrast, uncertainty, S/N) of all channels;
+                defaults to ``self.detection_cube``.
+            cube_indices: Indices into ``detection_cube`` to process; defaults to all.
+            yx_known_companion_position: Source positions relative to the image centre;
+                defaults to the reduction config's.
+            mask_above_sigma: Passed to `make_contrast_curve`.
+            save: Write the products to ``file_paths``. The noise mask is written only if
+                ``file_paths`` has a ``noise_mask_path``.
+            file_paths: Output paths; defaults to ``self.file_paths``.
+            overwrite: Overwrite existing files.
+            inplace: Store the products in ``self.detection_products`` instead of returning them.
+
+        Returns:
+            The detection products if ``inplace`` is False, else None. Besides the
+            normalised maps and contrast tables they hold ``noise_mask_cube`` (boolean, one
+            plane per processed channel) and ``noise_mask_sources`` (one dict per source and
+            channel with ``wavelength_index``, ``y_relative``, ``x_relative``, ``mask_snr``,
+            ``mask_rule`` and ``mask_pixels``).
+        """
 
         if detection_cube is None:
             detection_cube_used = self.detection_cube
@@ -2372,6 +2458,17 @@ class DetectionAnalysis(object):
         contrast_tables = []
         uncertainty_cube = []
         median_uncertainty_cube = []
+        noise_mask_cube = []
+        noise_mask_sources = []
+        settings = noise_mask_settings(self.reduction_parameters)
+        companion_mask_radius = self.reduction_parameters.companion_mask_radius
+        if yx_known_companion_position is None:
+            positions = np.empty((0, 2))
+        else:
+            positions = np.atleast_2d(np.asarray(yx_known_companion_position, dtype=float))
+        separations = np.hypot(positions[:, 0], positions[:, 1])
+        field_rotation = getattr(self, "field_rotation", None)
+        half_arcs = None if field_rotation is None else list(separations * field_rotation / 2.0)
 
         self.pixel_scale_mas = (
             (1 * u.pixel).to(u.mas, self.instrument.pixel_scale).value
@@ -2381,21 +2478,62 @@ class DetectionAnalysis(object):
             cube_indices = list(range(len(detection_cube_used)))
 
         for cube_index in cube_indices:
-            # for detection_image in detection_cube_used:
+            detection_image = detection_cube_used[cube_index]
+            wavelength_index = int(self.wavelength_indices[cube_index])
+            contrast_curve_arguments = dict(
+                radial_bounds=None,
+                bin_width=self.reduction_parameters.normalization_width,
+                companion_mask_radius=companion_mask_radius,
+                pixel_scale=self.pixel_scale_mas,
+                mask_above_sigma=mask_above_sigma,
+                yx_known_companion_position=yx_known_companion_position,
+            )
             (
                 normalized_detection_image,
                 contrast_table,
                 uncertainty_image,
                 median_uncertainty_image,
-            ) = make_contrast_curve(
-                detection_cube_used[cube_index],
-                radial_bounds=None,
-                bin_width=self.reduction_parameters.normalization_width,
-                companion_mask_radius=self.reduction_parameters.companion_mask_radius,
-                pixel_scale=self.pixel_scale_mas,
-                mask_above_sigma=mask_above_sigma,
-                yx_known_companion_position=yx_known_companion_position,
+            ) = make_contrast_curve(detection_image, **contrast_curve_arguments)
+
+            fwhm = self._channel_fwhm(wavelength_index)
+            region_snr = settings["region_snr"] if fwhm is not None else None
+            if fwhm is None and settings["region_snr"] is not None and len(positions) > 0:
+                logger.info(
+                    "No instrument FWHM for channel %d; excluding known sources with disks only.", wavelength_index
+                )
+            noise_mask, sources = companion_noise_masks(
+                normalized_detection_image,
+                positions,
+                # A NaN FWHM leaves mask_snr undefined, which together with region_snr=None gives disks.
+                fwhm=np.nan if fwhm is None else fwhm,
+                half_arcs=half_arcs,
+                region_snr=region_snr,
+                threshold=settings["threshold"],
+                radial_fwhm=settings["radial_fwhm"],
+                along_fwhm=settings["along_fwhm"],
+                disk_radius=companion_mask_radius,
             )
+            if any(source["mask_rule"] == "region" for source in sources):
+                (
+                    normalized_detection_image,
+                    contrast_table,
+                    uncertainty_image,
+                    median_uncertainty_image,
+                ) = make_contrast_curve(detection_image, companion_mask=noise_mask, **contrast_curve_arguments)
+                _warn_about_unmasked_rings(
+                    detection_image[2], noise_mask, sources, separations, wavelength_index,
+                    self.reduction_parameters.normalization_width,
+                )
+            for position, source in zip(positions, sources):
+                noise_mask_sources.append(
+                    {
+                        "wavelength_index": wavelength_index,
+                        "y_relative": float(position[0]),
+                        "x_relative": float(position[1]),
+                        **source,
+                    }
+                )
+            noise_mask_cube.append(noise_mask)
             normalized_detection_cube.append(normalized_detection_image)
             contrast_tables.append(contrast_table)
             uncertainty_cube.append(uncertainty_image)
@@ -2409,6 +2547,8 @@ class DetectionAnalysis(object):
             median_uncertainty_cube
         )
         detection_products["contrast_tables"] = contrast_tables
+        detection_products["noise_mask_cube"] = np.array(noise_mask_cube, dtype=bool)
+        detection_products["noise_mask_sources"] = noise_mask_sources
 
         # Add real wavelength to contrast tables and concatenate into one table
         contrast_table = detection_products["contrast_tables"].copy()
@@ -2448,6 +2588,18 @@ class DetectionAnalysis(object):
 
 
             save_object(detection_products["contrast_tables"], os.path.splitext(file_paths["contrast_table_path"])[0] + ".obj")
+
+            if "noise_mask_path" in file_paths:
+                header = fits.Header()
+                any_region = any(source["mask_rule"] == "region" for source in noise_mask_sources)
+                header["NMASKRUL"] = ("region" if any_region else "disk", "Exclusion rule of the brightest sources")
+                header["NMASKTHR"] = (settings["threshold"], "|S/N| threshold of the source footprints")
+                fits.writeto(
+                    file_paths["noise_mask_path"],
+                    detection_products["noise_mask_cube"].astype(np.uint8),
+                    header=header,
+                    overwrite=overwrite,
+                )
 
         if inplace:
             self.detection_products = detection_products
@@ -4420,6 +4572,7 @@ class DetectionAnalysis(object):
         >>> if analysis.templates['T-type'].validated_companion_table is not None:
         ...     print(f"Found {len(analysis.templates['T-type'].validated_companion_table)} candidates")
         """
+        self._set_field_rotation(pa)
         # Both are used unconditionally further down, so they cannot stay inside
         # the `file_paths is None` branch that used to define them.
         template_name = template.name
@@ -4994,6 +5147,7 @@ class DetectionAnalysis(object):
         save_initial_detection_products=False,
     ):
 
+        self._set_field_rotation(pa)
         self.detection_cube[self.detection_cube == 0.] = np.nan
 
         self.contrast_table_and_normalization(
@@ -5172,6 +5326,7 @@ class DetectionAnalysis(object):
             yx_known_companion_position=None
         )
 
+        self._set_field_rotation(pa)
         self.detection_cube[self.detection_cube == 0.] = np.nan
 
         self.contrast_table_and_normalization(

@@ -393,6 +393,14 @@ class TrapReductionConfig:
     # beyond the companions it contains: the detection map is normalized per separation
     # with a 3 px wide annulus, which has fewer pixels at a ring edge.
     search_region_bounds: Optional[Tuple[Tuple[float, float], ...]] = None
+    # S/N from which a source's footprint replaces its disk in the noise normalisation; None keeps the disks.
+    noise_mask_region_snr: Optional[float] = 10.0
+    # |S/N| above which a pixel belongs to the footprint of a bright source.
+    noise_mask_region_threshold: float = 2.0
+    # Half width of the footprint's radial clip, in units of the FWHM.
+    noise_mask_radial_fwhm: float = 6.0
+    # Margin of the footprint's azimuthal clip beyond half the field rotation, in units of the FWHM.
+    noise_mask_along_fwhm: float = 8.0
 
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
