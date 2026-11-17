@@ -2303,6 +2303,10 @@ def _on_brighter_arc(table, snr, fwhm, sources, along_fwhm, field_rotation):
     return np.any(brighter & distinct & radial & within_arc, axis=1)
 
 
+# A fitted width below this fraction of the FWHM is a hot pixel or edge artefact, not a bright point source.
+BRIGHT_MIN_WIDTH_FWHM = 0.5
+
+
 def validate_candidates(
     companion_table,
     snr_threshold,
@@ -2320,8 +2324,12 @@ def validate_candidates(
 
     The S/N and good-fraction tests apply to every row. The shape tests (axis ratio and
     orientation) are skipped for a bright source, whose fit is dominated by its own residuals,
-    and for a source at a known position. The orientation test alone is skipped where the
-    rotation arc is too short to tell radial from tangential elongation. Skips need ``fwhm``.
+    and for a source at a known position. A source counts as bright when its peak pixel reaches
+    ``shape_validation_max_snr`` and its fitted width is at least ``BRIGHT_MIN_WIDTH_FWHM`` FWHM:
+    at the edge of the search region the fitted amplitude can be extrapolated far above the map,
+    and a hot pixel is bright but narrower than any point source. The orientation test alone is
+    skipped where the rotation arc is too short to tell radial from tangential elongation. Skips
+    need ``fwhm``.
 
     A row that is not at a known position fails ``on_brighter_arc`` when one of
     ``bright_sources`` with a higher |S/N| lies more than 2 FWHM away from it, within 2 FWHM
@@ -2331,13 +2339,14 @@ def validate_candidates(
     skipped for the bright ones.
 
     Args:
-        companion_table: Table with ``snr``, ``good_fraction_free``, ``theta_deviation``,
-            ``yx_fwhm_ratio``, ``separation``, ``y_relative`` and ``x_relative``.
+        companion_table: Table with ``snr``, ``peak_pixel_snr``, ``x_fwhm_free``, ``y_fwhm_free``,
+            ``good_fraction_free``, ``theta_deviation``, ``yx_fwhm_ratio``, ``separation``,
+            ``y_relative`` and ``x_relative``.
         snr_threshold: Minimum S/N.
         good_fraction_threshold: Minimum good fraction of the free fit.
         theta_deviation_threshold: Maximum orientation deviation in degrees.
         yx_fwhm_ratio_threshold: Allowed (min, max) of the axis ratio.
-        shape_validation_max_snr: S/N from which the shape tests are skipped.
+        shape_validation_max_snr: Peak-pixel S/N from which the shape tests are skipped.
         known_positions: None, one (y, x) pair or an (N, 2) array of relative positions in pixels.
         field_rotation: Field rotation in radians, or None.
         fwhm: FWHM in pixels, or None.
@@ -2359,7 +2368,10 @@ def validate_candidates(
     known = np.zeros(n, dtype=bool)
     short_arc = np.zeros(n, dtype=bool)
     if fwhm is not None:
-        bright = snr >= shape_validation_max_snr
+        width = np.sqrt(np.asarray(table["x_fwhm_free"], dtype=float) * np.asarray(table["y_fwhm_free"], dtype=float))
+        bright = (np.asarray(table["peak_pixel_snr"], dtype=float) >= shape_validation_max_snr) & (
+            width >= BRIGHT_MIN_WIDTH_FWHM * fwhm
+        )
         if known_positions is not None:
             positions = np.atleast_2d(np.asarray(known_positions, dtype=float))
             if positions.size:

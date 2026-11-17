@@ -17,6 +17,9 @@ def _table(**row):
         x_relative=37.0,
     )
     base.update(row)
+    base.setdefault("peak_pixel_snr", base["snr"])
+    base.setdefault("x_fwhm_free", FWHM)
+    base.setdefault("y_fwhm_free", FWHM)
     return pd.DataFrame([base])
 
 
@@ -26,6 +29,22 @@ def _validate(table, known=None, rotation=1.0):
 
 def test_bright_round_source_passes():
     assert _validate(_table(snr=837.0, yx_fwhm_ratio=0.72)) == "shape_skipped_bright"
+
+
+def test_extrapolated_fit_gets_shape_tests():
+    # CD-40 8434 K12 2019-03-05: the fit at the edge of the search region gives 2083 sigma, the map 5.8.
+    assert _validate(_table(snr=2083.0, peak_pixel_snr=5.8, yx_fwhm_ratio=0.72)) == "yx_fwhm_ratio"
+
+
+def test_narrow_spike_gets_shape_tests():
+    # GQ Lup H23 2019-03-05, T-type: a 170 sigma pair of hot pixels, 0.36 FWHM wide.
+    table = _table(snr=220.0, peak_pixel_snr=170.0, x_fwhm_free=1.4, y_fwhm_free=1.2, yx_fwhm_ratio=0.85)
+    assert _validate(table) == "yx_fwhm_ratio"
+
+
+def test_bright_source_at_half_fwhm_width_still_skips():
+    table = _table(snr=431.0, x_fwhm_free=0.5 * FWHM, y_fwhm_free=0.5 * FWHM, yx_fwhm_ratio=0.72)
+    assert _validate(table) == "shape_skipped_bright"
 
 
 def test_known_position_passes():
