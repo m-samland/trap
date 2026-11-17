@@ -420,12 +420,14 @@ def test_template_matching_summary_keeps_each_candidates_own_peak(monkeypatch, t
         lambda group_rows, **kwargs: group_rows.assign(separation=100.0 - group_rows["x_relative"]),
     )
     peaks = pd.DataFrame({"x_relative": [0.0, 20.0], "snr": [6.0, 50.0]})
-    analysis.reduction_parameters = SimpleNamespace(result_folder=str(tmp_path))
+    analysis.reduction_parameters = SimpleNamespace(
+        result_folder=str(tmp_path), shape_validation_max_snr=50.0, noise_mask_along_fwhm=8.0
+    )
     analysis.instrument = SimpleNamespace(wavelengths=np.array([1.0]))
     analysis.wavelength_indices = np.array([0])
     analysis.template_matching_detection = lambda *args, **kwargs: (np.empty(0), {})
     analysis.find_candidates_all_wavelengths = lambda **kwargs: peaks.copy()
-    analysis.contrast_table_and_normalization = lambda **kwargs: {}
+    analysis.contrast_table_and_normalization = lambda **kwargs: {"normalized_detection_cube": np.zeros((1, 9, 9))}
     analysis.extract_candidate_spectra = lambda **kwargs: None
     seen = {}
 

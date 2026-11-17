@@ -189,3 +189,17 @@ def test_known_and_validated_positions_is_empty_without_positions():
 def test_base_positions_default_to_the_config(base_positions, expected):
     analysis = DetectionAnalysis(reduction_parameters=TrapReductionConfig(yx_known_companion_position=[[5.0, 5.0]]))
     np.testing.assert_array_equal(analysis._base_positions(base_positions), expected)
+
+
+def test_configured_positions_follow_a_changed_config():
+    analysis = DetectionAnalysis(reduction_parameters=TrapReductionConfig(yx_known_companion_position=[[5.0, 5.0]]))
+    analysis.reduction_parameters = analysis.reduction_parameters.merge(yx_known_companion_position=[[7.0, 7.0]])
+    np.testing.assert_array_equal(analysis._configured_known_positions(), [[7.0, 7.0]])
+
+
+def test_configured_positions_survive_candidates_written_into_the_config():
+    analysis = DetectionAnalysis(reduction_parameters=TrapReductionConfig(yx_known_companion_position=[[5.0, 5.0]]))
+    analysis._configured_known_positions()
+    analysis.reduction_parameters = analysis.reduction_parameters.merge(yx_known_companion_position=[[9.0, 9.0]])
+    analysis._config_holds_candidates = True
+    np.testing.assert_array_equal(analysis._configured_known_positions(), [[5.0, 5.0]])

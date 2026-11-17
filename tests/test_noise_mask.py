@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from trap.noise_mask import companion_noise_masks, disk_mask, noise_mask_settings, region_mask, source_snr
+from trap.noise_mask import companion_noise_masks, disk_mask, region_mask, source_snr
 
 
 def _gaussian(yy, xx, y0, x0, amplitude, fwhm):
@@ -124,15 +124,3 @@ def test_region_wraps_around_theta_pi():
     for along in (-10.0, 10.0):
         y, x = _ring_pixel(60.0, along)
         assert region[y, 200 - x]
-
-
-def test_noise_mask_settings_defaults_for_old_configs():
-    class OldConfig:
-        pass
-
-    assert noise_mask_settings(OldConfig()) == {
-        "region_snr": 10.0,
-        "threshold": 2.0,
-        "radial_fwhm": 6.0,
-        "along_fwhm": 8.0,
-    }

@@ -56,12 +56,6 @@ FIT_COLUMNS = [
     "sigma_rho",
     "sigma_lambda",
     "rms",
-    "free_a_rho",
-    "free_a_lambda",
-    "free_a_const",
-    "free_sigma_rho",
-    "free_sigma_lambda",
-    "free_rms",
 ]
 
 
@@ -72,12 +66,12 @@ def _wavelength_values(wavelengths):
 
 
 def spectral_correlation_settings(config):
-    """Spectral correlation settings of a reduction config, with defaults for configs saved before the fields existed."""
+    """Spectral correlation settings of a reduction config."""
     return {
-        "width": getattr(config, "spectral_correlation_width", 9.0),
-        "fit": getattr(config, "spectral_correlation_fit", True),
-        "flag_rms": getattr(config, "spectral_correlation_flag_rms", 0.2),
-        "sigma_rho": getattr(config, "spectral_correlation_sigma_rho", SIGMA_RHO_DEFAULT),
+        "width": config.spectral_correlation_width,
+        "fit": config.spectral_correlation_fit,
+        "flag_rms": config.spectral_correlation_flag_rms,
+        "sigma_rho": config.spectral_correlation_sigma_rho,
     }
 
 
@@ -252,30 +246,6 @@ def _global_fit(psi_pairs, rho, dl_pairs, sigma_rho=None):
     return rho_length, lambda_length, a_rho, a_lambda, a_const
 
 
-def _free_fit(psi_pairs, rho, dl_pairs, a_rho, a_lambda, a_const, sigma_rho, sigma_lambda):
-    def residuals(parameters):
-        correlated, speckle_fraction, constant_fraction, rho_length, lambda_length = parameters
-        amplitudes = _amplitudes(correlated, speckle_fraction, constant_fraction)
-        return _ring_residuals(psi_pairs, rho, dl_pairs, *amplitudes, rho_length, lambda_length)
-
-    correlated = a_rho + a_lambda + a_const
-    kernels = a_rho + a_lambda
-    lower = [0.0, 0.0, 0.0, SIGMA_RHO_BOUNDS[0], SIGMA_LAMBDA_BOUNDS[0]]
-    upper = [1.0 - MINIMUM_A_DELTA, 1.0, 1.0, SIGMA_RHO_BOUNDS[1], SIGMA_LAMBDA_BOUNDS[1]]
-    start = [
-        correlated,
-        a_rho / kernels if kernels > 0 else SPECKLE_FRACTION_START,
-        a_const / correlated if correlated > 0 else CONSTANT_FRACTION_START,
-        sigma_rho,
-        sigma_lambda,
-    ]
-    start = np.clip(start, lower, upper)
-    correlated, speckle_fraction, constant_fraction, rho_length, lambda_length = least_squares(
-        residuals, start, bounds=(lower, upper), method="trf"
-    ).x
-    return (*_amplitudes(correlated, speckle_fraction, constant_fraction), rho_length, lambda_length)
-
-
 def fit_stack(
     psi, rho, wavelengths, separations=None, n_pixels=None, flag_rms=0.2, fit=True, sigma_rho=SIGMA_RHO_DEFAULT
 ):
@@ -285,8 +255,9 @@ def fit_stack(
     held fixed) and ``sigma_lambda`` and the amplitudes ``a_rho``, ``a_lambda`` and ``a_const``
     of each ring. The amplitudes are fitted as their sum, bounded to [0, 0.99] so that
     ``a_delta`` stays at or above 0.01 and the matrix positive definite, the constant fraction
-    of that sum and the speckle fraction of the rest, both bounded to [0, 1]. A free fit of all parameters per ring, started from the global solution, is
-    stored in the ``free_*`` columns as a diagnostic. Only the off-diagonal elements enter.
+    of that sum and the speckle fraction of the rest, both bounded to [0, 1]. Only the off-diagonal elements enter. A fit of
+    each ring alone is not offered, since at one separation the two kernels are both
+    Gaussians in ``dl`` and cannot be told apart.
 
     Args:
         psi: Empirical matrices, shape (n_sep, n_ch, n_ch).
@@ -302,8 +273,7 @@ def fit_stack(
     Returns:
         One row per ring with columns ``separation``, ``rho``, ``n_pixels``, ``a_rho``,
         ``a_lambda``, ``a_const``, ``a_delta``, ``sigma_rho``, ``sigma_lambda``, ``rms``,
-        ``free_a_rho``, ``free_a_lambda``, ``free_a_const``, ``free_sigma_rho``,
-        ``free_sigma_lambda``, ``free_rms``, ``flagged`` and ``fitted``.
+        ``flagged`` and ``fitted``.
     """
     psi = np.asarray(psi, dtype=float)
     rho = np.asarray(rho, dtype=float)
@@ -338,9 +308,6 @@ def fit_stack(
         table.loc[ring, "rms"] = _rms(
             _ring_residuals(psi_pairs[ring], rho[ring], dl_pairs, *amplitudes, sigma_rho, sigma_lambda)
         )
-        free = _free_fit(psi_pairs[ring], rho[ring], dl_pairs, *amplitudes, sigma_rho, sigma_lambda)
-        table.loc[ring, ["free_a_rho", "free_a_lambda", "free_a_const", "free_sigma_rho", "free_sigma_lambda"]] = free
-        table.loc[ring, "free_rms"] = _rms(_ring_residuals(psi_pairs[ring], rho[ring], dl_pairs, *free))
     table["flagged"] = table["rms"] > flag_rms
     table["fitted"] = True
     return table

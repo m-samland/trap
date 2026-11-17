@@ -10,7 +10,7 @@ from astropy import units as u
 from astropy.io import fits
 
 from trap.detection import DetectionAnalysis, _warn_about_unmasked_rings, make_contrast_curve, make_radial_profile
-from trap.noise_mask import companion_noise_masks, noise_mask_settings, region_mask
+from trap.noise_mask import companion_noise_masks, region_mask
 from trap.parameters import TrapReductionConfig
 
 
@@ -63,13 +63,6 @@ def test_normalisation_without_field_rotation():
     without, _ = companion_noise_masks(image, [(0, 60)], half_arcs=None, **kwargs)
     zero, _ = companion_noise_masks(image, [(0, 60)], half_arcs=[0.0], **kwargs)
     assert np.array_equal(without, zero)
-
-
-def test_old_config_gets_defaults():
-    class OldConfig:
-        pass
-
-    assert noise_mask_settings(OldConfig()) == {"region_snr": 10.0, "threshold": 2.0, "radial_fwhm": 6.0, "along_fwhm": 8.0}
 
 
 def _old_pickled_config(monkeypatch, **fields):

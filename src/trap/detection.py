@@ -174,6 +174,12 @@ def make_radial_profile(
     if yx_center is None:
         yx_center = (data.shape[-2] // 2.0, data.shape[-1] // 2.0)
     xy_center = yx_center[::-1]
+    # One distance map for all annuli. A pixel belongs to an annulus when its centre lies
+    # within [r_in, r_out], the rule of photutils' CircularAnnulus with method="center",
+    # which rebuilding per annulus made most of the cost of a normalisation.
+    yy, xx = np.indices(data.shape[-2:])
+    distance = np.hypot(yy - yx_center[0], xx - yx_center[1])
+    center_pixel = (int(xy_center[1]), int(xy_center[0]))
 
     # Determine first non-zero separation, to prevent results below IWA
     inner_bound_index = int(yx_center[0] + radial_bounds[0])
@@ -210,11 +216,8 @@ def make_radial_profile(
             r_out = separation + bin_width / 2.0
             if r_in < 0.5:
                 r_in = 0.5
-            annulus_aperture = CircularAnnulus(xy_center, r_in=r_in, r_out=r_out)
-            annulus_mask = annulus_aperture.to_mask(method="center")
-            # Make sure only pixels are used for which data exists
-            mask = annulus_mask.to_image(data.shape) > 0
-            mask[int(xy_center[1]), int(xy_center[0])] = False
+            mask = (distance >= r_in) & (distance <= r_out)
+            mask[center_pixel] = False
 
             if known_companion_mask is None:
                 mask_wo_companion = mask
@@ -252,13 +255,8 @@ def make_radial_profile(
                     r_out = separation + 0.5
                     if r_in < 0.5:
                         r_in = 0.5
-                    annulus_aperture = CircularAnnulus(
-                        xy_center, r_in=r_in, r_out=r_out
-                    )
-                    annulus_mask = annulus_aperture.to_mask(method="center")
-                    # Make sure only pixels are used for which data exists
-                    mask = annulus_mask.to_image(data.shape) > 0
-                    mask[int(xy_center[1]), int(xy_center[0])] = False
+                    mask = (distance >= r_in) & (distance <= r_out)
+                    mask[center_pixel] = False
 
                 if operation == "mad_std":
                     azimuthal_quantity = mad_std(annulus_data_1d, ignore_nan=True)
@@ -2258,19 +2256,51 @@ def detection_file_paths(result_folder, reduction_type, component_fraction, spat
 _VALIDATION_PASSED = ("passed", "shape_skipped_bright", "shape_skipped_known", "orientation_skipped_short_arc")
 
 
-def _on_brighter_arc(table, snr, fwhm, source_snr, along_fwhm, field_rotation):
-    """True for rows within the arc footprint of a brighter row of at least ``source_snr``."""
+def find_bright_sources(snr_maps, threshold, fwhm, minimum_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION):
+    """Local maxima of |S/N| at or above ``threshold`` in the given maps.
+
+    Both signs count, because a template with the wrong colour fits a bright companion with a
+    negative amplitude, and its positive residual lobes then have no brighter positive peak.
+
+    Args:
+        snr_maps: One 2D S/N map or a sequence of them.
+        threshold: Minimum |S/N|.
+        fwhm: FWHM in pixels, which sets the size of the maximum filter.
+        minimum_separation: Peaks closer to the image centre, in pixels, are dropped.
+
+    Returns:
+        (N, 3) array of ``y_relative``, ``x_relative`` and |S/N|, with the same centre as the
+        candidate search.
+    """
+    found = []
+    size = 2 * int(round(fwhm)) + 1
+    for snr_map in [snr_maps] if np.ndim(snr_maps) == 2 else snr_maps:
+        magnitude = np.abs(np.nan_to_num(np.asarray(snr_map, dtype=float), nan=0.0))
+        peaks = (magnitude == ndimage.maximum_filter(magnitude, size=size)) & (magnitude >= threshold)
+        yy, xx = np.nonzero(peaks)
+        y = yy - magnitude.shape[0] // 2
+        x = xx - magnitude.shape[1] // 2
+        keep = np.hypot(y, x) >= minimum_separation
+        found.append(np.column_stack([y[keep], x[keep], magnitude[yy[keep], xx[keep]]]))
+    return np.vstack(found) if found else np.empty((0, 3))
+
+
+def _on_brighter_arc(table, snr, fwhm, sources, along_fwhm, field_rotation):
+    """True for rows within the arc footprint of a brighter source of ``sources`` (y, x, |S/N|)."""
     y = np.asarray(table["y_relative"], dtype=float)
     x = np.asarray(table["x_relative"], dtype=float)
     radius = np.hypot(y, x)
-    angle = np.arctan2(y, x)
-    half_arc = radius * (field_rotation or 0.0) / 2
-    # Rows are candidates j, columns the sources k whose arcs are tested.
-    brighter = (snr[None, :] > snr[:, None]) & (snr[None, :] >= source_snr)
-    radial = np.abs(radius[:, None] - radius[None, :]) < 2 * fwhm
-    along = radius[None, :] * np.abs(np.angle(np.exp(1j * (angle[:, None] - angle[None, :]))))
-    within_arc = along < np.minimum(half_arc[None, :] + along_fwhm * fwhm, 0.5 * np.pi * radius[None, :])
-    return np.any(brighter & radial & within_arc, axis=1)
+    source_y, source_x, source_snr = sources[:, 0], sources[:, 1], sources[:, 2]
+    source_radius = np.hypot(source_y, source_x)
+    half_arc = source_radius * (field_rotation or 0.0) / 2
+    # Rows are candidates, columns sources. A source within 2 FWHM is the candidate's own peak.
+    brighter = source_snr[None, :] > snr[:, None]
+    distinct = np.hypot(y[:, None] - source_y[None, :], x[:, None] - source_x[None, :]) > 2 * fwhm
+    radial = np.abs(radius[:, None] - source_radius[None, :]) < 2 * fwhm
+    angle_difference = np.angle(np.exp(1j * (np.arctan2(y, x)[:, None] - np.arctan2(source_y, source_x)[None, :])))
+    along = source_radius[None, :] * np.abs(angle_difference)
+    within_arc = along < np.minimum(half_arc[None, :] + along_fwhm * fwhm, 0.5 * np.pi * source_radius[None, :])
+    return np.any(brighter & distinct & radial & within_arc, axis=1)
 
 
 def validate_candidates(
@@ -2283,8 +2313,8 @@ def validate_candidates(
     known_positions=None,
     field_rotation=None,
     fwhm=None,
-    arc_source_snr=None,
-    arc_along_fwhm=8.0,
+    arc_along_fwhm=None,
+    bright_sources=None,
 ):
     """Classify each row of a companion table by the candidate validation tests.
 
@@ -2293,11 +2323,12 @@ def validate_candidates(
     and for a source at a known position. The orientation test alone is skipped where the
     rotation arc is too short to tell radial from tangential elongation. Skips need ``fwhm``.
 
-    A row that is not at a known position fails ``on_brighter_arc`` when a brighter row of at
-    least ``arc_source_snr`` lies within 2 FWHM of its separation and within that row's half
-    rotation arc plus ``arc_along_fwhm`` FWHM along the separation circle. A bright source
-    leaves residuals along its arc that the peak search finds again as candidates, and with
-    the shape tests skipped for bright rows nothing else rejects them.
+    A row that is not at a known position fails ``on_brighter_arc`` when one of
+    ``bright_sources`` with a higher |S/N| lies more than 2 FWHM away from it, within 2 FWHM
+    of its separation, and within the source's half rotation arc plus ``arc_along_fwhm`` FWHM
+    along the separation circle. Such a source leaves residuals along its arc that the peak
+    search finds again as candidates, and the shape tests, which would reject them, are
+    skipped for the bright ones.
 
     Args:
         companion_table: Table with ``snr``, ``good_fraction_free``, ``theta_deviation``,
@@ -2310,8 +2341,10 @@ def validate_candidates(
         known_positions: None, one (y, x) pair or an (N, 2) array of relative positions in pixels.
         field_rotation: Field rotation in radians, or None.
         fwhm: FWHM in pixels, or None.
-        arc_source_snr: S/N from which a row's arc rejects fainter rows; None disables the test.
-        arc_along_fwhm: Margin of the arc beyond half the field rotation, in FWHM.
+        arc_along_fwhm: Margin of the arc beyond half the field rotation, in FWHM; None
+            disables the test.
+        bright_sources: (N, 3) array of ``y_relative``, ``x_relative`` and |S/N| from
+            `find_bright_sources`; None disables the test.
 
     Returns:
         pandas.Series of strings aligned with the table: ``"passed"``, ``"shape_skipped_bright"``,
@@ -2336,8 +2369,9 @@ def validate_candidates(
         if field_rotation is not None:
             short_arc = np.asarray(table["separation"], dtype=float) * field_rotation / 2 < 2 * fwhm
     on_arc = np.zeros(n, dtype=bool)
-    if fwhm is not None and arc_source_snr is not None and n > 1:
-        on_arc = _on_brighter_arc(table, snr, fwhm, arc_source_snr, arc_along_fwhm, field_rotation) & ~known
+    if fwhm is not None and arc_along_fwhm is not None and bright_sources is not None and len(bright_sources):
+        sources = np.asarray(bright_sources, dtype=float)
+        on_arc = _on_brighter_arc(table, snr, fwhm, sources, arc_along_fwhm, field_rotation) & ~known
 
     ratio = np.asarray(table["yx_fwhm_ratio"], dtype=float)
     skip_shape = bright | known
@@ -2431,13 +2465,18 @@ class DetectionAnalysis(object):
         candidates, so the positions the user configured are kept apart for the steps that
         must tell the two apart (the shape validation and the saved noise mask).
         """
+        self._config_holds_candidates = False
         self.configured_known_positions = getattr(
             getattr(self, "reduction_parameters", None), "yx_known_companion_position", None
         )
 
     def _configured_known_positions(self):
-        """Configured known positions, stored from the current config on first use if not stored before."""
-        if not hasattr(self, "configured_known_positions"):
+        """Configured known positions: those of the current config, unless a detection step replaced them.
+
+        Once a detection step has written its candidates into the config, the positions stored
+        before are returned, so a config the user changes in between is never shadowed by them.
+        """
+        if not getattr(self, "_config_holds_candidates", False):
             self._store_configured_known_positions()
         return self.configured_known_positions
 
@@ -4063,6 +4102,13 @@ class DetectionAnalysis(object):
             return None
         return float(np.mean([getattr(f, "value", f) for f in np.atleast_1d(fwhm)]))
 
+    def _bright_sources(self, snr_maps, minimum_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION):
+        """Arc veto sources of `find_bright_sources` in the maps the candidates were searched in."""
+        fwhm = self._summary_fwhm()
+        if fwhm is None:
+            return None
+        return find_bright_sources(snr_maps, self.reduction_parameters.shape_validation_max_snr, fwhm, minimum_separation)
+
     def detection_summary(
         self,
         candidates,
@@ -4079,6 +4125,7 @@ class DetectionAnalysis(object):
         yx_known_companion_position=None,
         field_rotation=None,
         fwhm=None,
+        bright_sources=None,
     ):
         """
         Create companion tables with validation criteria and spectral information.
@@ -4286,7 +4333,6 @@ class DetectionAnalysis(object):
                 axis=0,
             )
 
-        mask_settings = noise_mask_settings(self.reduction_parameters)
         validation = validate_candidates(
             companion_table.assign(snr=snr),
             snr_threshold,
@@ -4297,8 +4343,8 @@ class DetectionAnalysis(object):
             yx_known_companion_position,
             field_rotation,
             fwhm,
-            arc_source_snr=mask_settings["region_snr"],
-            arc_along_fwhm=mask_settings["along_fwhm"],
+            arc_along_fwhm=self.reduction_parameters.noise_mask_along_fwhm,
+            bright_sources=bright_sources,
         )
         companion_table["validation"] = validation
         mask = validation.isin(_VALIDATION_PASSED)
@@ -5084,10 +5130,13 @@ class DetectionAnalysis(object):
                 good_fraction_threshold=good_fraction_threshold,
                 theta_deviation_threshold=theta_deviation_threshold,
                 yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
-                shape_validation_max_snr=getattr(self.reduction_parameters, "shape_validation_max_snr", 50.0),
+                shape_validation_max_snr=self.reduction_parameters.shape_validation_max_snr,
                 yx_known_companion_position=self._configured_known_positions(),
                 field_rotation=getattr(self, "field_rotation", None),
                 fwhm=self._summary_fwhm(),
+                bright_sources=self._bright_sources(
+                    detection_products_masked["normalized_detection_cube"][0], minimum_candidate_separation
+                ),
             )
 
             # companion_table, validated_companion_table = analysis.detection_summary(
@@ -5572,10 +5621,13 @@ class DetectionAnalysis(object):
                 good_fraction_threshold=good_fraction_threshold,
                 theta_deviation_threshold=theta_deviation_threshold,
                 yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
-                shape_validation_max_snr=getattr(self.reduction_parameters, "shape_validation_max_snr", 50.0),
+                shape_validation_max_snr=self.reduction_parameters.shape_validation_max_snr,
                 yx_known_companion_position=self._configured_known_positions(),
                 field_rotation=getattr(self, "field_rotation", None),
                 fwhm=self._summary_fwhm(),
+                bright_sources=self._bright_sources(
+                    (detection_products or self.detection_products)["normalized_detection_cube"]
+                ),
             )
 
             yx_known_companion_position = np.unique(
@@ -5585,6 +5637,7 @@ class DetectionAnalysis(object):
             self.reduction_parameters = self.reduction_parameters.merge(
                 yx_known_companion_position=yx_known_companion_position
             )
+            self._config_holds_candidates = True
 
             companion_table.to_csv(
                 os.path.join(
@@ -5701,6 +5754,7 @@ class DetectionAnalysis(object):
         self.reduction_parameters = self.reduction_parameters.merge(
             yx_known_companion_position=None
         )
+        self._config_holds_candidates = True
 
         self._set_field_rotation(pa)
         self.detection_cube[self.detection_cube == 0.] = np.nan

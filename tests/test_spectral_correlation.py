@@ -212,7 +212,7 @@ def test_saturated_amplitudes_keep_the_matrices_invertible():
     table = fit_stack(psi, rho, IFS_WAVELENGTHS)
 
     assert np.all(table["a_delta"] >= 0.01 - 1e-12)
-    assert np.all(table["free_a_rho"] + table["free_a_lambda"] <= 0.99 + 1e-12)
+    assert np.all(table["a_rho"] + table["a_lambda"] + table["a_const"] <= 0.99 + 1e-12)
     matrices = list(fitted_stack(table, IFS_WAVELENGTHS))
     matrices += [correlation_at(separation, psi, table, IFS_WAVELENGTHS) for separation in (4.5, 9.0, 18.0, 30.0)]
     for matrix in matrices:
@@ -319,7 +319,7 @@ def test_stack_without_constant_column_still_reads():
     dl = _relative_wavelength_difference(IFS_WAVELENGTHS)
     rho = np.array([3.0, 9.0])
     psi = np.array([greco_brandt(r, dl, 0.4, 0.2, 1.0, 0.05) for r in rho])
-    table = fit_stack(psi, rho, IFS_WAVELENGTHS).drop(columns=["a_const", "free_a_const"])
+    table = fit_stack(psi, rho, IFS_WAVELENGTHS).drop(columns=["a_const"])
 
     matrix = correlation_at(6.0, psi, table, IFS_WAVELENGTHS)
 

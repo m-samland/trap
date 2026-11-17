@@ -87,6 +87,7 @@ def _stubbed_template_analysis(tmp_path, monkeypatch, configured):
     analysis.wavelength_indices = np.array([0])
     analysis.detection_cube = np.ones((1, 3, 21, 21))
     analysis.file_paths = {}
+    analysis.detection_products = {"normalized_detection_cube": np.zeros((1, 21, 21))}
     candidates, fit = _fit_table([NOISE_BLOB, CONFIGURED])
     seen = []
 
@@ -102,7 +103,7 @@ def _stubbed_template_analysis(tmp_path, monkeypatch, configured):
         "template_matching_detection": lambda *args, **kwargs: (np.empty(0), {}),
         "find_candidates_all_wavelengths": lambda **kwargs: candidates.copy(),
         "complete_candidate_table": lambda **kwargs: (candidates.copy(), fit),
-        "contrast_table_and_normalization": lambda **kwargs: {},
+        "contrast_table_and_normalization": lambda **kwargs: {"normalized_detection_cube": np.zeros((1, 21, 21))},
         "extract_candidate_spectra": lambda **kwargs: _spectra(len(candidates)),
         "contrast_plot": lambda **kwargs: None,
         "plot_template_matched_contrasts": lambda: None,

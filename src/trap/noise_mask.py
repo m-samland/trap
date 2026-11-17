@@ -117,12 +117,12 @@ def source_snr(normalized_image, yx_relative, fwhm):
 
 
 def noise_mask_settings(config):
-    """Noise mask settings of a reduction config, with defaults for configs saved before the fields existed."""
+    """Noise mask settings of a reduction config."""
     return {
-        "region_snr": getattr(config, "noise_mask_region_snr", 10.0),
-        "threshold": getattr(config, "noise_mask_region_threshold", 2.0),
-        "radial_fwhm": getattr(config, "noise_mask_radial_fwhm", 6.0),
-        "along_fwhm": getattr(config, "noise_mask_along_fwhm", 8.0),
+        "region_snr": config.noise_mask_region_snr,
+        "threshold": config.noise_mask_region_threshold,
+        "radial_fwhm": config.noise_mask_radial_fwhm,
+        "along_fwhm": config.noise_mask_along_fwhm,
     }
 
 
