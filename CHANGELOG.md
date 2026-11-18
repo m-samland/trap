@@ -5,7 +5,13 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 
 ## [Unreleased]
 
+### Added
+- **The noise normalisation of the detection maps excludes the whole footprint of sources above 10 sigma instead of a fixed 11 px disk.** Uncertainties drop at the separation of bright companions, also for fainter sources on the same ring, so rerun the detection step. Setting `noise_mask_region_snr=None` restores the disks ([#87](https://github.com/m-samland/trap/pull/87)).
+- **Each detection writes the noise correlation between wavelength channels per separation to `spectral_correlation_*.fits`**, with a fitted model that gives an invertible matrix at any separation; template matching uses it with `use_spectral_correlation=True` ([#87](https://github.com/m-samland/trap/pull/87)).
+
 ### Fixed
+- **Template matching no longer depends on the order of the templates and masks the configured companions from the first template on.** Its saved contrast curves and noise mask exclude the configured and validated sources, so rerun template-matching detections to update them ([#87](https://github.com/m-samland/trap/pull/87)).
+- **Candidate validation keeps bright companions and companions at configured positions that the shape tests used to reject, and rejects residuals on the rotation arc of a bright companion.** A candidate counts as bright when its peak pixel reaches `shape_validation_max_snr` and its fit is at least half a FWHM wide, so edge fits and hot pixels still get the shape tests. The new `validation` column of the companion tables says why a candidate passed or failed, so rerun the detection step to update validated candidates ([#86](https://github.com/m-samland/trap/issues/86), [#87](https://github.com/m-samland/trap/pull/87)).
 - **Detections no longer rewrite the species model grids.** A grid already in the database is only read, so the database stops growing and processes sharing it no longer fail on the file lock. Existing databases keep their dead space until you run `h5repack` on them ([#78](https://github.com/m-samland/trap/issues/78)).
 - **A channel with an all-zero PSF is skipped** instead of stopping the reduction, as a channel with a NaN PSF already was, and per-channel astrometry no longer fails on the missing channel ([#79](https://github.com/m-samland/trap/issues/79)).
 - **`rereduce_single_position` gives NaN for a channel without a result** instead of crashing, so forced spectra keep their other channels ([#80](https://github.com/m-samland/trap/issues/80)).

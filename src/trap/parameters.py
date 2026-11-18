@@ -19,7 +19,7 @@ import multiprocessing
 import os
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import MISSING, asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -393,6 +393,26 @@ class TrapReductionConfig:
     # beyond the companions it contains: the detection map is normalized per separation
     # with a 3 px wide annulus, which has fewer pixels at a ring edge.
     search_region_bounds: Optional[Tuple[Tuple[float, float], ...]] = None
+    # S/N from which a source's footprint replaces its disk in the noise normalisation; None keeps the disks.
+    noise_mask_region_snr: Optional[float] = 10.0
+    # |S/N| above which a pixel belongs to the footprint of a bright source.
+    noise_mask_region_threshold: float = 2.0
+    # Half width of the footprint's radial clip, in units of the FWHM.
+    noise_mask_radial_fwhm: float = 6.0
+    # Margin of the footprint's azimuthal clip beyond half the field rotation, in units of the FWHM.
+    noise_mask_along_fwhm: float = 8.0
+    # Width in pixels of the separation rings of the channel correlation stack; about 2 lambda/D for IFS.
+    spectral_correlation_width: float = 9.0
+    # Fit the Greco and Brandt (2016) form to the stack; otherwise the empirical matrices are used.
+    spectral_correlation_fit: bool = True
+    # Rms residual of the fit above which a ring is flagged in the stack.
+    spectral_correlation_flag_rms: float = 0.2
+    # S/N from which the fitted blob shape (axis ratio, orientation) no longer vetoes a candidate; bright
+    # sources are fitted with their own residuals and come out round.
+    shape_validation_max_snr: float = 50.0
+    # Radial correlation length of the speckle term in lambda/D, held fixed; None fits it. The rings
+    # of a reduction rarely span the range of separation needed to fit it apart from sigma_lambda.
+    spectral_correlation_sigma_rho: Optional[float] = 1.0
 
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
@@ -404,6 +424,21 @@ class TrapReductionConfig:
     def merge(self, **kw) -> "TrapReductionConfig":
         """Return a copy with selected fields overridden."""
         return replace(self, **kw)
+
+    def __setstate__(self, state):
+        """Restore a pickled config, giving fields appended since it was saved their defaults.
+
+        The state is a list of values in slot order, so a config saved by an older trap
+        is shorter. Unset slots would make `merge` and pickling raise AttributeError.
+        """
+        for index, item in enumerate(fields(self)):
+            if index < len(state):
+                value = state[index]
+            elif item.default is not MISSING:
+                value = item.default
+            else:
+                value = item.default_factory()
+            object.__setattr__(self, item.name, value)
 
 
 # -------- runtime state (derived from config + data + instrument) -----------

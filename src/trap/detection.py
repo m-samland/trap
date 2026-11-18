@@ -33,12 +33,19 @@ from tqdm.auto import tqdm
 
 from trap import image_coordinates, pca_regression, regressor_selection
 from trap.image_coordinates import absolute_yx_to_relative_yx, relative_yx_to_rhophi
+from trap.noise_mask import companion_noise_masks, noise_mask_settings
 from trap.parameters import _to_reduction_config
 from trap.reduction_wrapper import run_complete_reduction
 from trap.species_setup import configure_species
+from trap.spectral_correlation import (
+    correlation_at,
+    empirical_stack,
+    fit_stack,
+    spectral_correlation_settings,
+    write_stack,
+)
 from trap.template import SpectralTemplate
 from trap.utils import (
-    compute_empirical_correlation_matrix,
     find_nearest,
     load_object,
     save_object,
@@ -68,6 +75,20 @@ DEFAULT_TEMPLATE_NAMES = ("L-type", "T-type", "flat")
 # binary's blob swarm stops on the HD_140408 test case; more starts eating real
 # search area.
 DEFAULT_MAX_EXCLUSION_RADIUS_FACTOR = 2.5
+
+# Fewest finite pixels a separation ring may keep outside the companion mask before
+# `make_radial_profile` falls back to the unmasked ring.
+MINIMUM_ANNULUS_PIXELS = 10
+
+# VLT, for instruments that do not give a telescope diameter.
+DEFAULT_TELESCOPE_DIAMETER = 8.2 * u.m
+
+
+def _as_positions(positions):
+    """``(y, x)`` positions as an (N, 2) float array; None gives an empty one."""
+    if positions is None:
+        return np.empty((0, 2))
+    return np.atleast_2d(np.asarray(positions, dtype=float)).reshape(-1, 2)
 
 
 def _resolve_exclusion_radius(candidate_exclusion_radius, search_radius):
@@ -113,7 +134,8 @@ def make_radial_profile(
     operation="mad_std",
     yx_center=None,
     known_companion_mask=None,
-    minimum_annulus_pixels=10,
+    minimum_annulus_pixels=MINIMUM_ANNULUS_PIXELS,
+    fallback_separations=None,
 ):
     """
     Compute the radial profile of a 2D data array.
@@ -131,6 +153,8 @@ def make_radial_profile(
       and therefore the normalized detection image — NaN across that annulus, which
       no downstream fit can recover from. Set to 0 to restore the un-guarded
       behaviour.
+    - fallback_separations (list, optional): If given, the separations at which the
+      un-masked annulus was used are appended to it.
 
     Returns:
     - profile (ndarray): The computed radial profile.
@@ -150,6 +174,12 @@ def make_radial_profile(
     if yx_center is None:
         yx_center = (data.shape[-2] // 2.0, data.shape[-1] // 2.0)
     xy_center = yx_center[::-1]
+    # One distance map for all annuli. A pixel belongs to an annulus when its centre lies
+    # within [r_in, r_out], the rule of photutils' CircularAnnulus with method="center",
+    # which rebuilding per annulus made most of the cost of a normalisation.
+    yy, xx = np.indices(data.shape[-2:])
+    distance = np.hypot(yy - yx_center[0], xx - yx_center[1])
+    center_pixel = (int(xy_center[1]), int(xy_center[0]))
 
     # Determine first non-zero separation, to prevent results below IWA
     inner_bound_index = int(yx_center[0] + radial_bounds[0])
@@ -186,11 +216,8 @@ def make_radial_profile(
             r_out = separation + bin_width / 2.0
             if r_in < 0.5:
                 r_in = 0.5
-            annulus_aperture = CircularAnnulus(xy_center, r_in=r_in, r_out=r_out)
-            annulus_mask = annulus_aperture.to_mask(method="center")
-            # Make sure only pixels are used for which data exists
-            mask = annulus_mask.to_image(data.shape) > 0
-            mask[int(xy_center[1]), int(xy_center[0])] = False
+            mask = (distance >= r_in) & (distance <= r_out)
+            mask[center_pixel] = False
 
             if known_companion_mask is None:
                 mask_wo_companion = mask
@@ -208,6 +235,8 @@ def make_radial_profile(
                         "falling back to the un-masked statistic.", separation,
                     )
                     mask_wo_companion = mask
+                    if fallback_separations is not None:
+                        fallback_separations.append(separation)
 
             # Data on which statistic is applied
             annulus_data_1d = data[mask_wo_companion]
@@ -226,13 +255,8 @@ def make_radial_profile(
                     r_out = separation + 0.5
                     if r_in < 0.5:
                         r_in = 0.5
-                    annulus_aperture = CircularAnnulus(
-                        xy_center, r_in=r_in, r_out=r_out
-                    )
-                    annulus_mask = annulus_aperture.to_mask(method="center")
-                    # Make sure only pixels are used for which data exists
-                    mask = annulus_mask.to_image(data.shape) > 0
-                    mask[int(xy_center[1]), int(xy_center[0])] = False
+                    mask = (distance >= r_in) & (distance <= r_out)
+                    mask[center_pixel] = False
 
                 if operation == "mad_std":
                     azimuthal_quantity = mad_std(annulus_data_1d, ignore_nan=True)
@@ -291,15 +315,30 @@ def make_contrast_curve(
     yx_known_companion_position=None,
     mask_above_sigma=None,
     minimum_companion_mask_radius=3.0,
-    minimum_annulus_pixels=10,
+    minimum_annulus_pixels=MINIMUM_ANNULUS_PIXELS,
+    companion_mask=None,
+    fallback_separations=None,
 ):
+    """Normalise a detection image by the robust noise of each separation ring.
+
+    Args:
+        companion_mask: Boolean map of the pixels excluded from the ring statistic. When
+            given it replaces the disks of radius ``companion_mask_radius`` around
+            ``yx_known_companion_position``.
+        fallback_separations: If given, the separations at which the noise behind the
+            returned normalisation fell back to the un-masked annulus are appended to it.
+
+    The other arguments are described in `make_radial_profile`.
+    """
     yx_dim = (detection_image.shape[-2], detection_image.shape[-1])
 
     if radial_bounds is None:
         separation_max = detection_image.shape[-1] // 2 * np.sqrt(2)
         radial_bounds = (1, int(separation_max))
 
-    if yx_known_companion_position is not None:
+    if companion_mask is not None:
+        detected_signal_mask = np.asarray(companion_mask, dtype=bool)
+    elif yx_known_companion_position is not None:
         yx_known_companion_position = np.array(yx_known_companion_position)
         if yx_known_companion_position.ndim == 1:
             yx_known_companion_position = yx_known_companion_position[None, :]
@@ -332,6 +371,7 @@ def make_contrast_curve(
         operation="mad_std",
         known_companion_mask=detected_signal_mask,
         minimum_annulus_pixels=minimum_annulus_pixels,
+        fallback_separations=fallback_separations if mask_above_sigma is None else None,
     )
     normalized_detection_image = detection_image[2] / snr_norm_profile
 
@@ -349,6 +389,7 @@ def make_contrast_curve(
             operation="mad_std",
             known_companion_mask=detected_signal_mask,
             minimum_annulus_pixels=minimum_annulus_pixels,
+            fallback_separations=fallback_separations,
         )
         normalized_detection_image = detection_image[2] / snr_norm_profile
     else:
@@ -425,6 +466,64 @@ def make_contrast_curve(
         uncertainty_image,
         median_uncertainty_image,
     )
+
+
+def _rings_with_data(contrast_table):
+    """First and last separation in pixels with a finite noise normalisation in any channel, or None."""
+    table = contrast_table.to_pandas() if isinstance(contrast_table, Table) else contrast_table
+    separations = table["sep (pix)"].to_numpy()[np.isfinite(table["snr_normalization"].to_numpy())]
+    if len(separations) == 0:
+        return None
+    return int(separations.min()), int(separations.max())
+
+
+def _warn_about_unmasked_rings(sources, separations, fallback_separations, fwhm, wavelength_index):
+    """Warn when the noise near a bright source fell back to the un-masked annulus.
+
+    `make_radial_profile` then measures the noise with the source inside the ring, which
+    overestimates it and lowers the S/N of the source.
+
+    Args:
+        sources: Per-source dicts of `trap.noise_mask.companion_noise_masks`.
+        separations: Separations of the sources in pixels.
+        fallback_separations: Separations at which `make_radial_profile` fell back.
+        fwhm: PSF FWHM in pixels; rings within one FWHM of a source count as its own.
+        wavelength_index: Channel, for the message.
+    """
+    fallback_separations = np.asarray(fallback_separations, dtype=float)
+    for source, separation in zip(sources, separations):
+        if not source["mask_snr"] > 100:
+            continue
+        affected = fallback_separations[np.abs(fallback_separations - separation) <= fwhm]
+        if affected.size:
+            logger.warning(
+                "Channel %d: the rings at %s px keep fewer than %d pixels outside the noise mask of a source "
+                "of S/N %.0f at %.0f px, so their noise falls back to the unmasked ring and the S/N of the "
+                "source is too low.",
+                wavelength_index, ", ".join(str(int(r)) for r in affected), MINIMUM_ANNULUS_PIXELS,
+                source["mask_snr"], separation,
+            )
+
+
+NOISE_MASK_SOURCE_COLUMNS = (
+    ("wavelength_index", int),
+    ("y_relative", float),
+    ("x_relative", float),
+    ("mask_snr", float),
+    ("mask_rule", "U6"),
+    ("mask_pixels", int),
+)
+
+
+def _noise_mask_sources_hdu(sources):
+    """Binary table ``SOURCES`` of the noise mask file, one row per source and channel."""
+    names = [name for name, _ in NOISE_MASK_SOURCE_COLUMNS]
+    table = Table(
+        rows=[[source[name] for name in names] for source in sources] or None,
+        names=names,
+        dtype=[dtype for _, dtype in NOISE_MASK_SOURCE_COLUMNS],
+    )
+    return fits.BinTableHDU(table, name="SOURCES")
 
 
 def ratio_contrast_tables(table1, table2):
@@ -2154,6 +2253,167 @@ def detection_file_paths(result_folder, reduction_type, component_fraction, spat
     return [os.path.join(result_folder, by_wavelength[index][0]) for index in sorted(by_wavelength)]
 
 
+_VALIDATION_PASSED = ("passed", "shape_skipped_bright", "shape_skipped_known", "orientation_skipped_short_arc")
+
+
+def find_bright_sources(snr_maps, threshold, fwhm, minimum_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION):
+    """Local maxima of |S/N| at or above ``threshold`` in the given maps.
+
+    Both signs count, because a template with the wrong colour fits a bright companion with a
+    negative amplitude, and its positive residual lobes then have no brighter positive peak.
+
+    Args:
+        snr_maps: One 2D S/N map or a sequence of them.
+        threshold: Minimum |S/N|.
+        fwhm: FWHM in pixels, which sets the size of the maximum filter.
+        minimum_separation: Peaks closer to the image centre, in pixels, are dropped.
+
+    Returns:
+        (N, 3) array of ``y_relative``, ``x_relative`` and |S/N|, with the same centre as the
+        candidate search.
+    """
+    found = []
+    size = 2 * int(round(fwhm)) + 1
+    for snr_map in [snr_maps] if np.ndim(snr_maps) == 2 else snr_maps:
+        magnitude = np.abs(np.nan_to_num(np.asarray(snr_map, dtype=float), nan=0.0))
+        peaks = (magnitude == ndimage.maximum_filter(magnitude, size=size)) & (magnitude >= threshold)
+        yy, xx = np.nonzero(peaks)
+        y = yy - magnitude.shape[0] // 2
+        x = xx - magnitude.shape[1] // 2
+        keep = np.hypot(y, x) >= minimum_separation
+        found.append(np.column_stack([y[keep], x[keep], magnitude[yy[keep], xx[keep]]]))
+    return np.vstack(found) if found else np.empty((0, 3))
+
+
+def _on_brighter_arc(table, snr, fwhm, sources, along_fwhm, field_rotation):
+    """True for rows within the arc footprint of a brighter source of ``sources`` (y, x, |S/N|)."""
+    y = np.asarray(table["y_relative"], dtype=float)
+    x = np.asarray(table["x_relative"], dtype=float)
+    radius = np.hypot(y, x)
+    source_y, source_x, source_snr = sources[:, 0], sources[:, 1], sources[:, 2]
+    source_radius = np.hypot(source_y, source_x)
+    half_arc = source_radius * (field_rotation or 0.0) / 2
+    # Rows are candidates, columns sources. A source within 2 FWHM is the candidate's own peak.
+    brighter = source_snr[None, :] > snr[:, None]
+    distinct = np.hypot(y[:, None] - source_y[None, :], x[:, None] - source_x[None, :]) > 2 * fwhm
+    radial = np.abs(radius[:, None] - source_radius[None, :]) < 2 * fwhm
+    angle_difference = np.angle(np.exp(1j * (np.arctan2(y, x)[:, None] - np.arctan2(source_y, source_x)[None, :])))
+    along = source_radius[None, :] * np.abs(angle_difference)
+    within_arc = along < np.minimum(half_arc[None, :] + along_fwhm * fwhm, 0.5 * np.pi * source_radius[None, :])
+    return np.any(brighter & distinct & radial & within_arc, axis=1)
+
+
+# A fitted width below this fraction of the FWHM is a hot pixel or edge artefact, not a bright point source.
+BRIGHT_MIN_WIDTH_FWHM = 0.5
+
+
+def validate_candidates(
+    companion_table,
+    snr_threshold,
+    good_fraction_threshold,
+    theta_deviation_threshold,
+    yx_fwhm_ratio_threshold,
+    shape_validation_max_snr=50.0,
+    known_positions=None,
+    field_rotation=None,
+    fwhm=None,
+    arc_along_fwhm=None,
+    bright_sources=None,
+):
+    """Classify each row of a companion table by the candidate validation tests.
+
+    The S/N and good-fraction tests apply to every row. The shape tests (axis ratio and
+    orientation) are skipped for a bright source, whose fit is dominated by its own residuals,
+    and for a source at a known position. A source counts as bright when its peak pixel reaches
+    ``shape_validation_max_snr`` and its fitted width is at least ``BRIGHT_MIN_WIDTH_FWHM`` FWHM:
+    at the edge of the search region the fitted amplitude can be extrapolated far above the map,
+    and a hot pixel is bright but narrower than any point source. The orientation test alone is
+    skipped where the rotation arc is too short to tell radial from tangential elongation. Skips
+    need ``fwhm``.
+
+    A row that is not at a known position fails ``on_brighter_arc`` when one of
+    ``bright_sources`` with a higher |S/N| lies more than 2 FWHM away from it, within 2 FWHM
+    of its separation, and within the source's half rotation arc plus ``arc_along_fwhm`` FWHM
+    along the separation circle. Such a source leaves residuals along its arc that the peak
+    search finds again as candidates, and the shape tests, which would reject them, are
+    skipped for the bright ones.
+
+    Args:
+        companion_table: Table with ``snr``, ``peak_pixel_snr``, ``x_fwhm_free``, ``y_fwhm_free``,
+            ``good_fraction_free``, ``theta_deviation``, ``yx_fwhm_ratio``, ``separation``,
+            ``y_relative`` and ``x_relative``.
+        snr_threshold: Minimum S/N.
+        good_fraction_threshold: Minimum good fraction of the free fit.
+        theta_deviation_threshold: Maximum orientation deviation in degrees.
+        yx_fwhm_ratio_threshold: Allowed (min, max) of the axis ratio.
+        shape_validation_max_snr: Peak-pixel S/N from which the shape tests are skipped.
+        known_positions: None, one (y, x) pair or an (N, 2) array of relative positions in pixels.
+        field_rotation: Field rotation in radians, or None.
+        fwhm: FWHM in pixels, or None.
+        arc_along_fwhm: Margin of the arc beyond half the field rotation, in FWHM; None
+            disables the test.
+        bright_sources: (N, 3) array of ``y_relative``, ``x_relative`` and |S/N| from
+            `find_bright_sources`; None disables the test.
+
+    Returns:
+        pandas.Series of strings aligned with the table: ``"passed"``, ``"shape_skipped_bright"``,
+        ``"shape_skipped_known"``, ``"orientation_skipped_short_arc"``, or the name of the first
+        failed test (``"snr"``, ``"on_brighter_arc"``, ``"good_fraction"``, ``"theta_deviation"``,
+        ``"yx_fwhm_ratio"``).
+    """
+    table = companion_table
+    n = len(table)
+    snr = np.asarray(table["snr"], dtype=float)
+    bright = np.zeros(n, dtype=bool)
+    known = np.zeros(n, dtype=bool)
+    short_arc = np.zeros(n, dtype=bool)
+    if fwhm is not None:
+        width = np.sqrt(np.asarray(table["x_fwhm_free"], dtype=float) * np.asarray(table["y_fwhm_free"], dtype=float))
+        bright = (np.asarray(table["peak_pixel_snr"], dtype=float) >= shape_validation_max_snr) & (
+            width >= BRIGHT_MIN_WIDTH_FWHM * fwhm
+        )
+        if known_positions is not None:
+            positions = np.atleast_2d(np.asarray(known_positions, dtype=float))
+            if positions.size:
+                dy = np.asarray(table["y_relative"], dtype=float)[:, None] - positions[None, :, 0]
+                dx = np.asarray(table["x_relative"], dtype=float)[:, None] - positions[None, :, 1]
+                known = np.any(np.hypot(dy, dx) < 2 * fwhm, axis=1)
+        if field_rotation is not None:
+            short_arc = np.asarray(table["separation"], dtype=float) * field_rotation / 2 < 2 * fwhm
+    on_arc = np.zeros(n, dtype=bool)
+    if fwhm is not None and arc_along_fwhm is not None and bright_sources is not None and len(bright_sources):
+        sources = np.asarray(bright_sources, dtype=float)
+        on_arc = _on_brighter_arc(table, snr, fwhm, sources, arc_along_fwhm, field_rotation) & ~known
+
+    ratio = np.asarray(table["yx_fwhm_ratio"], dtype=float)
+    skip_shape = bright | known
+    fails = [
+        ("snr", ~(snr > snr_threshold)),
+        ("on_brighter_arc", on_arc),
+        ("good_fraction", ~(np.asarray(table["good_fraction_free"], dtype=float) > good_fraction_threshold)),
+        (
+            "theta_deviation",
+            ~(np.abs(np.asarray(table["theta_deviation"], dtype=float)) < theta_deviation_threshold)
+            & ~skip_shape
+            & ~short_arc,
+        ),
+        (
+            "yx_fwhm_ratio",
+            ~((ratio > yx_fwhm_ratio_threshold[0]) & (ratio < yx_fwhm_ratio_threshold[1])) & ~skip_shape,
+        ),
+    ]
+    result = np.full(n, "passed", dtype=object)
+    result[short_arc] = "orientation_skipped_short_arc"
+    result[known] = "shape_skipped_known"
+    result[bright] = "shape_skipped_bright"
+    assigned = np.zeros(n, dtype=bool)
+    for name, failed in fails:
+        take = failed & ~assigned
+        result[take] = name
+        assigned |= take
+    return pd.Series(result, index=table.index)
+
+
 class DetectionAnalysis(object):
     """Class for analyzing TRAP detection results and candidate characterization.
     
@@ -2193,15 +2453,44 @@ class DetectionAnalysis(object):
         
         if reduction_parameters is not None:
             self.reduction_parameters = _to_reduction_config(reduction_parameters)
+            self._store_configured_known_positions()
         else:
             self.reduction_parameters = None
-            
+
         self.detected_signal_mask = None
         self.templates = OrderedDict()
         self.empirical_correlation = None
+        self.field_rotation = None
 
         if instrument is not None:
             self.instrument.compute_fwhm()
+
+    def _set_field_rotation(self, pa):
+        """Store the field rotation in radians spanned by the parallactic angles ``pa`` (degrees), if given."""
+        if pa is not None:
+            self.field_rotation = float(np.ptp(np.unwrap(np.radians(np.asarray(pa, dtype=float)))))
+
+    def _store_configured_known_positions(self):
+        """Keep the known positions of the current reduction config as ``configured_known_positions``.
+
+        The detection steps overwrite ``yx_known_companion_position`` of the config with their
+        candidates, so the positions the user configured are kept apart for the steps that
+        must tell the two apart (the shape validation and the saved noise mask).
+        """
+        self._config_holds_candidates = False
+        self.configured_known_positions = getattr(
+            getattr(self, "reduction_parameters", None), "yx_known_companion_position", None
+        )
+
+    def _configured_known_positions(self):
+        """Configured known positions: those of the current config, unless a detection step replaced them.
+
+        Once a detection step has written its candidates into the config, the positions stored
+        before are returned, so a config the user changes in between is never shadowed by them.
+        """
+        if not getattr(self, "_config_holds_candidates", False):
+            self._store_configured_known_positions()
+        return self.configured_known_positions
 
     def read_output(
         self,
@@ -2307,6 +2596,7 @@ class DetectionAnalysis(object):
         run_instrument_path = os.path.join(self.result_folder, f"instrument_{run}.obj")
         if read_parameters and os.path.exists(run_config_path):
             self.reduction_parameters = load_object(run_config_path)
+        self._store_configured_known_positions()
         if read_instrument and os.path.exists(run_instrument_path):
             self.instrument = load_object(run_instrument_path)
             self.instrument.compute_fwhm()
@@ -2331,6 +2621,12 @@ class DetectionAnalysis(object):
             os.path.splitext(self.basename)[0].replace("detection", "contrast_plot")
             + ".jpg",
         )
+        self.file_paths["noise_mask_path"] = os.path.join(
+            self.result_folder, self.basename.replace("detection", "noise_mask")
+        )
+        self.file_paths["spectral_correlation_path"] = os.path.join(
+            self.result_folder, self.basename.replace("detection", "spectral_correlation")
+        )
 
         # Derived from the per-wavelength files just read, so it has to be
         # rewritten every time: guarding on existence froze it at whatever the
@@ -2340,6 +2636,21 @@ class DetectionAnalysis(object):
             self.detection_cube,
             overwrite=True,
         )
+
+    def _channel_fwhm(self, wavelength_index):
+        """PSF FWHM in pixels of a channel, or None if the instrument does not provide it."""
+        fwhm = getattr(getattr(self, "instrument", None), "fwhm", None)
+        if fwhm is None:
+            return None
+        fwhm = fwhm[wavelength_index]
+        return float(getattr(fwhm, "value", fwhm))
+
+    def _collapsed_fwhm(self):
+        """Mean FWHM in pixels of the reduced channels, or None if the instrument does not provide it."""
+        fwhms = [self._channel_fwhm(int(index)) for index in self.wavelength_indices]
+        if not fwhms or fwhms[0] is None:
+            return None
+        return float(np.mean(fwhms))
 
     def contrast_table_and_normalization(
         self,
@@ -2352,7 +2663,41 @@ class DetectionAnalysis(object):
         overwrite=True,
         inplace=True,
     ):
-        """detection_cube contains the detection_image for all wavelengths"""
+        """Normalise the detection maps of all channels and derive their contrast curves.
+
+        The ring noise is measured twice per channel. The first pass excludes a disk around
+        every position in ``yx_known_companion_position``; the second excludes the masks of
+        `trap.noise_mask.companion_noise_masks`, computed on the first-pass normalised map,
+        which replace the disk of every source above ``noise_mask_region_snr`` by its
+        footprint. The second pass is skipped when no source gets a footprint, since its
+        mask would equal the disks.
+
+        Args:
+            detection_cube: Detection images (contrast, uncertainty, S/N) of all channels;
+                defaults to ``self.detection_cube``. Any other cube is taken as a map collapsed
+                over the reduced channels, such as a template-matched map, whose noise masks
+                use the mean FWHM of those channels.
+            cube_indices: Indices into ``detection_cube`` to process; defaults to all.
+            yx_known_companion_position: Source positions relative to the image centre;
+                defaults to the reduction config's.
+            mask_above_sigma: Passed to `make_contrast_curve`.
+            save: Write the products to ``file_paths``. The noise mask is written only if
+                ``file_paths`` has a ``noise_mask_path``, with the per-source table of
+                ``noise_mask_sources`` in its ``SOURCES`` extension. The channel correlation stack of
+                `make_spectral_correlation_matrices`, with the union of the noise masks over
+                channels excluded, is written only if it has a ``spectral_correlation_path``
+                and ``detection_cube`` is None.
+            file_paths: Output paths; defaults to ``self.file_paths``.
+            overwrite: Overwrite existing files.
+            inplace: Store the products in ``self.detection_products`` instead of returning them.
+
+        Returns:
+            The detection products if ``inplace`` is False, else None. Besides the
+            normalised maps and contrast tables they hold ``noise_mask_cube`` (boolean, one
+            plane per processed channel) and ``noise_mask_sources`` (one dict per source and
+            channel with ``wavelength_index``, ``y_relative``, ``x_relative``, ``mask_snr``,
+            ``mask_rule`` and ``mask_pixels``).
+        """
 
         if detection_cube is None:
             detection_cube_used = self.detection_cube
@@ -2372,6 +2717,18 @@ class DetectionAnalysis(object):
         contrast_tables = []
         uncertainty_cube = []
         median_uncertainty_cube = []
+        noise_mask_cube = []
+        noise_mask_sources = []
+        settings = noise_mask_settings(self.reduction_parameters)
+        collapsed = detection_cube is not None and detection_cube is not getattr(self, "detection_cube", None)
+        companion_mask_radius = self.reduction_parameters.companion_mask_radius
+        if yx_known_companion_position is None:
+            positions = np.empty((0, 2))
+        else:
+            positions = np.atleast_2d(np.asarray(yx_known_companion_position, dtype=float))
+        separations = np.hypot(positions[:, 0], positions[:, 1])
+        field_rotation = getattr(self, "field_rotation", None)
+        half_arcs = None if field_rotation is None else list(separations * field_rotation / 2.0)
 
         self.pixel_scale_mas = (
             (1 * u.pixel).to(u.mas, self.instrument.pixel_scale).value
@@ -2381,21 +2738,65 @@ class DetectionAnalysis(object):
             cube_indices = list(range(len(detection_cube_used)))
 
         for cube_index in cube_indices:
-            # for detection_image in detection_cube_used:
+            detection_image = detection_cube_used[cube_index]
+            wavelength_index = int(self.wavelength_indices[cube_index])
+            contrast_curve_arguments = dict(
+                radial_bounds=None,
+                bin_width=self.reduction_parameters.normalization_width,
+                companion_mask_radius=companion_mask_radius,
+                pixel_scale=self.pixel_scale_mas,
+                mask_above_sigma=mask_above_sigma,
+                yx_known_companion_position=yx_known_companion_position,
+            )
             (
                 normalized_detection_image,
                 contrast_table,
                 uncertainty_image,
                 median_uncertainty_image,
-            ) = make_contrast_curve(
-                detection_cube_used[cube_index],
-                radial_bounds=None,
-                bin_width=self.reduction_parameters.normalization_width,
-                companion_mask_radius=self.reduction_parameters.companion_mask_radius,
-                pixel_scale=self.pixel_scale_mas,
-                mask_above_sigma=mask_above_sigma,
-                yx_known_companion_position=yx_known_companion_position,
+            ) = make_contrast_curve(detection_image, **contrast_curve_arguments)
+
+            fwhm = self._collapsed_fwhm() if collapsed else self._channel_fwhm(wavelength_index)
+            region_snr = settings["region_snr"] if fwhm is not None else None
+            if fwhm is None and settings["region_snr"] is not None and len(positions) > 0:
+                logger.info(
+                    "No instrument FWHM for channel %d; excluding known sources with disks only.", wavelength_index
+                )
+            noise_mask, sources = companion_noise_masks(
+                normalized_detection_image,
+                positions,
+                # A NaN FWHM leaves mask_snr undefined, which together with region_snr=None gives disks.
+                fwhm=np.nan if fwhm is None else fwhm,
+                half_arcs=half_arcs,
+                region_snr=region_snr,
+                threshold=settings["threshold"],
+                radial_fwhm=settings["radial_fwhm"],
+                along_fwhm=settings["along_fwhm"],
+                disk_radius=companion_mask_radius,
             )
+            if any(source["mask_rule"] == "region" for source in sources):
+                fallback_separations = []
+                (
+                    normalized_detection_image,
+                    contrast_table,
+                    uncertainty_image,
+                    median_uncertainty_image,
+                ) = make_contrast_curve(
+                    detection_image,
+                    companion_mask=noise_mask,
+                    fallback_separations=fallback_separations,
+                    **contrast_curve_arguments,
+                )
+                _warn_about_unmasked_rings(sources, separations, fallback_separations, fwhm, wavelength_index)
+            for position, source in zip(positions, sources):
+                noise_mask_sources.append(
+                    {
+                        "wavelength_index": wavelength_index,
+                        "y_relative": float(position[0]),
+                        "x_relative": float(position[1]),
+                        **source,
+                    }
+                )
+            noise_mask_cube.append(noise_mask)
             normalized_detection_cube.append(normalized_detection_image)
             contrast_tables.append(contrast_table)
             uncertainty_cube.append(uncertainty_image)
@@ -2409,6 +2810,8 @@ class DetectionAnalysis(object):
             median_uncertainty_cube
         )
         detection_products["contrast_tables"] = contrast_tables
+        detection_products["noise_mask_cube"] = np.array(noise_mask_cube, dtype=bool)
+        detection_products["noise_mask_sources"] = noise_mask_sources
 
         # Add real wavelength to contrast tables and concatenate into one table
         contrast_table = detection_products["contrast_tables"].copy()
@@ -2448,6 +2851,38 @@ class DetectionAnalysis(object):
 
 
             save_object(detection_products["contrast_tables"], os.path.splitext(file_paths["contrast_table_path"])[0] + ".obj")
+
+            if "noise_mask_path" in file_paths:
+                header = fits.Header()
+                any_region = any(source["mask_rule"] == "region" for source in noise_mask_sources)
+                header["NMASKRUL"] = ("region" if any_region else "disk", "region if any source of any channel used it")
+                header["NMASKTHR"] = (settings["threshold"], "|S/N| threshold of the source footprints")
+                fits.HDUList(
+                    [
+                        fits.PrimaryHDU(detection_products["noise_mask_cube"].astype(np.uint8), header=header),
+                        _noise_mask_sources_hdu(noise_mask_sources),
+                    ]
+                ).writeto(file_paths["noise_mask_path"], overwrite=overwrite)
+
+            if detection_cube is None and "spectral_correlation_path" in file_paths:
+                stack = self._spectral_correlation_stack(
+                    detection_cube_used[cube_indices, 0],
+                    self.wavelength_indices[cube_indices],
+                    detection_products["noise_mask_cube"].any(axis=0),
+                    radial_bounds=_rings_with_data(contrast_table),
+                )
+                correlation_settings = spectral_correlation_settings(self.reduction_parameters)
+                write_stack(
+                    file_paths["spectral_correlation_path"],
+                    stack["matrices"],
+                    stack["fit"],
+                    stack["wavelengths"],
+                    pixel_scale_mas=self.pixel_scale_mas,
+                    width=correlation_settings["width"],
+                    flag_rms=correlation_settings["flag_rms"],
+                    sigma_rho_fixed=correlation_settings["sigma_rho"] is not None,
+                    overwrite=overwrite,
+                )
 
         if inplace:
             self.detection_products = detection_products
@@ -2566,85 +3001,160 @@ class DetectionAnalysis(object):
         else:
             self.detected_signal_mask = np.zeros([yx_dim[0], yx_dim[1]]).astype("bool")
 
-    def make_spectral_correlation_matrices(
-        self, radial_bounds=None, bin_width=3, yx_center=None, detected_signal_mask=None
-    ):
-        yx_dim = [self.detection_cube.shape[-2], self.detection_cube.shape[-1]]
-        separations_used = []
-        empirical_correlation_matrices = []
-        empirical_correlation = {}
+    def _known_and_validated_positions(self, validated_positions):
+        """Configured known positions and ``validated_positions`` without duplicates, as an (N, 2) array.
 
-        self.detection_cube[self.detection_cube == 0.0] = np.nan
+        Without any position the array is empty, which masks nothing; None would make
+        `contrast_table_and_normalization` fall back to the config's positions.
+        """
+        parts = [_as_positions(positions) for positions in (self._configured_known_positions(), validated_positions)]
+        return np.unique(np.vstack(parts), axis=0)
 
-        if detected_signal_mask is None:
-            self.mask_companions_in_detection()
-            detected_signal_mask = self.detected_signal_mask
+    def _base_positions(self, base_positions):
+        """``base_positions`` as an (N, 2) array, or the config's known positions if it is None."""
+        if base_positions is None:
+            base_positions = self.reduction_parameters.yx_known_companion_position
+        return _as_positions(base_positions)
 
-        if radial_bounds is None:
-            separation_max = self.detection_cube.shape[-1] // 2 * np.sqrt(2)
-            radial_bounds = [1, int(separation_max)]
+    def _template_matching_correlation(self, minimum_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION):
+        """Compute ``empirical_correlation`` for template matching once, before the templates run.
 
-        if yx_center is None:
-            yx_center = (
-                self.detection_cube.shape[-2] // 2.0,
-                self.detection_cube.shape[-1] // 2.0,
+        The mask is the union over channels of the noise masks of the configured known
+        positions and of the sources that reach ``noise_mask_region_snr`` in any channel of the
+        maps normalised with the known positions excluded. It is therefore the same for every
+        template, whatever an earlier template detected. Sources fainter than
+        ``noise_mask_region_snr``, and all sources when it is None, are left in, because their
+        disks would also remove the noise peaks of a ring.
+
+        Args:
+            minimum_separation: Peaks closer than this to the star, in pixels, are not
+                treated as sources.
+        """
+        known_positions = self._configured_known_positions()
+        products = self.contrast_table_and_normalization(
+            yx_known_companion_position=known_positions, save=False, inplace=False
+        )
+        region_snr = noise_mask_settings(self.reduction_parameters)["region_snr"]
+        if region_snr is not None:
+            # The peak search stores its result in `candidates`, which later steps read.
+            had_candidates = hasattr(self, "candidates")
+            previous_candidates = getattr(self, "candidates", None)
+            peaks = self.find_approximate_candidate_positions(
+                bn.nanmax(products["normalized_detection_cube"], axis=0), candidate_threshold=region_snr
             )
-        xy_center = yx_center[::-1]
-
-        # Determine first non-zero separation, to prevent results below IWA
-        # inner_bound_index = int(yx_center[0] + radial_bounds[0])
-        # try:
-        #     non_zero_separation = (
-        #         radial_bounds[0]
-        #         + np.nanmax(
-        #             np.argwhere(
-        #                 np.isnan(
-        #                     self.detection_cube[0, 0][
-        #                         inner_bound_index : inner_bound_index + 15,
-        #                         int(yx_center[1]),
-        #                     ]
-        #                 )
-        #             )
-        #         )
-        #         + 1
-        #     )
-        # except ValueError:
-        #     non_zero_separation = 0
-        # if non_zero_separation > radial_bounds[0] + 13:
-        #     non_zero_separation = 0
-
-        separations = np.arange(radial_bounds[0], radial_bounds[1])
-
-        for _, separation in enumerate(separations):
-            # annulus_data = annulus_mask[0].multiply(data)
-            # mask = annulus_mask[0].to_image(data.shape) > 0
-            r_in = separation - bin_width / 2.0
-            r_out = separation + bin_width / 2.0
-            if r_in < 0.5:
-                r_in = 0.5
-            annulus_aperture = CircularAnnulus(xy_center, r_in=r_in, r_out=r_out)
-            annulus_mask = annulus_aperture.to_mask(method="center")
-            # Make sure only pixels are used for which data exists
-            mask = annulus_mask.to_image(yx_dim) > 0
-            mask[int(xy_center[1]), int(xy_center[0])] = False
-
-            if detected_signal_mask is None:
-                mask_computation_annulus = mask
+            if had_candidates:
+                self.candidates = previous_candidates
             else:
-                mask_computation_annulus = np.logical_and(mask, ~detected_signal_mask)
+                del self.candidates
+            peaks = peaks[peaks["separation"] >= minimum_separation]
+            if len(peaks):
+                logger.info(
+                    "Masking %d source(s) above S/N %g, besides the known positions, in the channel correlation.",
+                    len(peaks), region_snr,
+                )
+                positions = peaks[["y_relative", "x_relative"]].to_numpy(dtype=float)
+                if known_positions is not None:
+                    positions = np.vstack([np.atleast_2d(np.asarray(known_positions, dtype=float)), positions])
+                products = self.contrast_table_and_normalization(
+                    yx_known_companion_position=positions, save=False, inplace=False
+                )
+        self.make_spectral_correlation_matrices(
+            radial_bounds=_rings_with_data(products["contrast_table"]),
+            detected_signal_mask=products["noise_mask_cube"].any(axis=0),
+        )
 
-            annulus_data_1d = self.detection_cube[:, 0, mask_computation_annulus]
-           
-            # Check that residuals are present and not everything is masked
-            if np.all(np.isfinite(annulus_data_1d)) and (0 not in annulus_data_1d.shape):
-                psi_ij = compute_empirical_correlation_matrix(annulus_data_1d)
-                empirical_correlation_matrices.append(psi_ij)
-                separations_used.append(separation)
+    def make_spectral_correlation_matrices(
+        self, radial_bounds=None, bin_width=None, yx_center=None, detected_signal_mask=None
+    ):
+        """Compute the channel correlation of the contrast maps per separation and fit it.
 
-        empirical_correlation["separation"] = np.array(separations_used)
-        empirical_correlation["matrices"] = np.array(empirical_correlation_matrices)
+        The result goes to ``self.empirical_correlation``, a dict with ``separation``
+        (pixels), ``matrices`` (the empirical matrices), ``fit`` (the table of
+        `trap.spectral_correlation.fit_stack`) and ``wavelengths`` (micron); template
+        matching reads it through `trap.spectral_correlation.correlation_at`.
 
-        self.empirical_correlation = empirical_correlation
+        Args:
+            radial_bounds: First and last ring centre in pixels; by default the rings with
+                a finite noise normalisation in ``self.detection_products``, else 1 px to
+                the array corner.
+            bin_width: Ring width in pixels; default ``spectral_correlation_width``.
+            yx_center: Centre pixel; default the array centre.
+            detected_signal_mask: Pixels excluded from every ring; by default the union over
+                channels of ``self.detection_products["noise_mask_cube"]``, else the disks
+                of `mask_companions_in_detection`.
+        """
+        detection_products = getattr(self, "detection_products", None) or {}
+        if detected_signal_mask is None:
+            if "noise_mask_cube" in detection_products:
+                detected_signal_mask = np.asarray(detection_products["noise_mask_cube"]).any(axis=0)
+            else:
+                self.mask_companions_in_detection()
+                detected_signal_mask = self.detected_signal_mask
+
+        if radial_bounds is None and "contrast_table" in detection_products:
+            radial_bounds = _rings_with_data(detection_products["contrast_table"])
+
+        self.empirical_correlation = self._spectral_correlation_stack(
+            self.detection_cube[:, 0],
+            self.wavelength_indices,
+            detected_signal_mask,
+            radial_bounds=radial_bounds,
+            bin_width=bin_width,
+            yx_center=yx_center,
+        )
+
+    def _lambda_over_d_pixels(self, wavelengths):
+        """Size of lambda_c / D in pixels, lambda_c the mean of ``wavelengths`` (micron)."""
+        instrument = getattr(self, "instrument", None)
+        diameter = getattr(instrument, "telescope_diameter", None)
+        if diameter is None:
+            diameter = DEFAULT_TELESCOPE_DIAMETER
+        angle = (np.mean(wavelengths) * u.micron / diameter).to(u.dimensionless_unscaled) * u.rad
+        pixel_scale = getattr(instrument, "pixel_scale", None)
+        if pixel_scale is not None:
+            return float(angle.to_value(u.pix, equivalencies=pixel_scale))
+        return float(angle.to_value(u.mas) / self.pixel_scale_mas)
+
+    def _spectral_correlation_stack(
+        self, contrast_cube, wavelength_indices, mask, radial_bounds=None, bin_width=None, yx_center=None
+    ):
+        settings = spectral_correlation_settings(self.reduction_parameters)
+        if bin_width is None:
+            bin_width = settings["width"]
+        if radial_bounds is None:
+            radial_bounds = (1, int(contrast_cube.shape[-1] // 2 * np.sqrt(2)))
+        step = getattr(self.reduction_parameters, "normalization_width", 3)
+        separations = np.arange(radial_bounds[0], radial_bounds[1] + 1, step)
+
+        wavelengths = self.instrument.wavelengths[np.asarray(wavelength_indices)].to_value(u.micron)
+        psi, separations_used, n_pixels = empirical_stack(
+            contrast_cube, mask, separations, bin_width, yx_center=yx_center
+        )
+        table = fit_stack(
+            psi,
+            separations_used / self._lambda_over_d_pixels(wavelengths),
+            wavelengths,
+            separations=separations_used,
+            n_pixels=n_pixels,
+            flag_rms=settings["flag_rms"],
+            fit=settings["fit"],
+            sigma_rho=settings["sigma_rho"],
+        )
+        if table["fitted"].any():
+            logger.info(
+                "Spectral correlation fit: sigma_rho %.3f lambda/D, sigma_lambda %.4f, %d of %d rings above rms %.2f.",
+                table["sigma_rho"].iloc[0],
+                table["sigma_lambda"].iloc[0],
+                int(table["flagged"].sum()),
+                len(table),
+                settings["flag_rms"],
+            )
+        return {
+            "separation": separations_used,
+            "matrices": psi,
+            "fit": table,
+            "wavelengths": wavelengths,
+        }
 
     def find_approximate_candidate_positions(
         self,
@@ -2843,10 +3353,11 @@ class DetectionAnalysis(object):
         mask_deviating=False,
         deviation_threshold=0.1,
         plot=False,
+        base_positions=None,
     ):
         """Fits 2D Gaussians to contrast, snr, and normalized snr images for candidate position.
-        The normalization excludes positions marked in `self.reduction_parameters.yx_known_companion_position`,
-        which is set by `find_candidates` for candidates above the `detection_threshold` parameter.
+        The normalization excludes ``base_positions`` and the candidate itself; ``base_positions``
+        defaults to `self.reduction_parameters.yx_known_companion_position`.
 
         The resulting tables include both fit results from unconstrained fits and fits with fixed `x_stddev`, `y_stddev`,
         and `theta` of the 2D Gaussian, where the `theta` parameter is given by the position angle.
@@ -2880,11 +3391,7 @@ class DetectionAnalysis(object):
                 candidate_idx
             ]
 
-            base_positions = self.reduction_parameters.yx_known_companion_position
-            if base_positions is not None:
-                combined_positions = np.vstack([base_positions, yx_position_relative])
-            else:
-                combined_positions = np.expand_dims(yx_position_relative, axis=0)
+            combined_positions = np.vstack([self._base_positions(base_positions), yx_position_relative])
 
             detection_products = self.contrast_table_and_normalization(
                 detection_cube=detection_cube,
@@ -3034,6 +3541,7 @@ class DetectionAnalysis(object):
         minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
         candidate_exclusion_radius=None,
         max_candidates=DEFAULT_MAX_CANDIDATES,
+        base_positions=None,
     ):
         """
         Consolidate candidate detections with 2D Gaussian fitting and duplicate removal.
@@ -3070,6 +3578,10 @@ class DetectionAnalysis(object):
         mask_deviating : bool, optional
             Whether to mask candidates with deviating PSF parameters during 
             2D Gaussian fitting. Default is False.
+        base_positions : array_like, optional
+            Source positions relative to the image centre excluded from the
+            renormalisation besides the candidates. Defaults to
+            ``self.reduction_parameters.yx_known_companion_position``.
 
         Returns
         -------
@@ -3157,6 +3669,7 @@ class DetectionAnalysis(object):
             detection_cube=detection_cube,
             detection_products=detection_products,
             plot=False,
+            base_positions=base_positions,
         )
         
         # Group per-wavelength detections of the same source (within
@@ -3244,9 +3757,12 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         return_all_results=False,
         verbose=False,
+        base_positions=None,
     ):
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
+        # The renormalisation below clips the noise masks to the rotation arc.
+        self._set_field_rotation(pa)
 
         re_reduction_parameters = self.reduction_parameters.merge(
             guess_position=yx_candidate_position,
@@ -3310,19 +3826,11 @@ class DetectionAnalysis(object):
 
         # REDO NORMALIZATION WITHOUT CANDIDATES
         if hasattr(self, 'candidates'):
-            base_positions = self.reduction_parameters.yx_known_companion_position
-            if base_positions is not None:
-                combined_positions = np.vstack([
-                    base_positions,
-                    self.candidates[["y_relative", "x_relative"]].values,
-                ])
-            else:
-                combined_positions = self.candidates[["y_relative", "x_relative"]].values
-            self.contrast_table_and_normalization(
-                save=False, inplace=True, yx_known_companion_position=combined_positions
-            )
-        else:
-            self.contrast_table_and_normalization(save=False, inplace=True)
+            base_positions = np.vstack([
+                self._base_positions(base_positions),
+                self.candidates[["y_relative", "x_relative"]].values,
+            ])
+        self.contrast_table_and_normalization(save=False, inplace=True, yx_known_companion_position=base_positions)
 
         normalization_factors = []
         for wavelength_index in wavelength_indices:
@@ -3419,6 +3927,7 @@ class DetectionAnalysis(object):
         xy_image_centers=None,
         amplitude_modulation_full=None,
         return_spectra=False,
+        base_positions=None,
     ):
         """
         Extract high-fidelity spectra for candidate companions using full reduction.
@@ -3443,7 +3952,8 @@ class DetectionAnalysis(object):
             normalized PSF template for each frame and wavelength.
         pa : array_like
             Position angles in degrees for each frame, with shape (n_frames,).
-            Used for field rotation tracking during reduction.
+            Used for field rotation tracking during reduction, and to set
+            ``field_rotation``, which clips the noise masks of the renormalisation.
         yx_candidate_positions : array_like, optional
             Candidate positions in image coordinates with shape (n_candidates, 2).
             Each row contains [y_relative, x_relative] coordinates from image center.
@@ -3468,6 +3978,10 @@ class DetectionAnalysis(object):
             Amplitude modulation factors accounting for instrumental effects.
         return_spectra : bool, optional
             Whether to return the extracted spectra. Default is False.
+        base_positions : array_like, optional
+            Source positions relative to the image centre excluded from the
+            renormalisation besides the candidates. Defaults to
+            ``self.reduction_parameters.yx_known_companion_position``.
 
         Returns
         -------
@@ -3553,6 +4067,7 @@ class DetectionAnalysis(object):
         - candidate_spectra (DataFrame): Extracted candidate spectra.
 
         """
+        self._set_field_rotation(pa)
         candidate_spectra = []
 
         if yx_candidate_positions is None:
@@ -3581,6 +4096,7 @@ class DetectionAnalysis(object):
                 xy_image_centers=xy_image_centers,
                 amplitude_modulation_full=amplitude_modulation_full,
                 verbose=False,
+                base_positions=base_positions,
             )
             candidate_spectra.append(candidate_spectrum)
 
@@ -3589,6 +4105,21 @@ class DetectionAnalysis(object):
 
         if return_spectra:
             return candidate_spectra
+
+    def _summary_fwhm(self):
+        """Mean channel FWHM in pixels, or None when the instrument has none."""
+        fwhm = getattr(getattr(self, "instrument", None), "fwhm", None)
+        if fwhm is None:
+            logger.info("No instrument FWHM; the shape validation skips are not applied.")
+            return None
+        return float(np.mean([getattr(f, "value", f) for f in np.atleast_1d(fwhm)]))
+
+    def _bright_sources(self, snr_maps, minimum_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION):
+        """Arc veto sources of `find_bright_sources` in the maps the candidates were searched in."""
+        fwhm = self._summary_fwhm()
+        if fwhm is None:
+            return None
+        return find_bright_sources(snr_maps, self.reduction_parameters.shape_validation_max_snr, fwhm, minimum_separation)
 
     def detection_summary(
         self,
@@ -3602,6 +4133,11 @@ class DetectionAnalysis(object):
         good_fraction_threshold=0.05,
         theta_deviation_threshold=25.0,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
+        shape_validation_max_snr=50.0,
+        yx_known_companion_position=None,
+        field_rotation=None,
+        fwhm=None,
+        bright_sources=None,
     ):
         """
         Create companion tables with validation criteria and spectral information.
@@ -3645,11 +4181,25 @@ class DetectionAnalysis(object):
         yx_fwhm_ratio_threshold : list of float, optional
             Allowed range [min, max] for the ratio of y-axis to x-axis FWHM
             in unconstrained 2D Gaussian fits. Default is [1.1, 4.5].
+        shape_validation_max_snr : float, optional
+            Candidates at or above this S/N skip the two shape tests. Default is 50.
+        yx_known_companion_position : array_like, optional
+            Known source positions (relative y, x in pixels); candidates within
+            two FWHM of one skip the two shape tests.
+        field_rotation : float, optional
+            Field rotation in radians; the orientation test is skipped where the
+            half arc ``separation * field_rotation / 2`` is below two FWHM.
+        fwhm : float, optional
+            FWHM in pixels used by the two rules above; without it they are not applied.
 
         Returns
         -------
         companion_table : pandas.DataFrame
             Complete table of all candidates with columns including:
+            - 'validation': 'passed', a skip reason or the name of the first failed test.
+              With ``use_spectra`` the table has one row per candidate and wavelength and
+              the validation is made per row, while a candidate enters the validated table
+              with all its rows when any of its rows passes.
             - Position: 'x', 'y', 'x_relative', 'y_relative', 'separation', 'position_angle'
             - Uncertainties: 'x_relative_sigma', 'y_relative_sigma', 'separation_sigma', 'position_angle_sigma'
             - PSF parameters: 'x_fwhm', 'y_fwhm', 'theta_free', 'yx_fwhm_ratio'
@@ -3795,13 +4345,21 @@ class DetectionAnalysis(object):
                 axis=0,
             )
 
-        mask = (
-            (snr > snr_threshold)
-            & (companion_table["good_fraction_free"] > good_fraction_threshold)
-            & (np.abs(companion_table["theta_deviation"]) < theta_deviation_threshold)
-            & (companion_table["yx_fwhm_ratio"] > yx_fwhm_ratio_threshold[0])
-            & (companion_table["yx_fwhm_ratio"] < yx_fwhm_ratio_threshold[1])
+        validation = validate_candidates(
+            companion_table.assign(snr=snr),
+            snr_threshold,
+            good_fraction_threshold,
+            theta_deviation_threshold,
+            yx_fwhm_ratio_threshold,
+            shape_validation_max_snr,
+            yx_known_companion_position,
+            field_rotation,
+            fwhm,
+            arc_along_fwhm=self.reduction_parameters.noise_mask_along_fwhm,
+            bright_sources=bright_sources,
         )
+        companion_table["validation"] = validation
+        mask = validation.isin(_VALIDATION_PASSED)
 
         if use_spectra:
             unique_candidates = np.unique(companion_table[mask]["candidate_id"].values)
@@ -3992,6 +4550,7 @@ class DetectionAnalysis(object):
         detection_threshold=5.0,
         file_paths=None,
         save=True,
+        base_positions=None,
     ):
         """
         Perform pixel-by-pixel spectral template matching for companion detection.
@@ -4023,6 +4582,10 @@ class DetectionAnalysis(object):
             are generated.
         save : bool, optional
             Whether to save detection products to disk. Default is True.
+        base_positions : array_like, optional
+            Source positions relative to the image centre excluded from the
+            normalisation of the template-matched map. Defaults to
+            ``self.reduction_parameters.yx_known_companion_position``.
 
         Returns
         -------
@@ -4117,7 +4680,8 @@ class DetectionAnalysis(object):
         # position_indices = [[32, 77]]
         # number_of_pca_regressors = int(np.round(38 * 0.1))
         # wavelength_indices = self.wavelength_indices
-        self.make_spectral_correlation_matrices()
+        if template.use_spectral_correlation and getattr(self, "empirical_correlation", None) is None:
+            self.make_spectral_correlation_matrices()
 
         for _, yx_pixel in tqdm(enumerate(position_indices)):
             # wavelength indices are not applicable to contrast cube when not all wavelengths are reduced
@@ -4138,14 +4702,12 @@ class DetectionAnalysis(object):
             if template.use_spectral_correlation:
                 separation = np.sqrt(relative_coords[0] ** 2 + relative_coords[1] ** 2)
 
-                correlation_array_index = find_nearest(
-                    array=self.empirical_correlation["separation"], value=separation
+                psi_ij = correlation_at(
+                    separation,
+                    self.empirical_correlation["matrices"],
+                    self.empirical_correlation["fit"],
+                    self.empirical_correlation["wavelengths"],
                 )
-
-                # channel_mask = np.zeros(len(self.instrument.wavelengths)).astype('bool')
-                # channel_mask[wavelength_indices] = True
-                psi_ij = self.empirical_correlation["matrices"][correlation_array_index]
-                # psi_ij = remove_channel_from_correlation_matrix(channel_mask, psi_ij)
                 cov_ij = uncertainties[:, None] * psi_ij * uncertainties[None, :]
                 # cov_ij_norm = (
                 #     uncertainties_norm[:, None] * psi_ij * uncertainties_norm[None, :]
@@ -4261,7 +4823,7 @@ class DetectionAnalysis(object):
         detection_products_matched = self.contrast_table_and_normalization(
             detection_cube=[template_matched_image],
             cube_indices=[0],
-            yx_known_companion_position=None,
+            yx_known_companion_position=self._base_positions(base_positions),
             inplace=False,
             save=save,
             file_paths=file_paths,
@@ -4420,6 +4982,7 @@ class DetectionAnalysis(object):
         >>> if analysis.templates['T-type'].validated_companion_table is not None:
         ...     print(f"Found {len(analysis.templates['T-type'].validated_companion_table)} candidates")
         """
+        self._set_field_rotation(pa)
         # Both are used unconditionally further down, so they cannot stay inside
         # the `file_paths is None` branch that used to define them.
         template_name = template.name
@@ -4448,6 +5011,10 @@ class DetectionAnalysis(object):
             output_dir_matching, _template_output_filenames(template_name)
         )
         wavelengths = self.instrument.wavelengths[self.wavelength_indices]
+        # Every step of this template excludes the configured positions, and from the
+        # second detection pass on also this template's own initial candidates, never
+        # those of other templates, so the result does not depend on the template order.
+        configured_positions = _as_positions(self._configured_known_positions())
 
         detection_cube, detection_products = self.template_matching_detection(
             template,
@@ -4455,6 +5022,7 @@ class DetectionAnalysis(object):
             detection_threshold=detection_threshold,
             file_paths=file_paths,
             save=save,
+            base_positions=configured_positions,
         )
 
         candidates_initial = self.find_candidates_all_wavelengths(
@@ -4480,6 +5048,7 @@ class DetectionAnalysis(object):
             minimum_candidate_separation=minimum_candidate_separation,
             candidate_exclusion_radius=candidate_exclusion_radius,
             max_candidates=max_candidates,
+            base_positions=configured_positions,
         )
 
         if candidates_fit_initial is None:
@@ -4487,15 +5056,16 @@ class DetectionAnalysis(object):
             template.validated_companion_table = None
             template.validated_companion_table_short = None
         else:
-            yx_known_companion_position = candidates_fit_initial["snr_image"][
-                ["y_relative", "x_relative"]
-            ].values  # [mask]
+            template_base_positions = np.vstack([
+                configured_positions,
+                candidates_fit_initial["snr_image"][["y_relative", "x_relative"]].to_numpy(dtype=float),
+            ])
 
             # Masking out detections
             detection_products_masked = self.contrast_table_and_normalization(
                 detection_cube=detection_cube,
                 cube_indices=[0], # only collapsed wavelength after template matching
-                yx_known_companion_position=yx_known_companion_position,
+                yx_known_companion_position=template_base_positions,
                 inplace=False,
                 save=save,
                 file_paths=file_paths,
@@ -4525,6 +5095,7 @@ class DetectionAnalysis(object):
                 minimum_candidate_separation=minimum_candidate_separation,
                 candidate_exclusion_radius=candidate_exclusion_radius,
                 max_candidates=max_candidates,
+                base_positions=template_base_positions,
             )
             
             # Check if candidates survived the second iteration validation
@@ -4557,6 +5128,7 @@ class DetectionAnalysis(object):
                 xy_image_centers=xy_image_centers,
                 amplitude_modulation_full=amplitude_modulation_full,
                 return_spectra=True,
+                base_positions=template_base_positions,
             )
 
             companion_table, validated_companion_table = self.detection_summary(
@@ -4570,6 +5142,13 @@ class DetectionAnalysis(object):
                 good_fraction_threshold=good_fraction_threshold,
                 theta_deviation_threshold=theta_deviation_threshold,
                 yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
+                shape_validation_max_snr=self.reduction_parameters.shape_validation_max_snr,
+                yx_known_companion_position=self._configured_known_positions(),
+                field_rotation=getattr(self, "field_rotation", None),
+                fwhm=self._summary_fwhm(),
+                bright_sources=self._bright_sources(
+                    detection_products_masked["normalized_detection_cube"][0], minimum_candidate_separation
+                ),
             )
 
             # companion_table, validated_companion_table = analysis.detection_summary(
@@ -4580,10 +5159,6 @@ class DetectionAnalysis(object):
 
             # yx_known_companion_position = np.unique(
             #     validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
-
-            self.reduction_parameters = self.reduction_parameters.merge(
-                yx_known_companion_position=yx_known_companion_position
-            )
 
             companion_table.to_csv(
                 os.path.join(
@@ -4810,6 +5385,7 @@ class DetectionAnalysis(object):
         minimum_candidate_separation=DEFAULT_MINIMUM_CANDIDATE_SEPARATION,
         candidate_exclusion_radius=None,
         max_candidates=DEFAULT_MAX_CANDIDATES,
+        base_positions=None,
     ):
         """Detect and fit the companion in each wavelength channel separately,
         then combine the channels that individually clear ``candidate_threshold``
@@ -4820,6 +5396,7 @@ class DetectionAnalysis(object):
         to the spectral collapse used for detection. Returns the combined
         per-source table (one row per source, `_combine_channels_rt_frame`
         applied) or ``None`` when no channel yields a candidate above threshold.
+        ``base_positions`` is passed to `complete_candidate_table`.
         """
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
@@ -4847,6 +5424,7 @@ class DetectionAnalysis(object):
             minimum_candidate_separation=minimum_candidate_separation,
             candidate_exclusion_radius=candidate_exclusion_radius,
             max_candidates=max_candidates,
+            base_positions=base_positions,
         )
         if candidates_fit is None:
             return None
@@ -4994,6 +5572,7 @@ class DetectionAnalysis(object):
         save_initial_detection_products=False,
     ):
 
+        self._set_field_rotation(pa)
         self.detection_cube[self.detection_cube == 0.] = np.nan
 
         self.contrast_table_and_normalization(
@@ -5054,6 +5633,13 @@ class DetectionAnalysis(object):
                 good_fraction_threshold=good_fraction_threshold,
                 theta_deviation_threshold=theta_deviation_threshold,
                 yx_fwhm_ratio_threshold=yx_fwhm_ratio_threshold,
+                shape_validation_max_snr=self.reduction_parameters.shape_validation_max_snr,
+                yx_known_companion_position=self._configured_known_positions(),
+                field_rotation=getattr(self, "field_rotation", None),
+                fwhm=self._summary_fwhm(),
+                bright_sources=self._bright_sources(
+                    (detection_products or self.detection_products)["normalized_detection_cube"]
+                ),
             )
 
             yx_known_companion_position = np.unique(
@@ -5063,6 +5649,7 @@ class DetectionAnalysis(object):
             self.reduction_parameters = self.reduction_parameters.merge(
                 yx_known_companion_position=yx_known_companion_position
             )
+            self._config_holds_candidates = True
 
             companion_table.to_csv(
                 os.path.join(
@@ -5136,7 +5723,13 @@ class DetectionAnalysis(object):
             )
             plt.close()
 
-        self.contrast_table_and_normalization(save=True)
+        self.contrast_table_and_normalization(
+            save=True,
+            yx_known_companion_position=self._known_and_validated_positions(
+                None if validated_companion_table is None
+                else validated_companion_table[["y_relative", "x_relative"]].values
+            ),
+        )
         _ = self.contrast_plot(
             savefig=True,
             plot_companions=plot_companions,
@@ -5167,18 +5760,33 @@ class DetectionAnalysis(object):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = _to_reduction_config(reduction_parameters)
+            self._store_configured_known_positions()
+        self._configured_known_positions()
 
         self.reduction_parameters = self.reduction_parameters.merge(
             yx_known_companion_position=None
         )
+        self._config_holds_candidates = True
 
+        self._set_field_rotation(pa)
         self.detection_cube[self.detection_cube == 0.] = np.nan
 
+        # The noise mask and the channel correlation are written at the end, from the
+        # masks of the configured positions and the validated candidates.
+        configured_positions = _as_positions(self._configured_known_positions())
         self.contrast_table_and_normalization(
+            yx_known_companion_position=configured_positions,
             save=save_initial_detection_products,
             mask_above_sigma=detection_threshold,
-            file_paths=self.file_paths
+            file_paths={
+                key: path for key, path in self.file_paths.items()
+                if key not in ("noise_mask_path", "spectral_correlation_path")
+            },
         )
+
+        self.empirical_correlation = None
+        if use_spectral_correlation:
+            self._template_matching_correlation(minimum_separation=minimum_candidate_separation)
 
         self.add_default_templates(
             stellar_modelbox=None,
@@ -5237,6 +5845,7 @@ class DetectionAnalysis(object):
                 minimum_candidate_separation=minimum_candidate_separation,
                 candidate_exclusion_radius=candidate_exclusion_radius,
                 max_candidates=max_candidates,
+                base_positions=configured_positions,
             )
         except Exception:
             logger.exception(
@@ -5263,6 +5872,18 @@ class DetectionAnalysis(object):
             search_radius=search_radius,
             validated_only=False,
             per_channel_min_channel_fraction=per_channel_min_channel_fraction,
+        )
+
+        validated_tables = [
+            template.validated_companion_table for template in self.templates.values()
+            if template.validated_companion_table is not None and not template.validated_companion_table.empty
+        ]
+        self.contrast_table_and_normalization(
+            save=True,
+            yx_known_companion_position=self._known_and_validated_positions(
+                pd.concat(validated_tables)[["y_relative", "x_relative"]].values if validated_tables else None
+            ),
+            file_paths=self.file_paths,
         )
 
         # spectrum = self.extract_candidate_spectra(
