@@ -7,11 +7,14 @@ so it subtracts part of it; the reference frames carry no companion and the RDI 
 recovers the injected contrast.
 """
 
+import astropy.units as u
 import numpy as np
 import pytest
+from astropy.io import fits
 
 from trap import makesource, regression
-from trap.parameters import ReductionRuntimeState, trap_config_for_irdis
+from trap.parameters import Instrument, ReductionRuntimeState, TrapReductionConfig, trap_config_for_irdis
+from trap.reduction_wrapper import run_complete_reduction
 from trap.regression import run_trap_with_model_rdi, run_trap_with_model_spatial
 
 SIZE = 41
@@ -129,3 +132,159 @@ def test_too_few_finite_reference_frames_returns_none(synthetic, config, runtime
     reference = synthetic[2].copy()
     reference[:58] = np.nan
     assert _rdi(synthetic, config, runtime, reference=reference) is None
+
+
+WAVELENGTHS = np.array([1.6, 1.65]) * u.micron
+
+
+@pytest.fixture(scope="module")
+def cube(synthetic):
+    data, _, reference, pa, _ = synthetic
+    psf = 1e3 * _gaussian((21, 21), (10, 10), 3.0)
+    return np.stack([data, 0.9 * data]), np.stack([psf, psf]), np.stack([reference, 0.9 * reference]), pa
+
+
+def _instrument(n_wavelengths=2):
+    return Instrument(
+        name="synthetic", pixel_scale=u.pixel_scale(12.25 * u.mas / u.pixel), telescope_diameter=8.0 * u.m,
+        detector_gain=1.0, readnoise=0.0, instrument_type="photometry", wavelengths=WAVELENGTHS[:n_wavelengths])
+
+
+def _reduce(cube, result_folder=None, fractions=(0.2,), reference=None, wavelength_indices=None, **settings):
+    data, psf, default_reference, pa = cube
+    settings = {
+        "search_region_inner_bound": 4, "search_region_outer_bound": 8, "data_auto_crop": False,
+        "data_crop_size": None, "temporal_model": False, "rdi_model": True, "use_multiprocess": False,
+        "ncpus": 2, "result_folder": None if result_folder is None else str(result_folder), **settings}
+    return run_complete_reduction(
+        data_full=data.copy(), flux_psf_full=psf.copy(), pa=pa.copy(), instrument=_instrument(data.shape[0]),
+        reduction_parameters=TrapReductionConfig(**settings), temporal_components_fraction=list(fractions),
+        reference_data_full=default_reference.copy() if reference is None else reference,
+        wavelength_indices=wavelength_indices, overwrite=True, use_progress_bar=False)
+
+
+@pytest.fixture
+def rdi_calls(monkeypatch):
+    calls = []
+    original = regression.run_trap_with_model_rdi
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(regression, "run_trap_with_model_rdi", recording)
+    return calls
+
+
+def _rdi_map(folder, wavelength_index=0):
+    files = sorted(folder.glob(f"detection_lam{wavelength_index:02d}_*_rdi.fits"))
+    assert len(files) == 1, files
+    return fits.getdata(files[0])
+
+
+def test_rdi_reduction_writes_rdi_detection_maps(cube, tmp_path):
+    _reduce(cube, tmp_path)
+    assert (tmp_path / "detection_lam00_rdifrac0.30_rdi.fits").exists()
+    assert (tmp_path / "detection_lam01_rdifrac0.30_rdi.fits").exists()
+    contrast = _rdi_map(tmp_path)[0]
+    center = contrast.shape[-1] // 2
+    assert np.isfinite(contrast).sum() > 100
+    assert contrast[center + int(POSITION[0]), center + int(POSITION[1])] == pytest.approx(CONTRAST, rel=0.2)
+
+
+def test_rdi_without_reference_is_refused(cube, rdi_calls):
+    data, psf, _, pa = cube
+    with pytest.raises(ValueError, match="reference"):
+        run_complete_reduction(
+            data_full=data.copy(), flux_psf_full=psf.copy(), pa=pa.copy(), instrument=_instrument(),
+            reduction_parameters=TrapReductionConfig(rdi_model=True, reduce_single_position=True, guess_position=POSITION))
+    assert rdi_calls == []
+
+
+def test_reference_shape_mismatch_is_refused(cube, rdi_calls):
+    reference = cube[2]
+    with pytest.raises(ValueError, match=r"\(1, 60, 41, 41\).*\(2, 40, 41, 41\)"):
+        _reduce(cube, reference=reference[:1])
+    padded = np.pad(reference, ((0, 0), (0, 0), (1, 1), (1, 1)))
+    with pytest.raises(ValueError, match=r"\(2, 60, 43, 43\).*\(2, 40, 41, 41\)"):
+        _reduce(cube, reference=padded)
+    assert rdi_calls == []
+
+
+def test_bad_frames_leave_the_reference_untouched(cube, rdi_calls):
+    data, psf, reference, pa = cube
+    run_complete_reduction(
+        data_full=data.copy(), flux_psf_full=psf.copy(), pa=pa.copy(), instrument=_instrument(),
+        reduction_parameters=TrapReductionConfig(
+            temporal_model=False, rdi_model=True, data_auto_crop=False, reduce_single_position=True,
+            guess_position=POSITION),
+        bad_frames=[0, 5], reference_data_full=reference.copy(), wavelength_indices=[0], use_progress_bar=False)
+    assert len(rdi_calls) == 1
+    assert rdi_calls[0]["data"].shape[0] == N_SCIENCE - 2
+    np.testing.assert_array_equal(rdi_calls[0]["reference_data"], reference[0])
+
+
+def test_injection_goes_into_science_only(cube, rdi_calls):
+    data, psf, reference, pa = cube
+    results = run_complete_reduction(
+        data_full=data.copy(), flux_psf_full=psf.copy(), pa=pa.copy(), instrument=_instrument(),
+        reduction_parameters=TrapReductionConfig(
+            temporal_model=False, rdi_model=True, data_auto_crop=False, reduce_single_position=True,
+            guess_position=(-6.0, 0.0), inject_fake=True, true_contrast=1e-2),
+        reference_data_full=reference.copy(), wavelength_indices=[0], use_progress_bar=False)
+    assert len(rdi_calls) == 1
+    np.testing.assert_array_equal(rdi_calls[0]["reference_data"], reference[0])
+    assert not np.array_equal(rdi_calls[0]["data"], data[0])
+    assert results["0.2"]["0"]["rdi"].measured_contrast == pytest.approx(1e-2, rel=0.2)
+
+
+def test_nan_reference_pixels_shrink_only_overlapping_reduction_masks(cube, tmp_path, monkeypatch):
+    data, _, reference, _ = cube
+    center = data.shape[-1] // 2
+    disc = np.hypot(*(np.indices(data.shape[-2:]) - np.array([center + 6, center])[:, None, None])) <= 1.5
+    nan_reference = reference.copy()
+    nan_reference[:, :, disc] = np.nan
+
+    pixels = {}
+    original = regression.run_trap_with_model_rdi
+
+    def recording(*args, **kwargs):
+        mask = kwargs["reduction_mask"]
+        assert np.isfinite(kwargs["reference_data"][:, mask]).all()
+        pixels.setdefault(run, {})[tuple(kwargs["planet_relative_yx_pos"])] = (int(mask.sum()), bool(mask[disc].any()))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(regression, "run_trap_with_model_rdi", recording)
+    for run, reference_cube in (("clean", reference), ("nan", nan_reference)):
+        (tmp_path / run).mkdir()
+        # The 36-pixel masks keep more than 20 pixels after losing the 9-pixel disc.
+        _reduce(cube, tmp_path / run, reference=reference_cube, wavelength_indices=[0], reduction_mask_min_pixels=20)
+
+    assert pixels["clean"].keys() == pixels["nan"].keys()
+    overlapping = [position for position, (_, overlaps) in pixels["clean"].items() if overlaps]
+    assert (6, 0) in overlapping
+    assert 0 < len(overlapping) < len(pixels["clean"])
+    for position, (n_clean, overlaps) in pixels["clean"].items():
+        n_nan, overlaps_nan = pixels["nan"][position]
+        assert not overlaps_nan
+        assert n_nan < n_clean if overlaps else n_nan == n_clean
+
+    contrast = _rdi_map(tmp_path / "nan")[0]
+    np.testing.assert_array_equal(np.isfinite(contrast), np.isfinite(_rdi_map(tmp_path / "clean")[0]))
+    assert np.isfinite(contrast[center + 6, center])
+
+
+def test_rdi_runs_once_for_several_temporal_fractions(cube, tmp_path):
+    _reduce(cube, tmp_path, fractions=(0.1, 0.2), temporal_model=True, wavelength_indices=[0])
+    assert [path.name for path in tmp_path.glob("detection_lam00_*_rdi.fits")] == ["detection_lam00_rdifrac0.30_rdi.fits"]
+    assert len(list(tmp_path.glob("detection_lam00_*_temporal.fits"))) == 2
+
+
+def test_parallel_and_serial_rdi_maps_agree(cube, tmp_path):
+    for folder, use_multiprocess in (("serial", False), ("parallel", True)):
+        (tmp_path / folder).mkdir()
+        _reduce(cube, tmp_path / folder, use_multiprocess=use_multiprocess)
+    for wavelength_index in (0, 1):
+        np.testing.assert_allclose(
+            _rdi_map(tmp_path / "parallel", wavelength_index), _rdi_map(tmp_path / "serial", wavelength_index),
+            rtol=1e-10, atol=0.0, equal_nan=True)
