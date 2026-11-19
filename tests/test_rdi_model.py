@@ -81,17 +81,16 @@ def test_rdi_recovers_injected_contrast_without_bias(synthetic, config, runtime)
 
 def test_spatial_adi_is_biased_low_on_the_same_data(synthetic, config, runtime):
     data, model, _, pa, mask = synthetic
+    # The default protection angle leaves fewer than 3 frames at 6 deg of rotation; a small
+    # one lets the spatial model run on frames that still contain the companion.
     spatial = run_trap_with_model_spatial(
-        data, model, pa, config, POSITION, mask, runtime=runtime, yx_center=YX_CENTER)
+        data, model, pa, config.merge(protection_angle=0.02), POSITION, mask, runtime=runtime, yx_center=YX_CENTER)
     rdi = _rdi(synthetic, config, runtime)
     rdi.compute_contrast_weighted_average(mask_outliers=True)
-    # With 6 deg of rotation the protection angle can leave the spatial model too few
-    # frames, which counts as failing to recover the companion.
-    if spatial is not None:
-        spatial.compute_contrast_weighted_average(mask_outliers=True)
-        assert spatial.measured_contrast < 0.9 * CONTRAST
-        assert abs(rdi.measured_contrast - CONTRAST) < abs(spatial.measured_contrast - CONTRAST)
-    assert rdi.measured_contrast == pytest.approx(CONTRAST, rel=0.05)
+    assert spatial is not None
+    spatial.compute_contrast_weighted_average(mask_outliers=True)
+    assert spatial.measured_contrast < 0.9 * CONTRAST
+    assert abs(rdi.measured_contrast - CONTRAST) < abs(spatial.measured_contrast - CONTRAST)
 
 
 def test_number_of_components_is_the_fraction_of_reference_frames(synthetic, config, runtime, monkeypatch):
