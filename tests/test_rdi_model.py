@@ -324,7 +324,9 @@ def test_rereduce_single_position_with_rdi_recovers_the_spectrum(cube, tmp_path,
     rdi_calls.clear()
     spectrum = _rereduce(analysis, cube, cube[2])
     assert len(rdi_calls) == 2
-    np.testing.assert_allclose(spectrum.contrast, [2e-3, 2e-3], rtol=0.1)
+    # The cube fixture scales the second channel's science and reference by 0.9 but not its PSF.
+    true_contrast = np.array([CONTRAST, 0.9 * CONTRAST])
+    assert np.all(np.abs(spectrum.contrast - true_contrast) < 3 * spectrum.original_unc)
     center = analysis.detection_cube.shape[-1] // 2
     map_contrast = analysis.detection_cube[:, 0, center + int(POSITION[0]), center + int(POSITION[1])]
     np.testing.assert_allclose(spectrum.contrast, map_contrast, rtol=1e-6)
