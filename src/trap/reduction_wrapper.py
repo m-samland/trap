@@ -516,11 +516,11 @@ def trap_one_position(
 def _reduction_parameters_for_fraction(reduction_parameters, comp_index):
     """Settings for the ``comp_index``-th temporal component fraction.
 
-    The spatial model does not depend on the temporal fraction, so it runs with the
+    The spatial and rdi models do not depend on the temporal fraction, so they run with the
     first fraction only instead of repeating the same reduction for each.
     """
-    if comp_index > 0 and reduction_parameters.spatial_model:
-        return reduction_parameters.merge(spatial_model=False)
+    if comp_index > 0 and (reduction_parameters.spatial_model or reduction_parameters.rdi_model):
+        return reduction_parameters.merge(spatial_model=False, rdi_model=False)
     return reduction_parameters
 
 
@@ -543,6 +543,8 @@ def _models_to_run(reduction_parameters):
             models.append("temporal_plus_spatial")
     if reduction_parameters.spatial_model:
         models.append("spatial")
+    if reduction_parameters.rdi_model:
+        models.append("rdi")
     return models
 
 
@@ -797,6 +799,10 @@ def run_trap_search(
             )
         )
         detection_image["spatial"][:] = np.nan
+    if reduction_parameters.rdi_model:
+        detection_image["rdi"] = np.full(
+            (detection_image_dim, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling)), np.nan
+        )
 
     # EDIT: ADDED FOR QUICK CORRELATION TESTS
     detection_image_corr = {}
@@ -812,6 +818,10 @@ def run_trap_search(
         detection_image_corr["spatial"] = np.zeros(
             (6, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
         )
+    if reduction_parameters.rdi_model:
+        detection_image_corr["rdi"] = np.zeros(
+            (6, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
+        )
 
     correlation_matrix_binned = {}
     if reduction_parameters.temporal_model:
@@ -824,6 +834,10 @@ def run_trap_search(
             )
     if reduction_parameters.spatial_model:
         correlation_matrix_binned["spatial"] = np.zeros(
+            (43, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
+        )
+    if reduction_parameters.rdi_model:
+        correlation_matrix_binned["rdi"] = np.zeros(
             (43, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
         )
 
@@ -2089,6 +2103,12 @@ def _run_reduction_loops(
                     reduction_parameters.protection_angle,
                     reduction_parameters.spatial_components_fraction,
                 )
+                basename["rdi"] = "injectedsigma{:.2f}_{}lam{:02d}_rdifrac{:.2f}".format(
+                    reduction_parameters.injection_sigma,
+                    prefix,
+                    wavelength_index,
+                    reduction_parameters.rdi_components_fraction,
+                )
             else:
                 basename["temporal"] = "{}lam{:02d}_ncomp{:03d}_frac{:.2f}".format(
                     prefix,
@@ -2114,6 +2134,11 @@ def _run_reduction_loops(
                     reduction_parameters.protection_angle,
                     reduction_parameters.spatial_components_fraction,
                 )
+                basename["rdi"] = "{}lam{:02d}_rdifrac{:.2f}".format(
+                    prefix,
+                    wavelength_index,
+                    reduction_parameters.rdi_components_fraction,
+                )
             logger.debug("%s", basename["temporal"])
 
             # Having all the different reductions in the output makes it easier to compare but also more complex to refactor
@@ -2125,7 +2150,7 @@ def _run_reduction_loops(
             )
             output_paths = {}
             output_paths_corr = {}
-            for key in ["temporal", "temporal_plus_spatial", "spatial"]:
+            for key in ["temporal", "temporal_plus_spatial", "spatial", "rdi"]:
                 output_paths[key] = OutputPaths.make(
                     result_folder, basename[key], key, sigma
                 )

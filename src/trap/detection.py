@@ -2180,6 +2180,7 @@ _RUN_NAME_PATTERNS = {
     "temporal": _COUNT_AND_FRACTION + r"_temporal",
     "temporal_plus_spatial": _COUNT_AND_FRACTION + r"_delta\d+\.\d{{2}}_spatialfrac(?P<spatial>\d+\.\d{{2}})_temporal_plus_spatial",
     "spatial": r"delta\d+\.\d{{2}}_spatialfrac{fraction}_spatial",
+    "rdi": r"rdifrac{fraction}_rdi",
 }
 
 
@@ -2196,10 +2197,11 @@ def detection_file_paths(result_folder, reduction_type, component_fraction, spat
     ----------
     result_folder : str or path-like
         Folder holding the reduction outputs.
-    reduction_type : {"temporal", "temporal_plus_spatial", "spatial"}
+    reduction_type : {"temporal", "temporal_plus_spatial", "spatial", "rdi"}
         Model whose outputs to select.
     component_fraction : float
-        Temporal component fraction; for ``"spatial"`` the spatial component fraction.
+        Temporal component fraction; for ``"spatial"`` the spatial component fraction;
+        for ``"rdi"`` the reference component fraction.
     spatial_component_fraction : float, optional
         Spatial component fraction of a ``"temporal_plus_spatial"`` run. Needed only when
         the folder holds that run at several spatial fractions.
@@ -2515,7 +2517,7 @@ class DetectionAnalysis(object):
             Path to folder containing reduction outputs. If None, uses
             self.reduction_parameters.result_folder.
         reduction_type : str, optional
-            Type of reduction ("temporal", "spatial", "temporal_plus_spatial").
+            Type of reduction ("temporal", "spatial", "temporal_plus_spatial", "rdi").
             Default is "temporal".
         correlated_residuals : bool, optional
             Whether to read correlated residual outputs. Default is False.

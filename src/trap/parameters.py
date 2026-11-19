@@ -413,6 +413,10 @@ class TrapReductionConfig:
     # Radial correlation length of the speckle term in lambda/D, held fixed; None fits it. The rings
     # of a reduction rarely span the range of separation needed to fit it apart from sigma_lambda.
     spectral_correlation_sigma_rho: Optional[float] = 1.0
+    # Reference-star differential imaging model; needs a reference cube passed to the reduction.
+    rdi_model: bool = False
+    # Fraction of the reference frames kept as principal components of the rdi model.
+    rdi_components_fraction: float = 0.3
 
     def __post_init__(self):
         if self.multiwavelength_regressors not in (None, "pool", "occluded", "sdi"):
