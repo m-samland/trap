@@ -3760,12 +3760,14 @@ class DetectionAnalysis(object):
         return_all_results=False,
         verbose=False,
         base_positions=None,
+        reference_data_full=None,
     ):
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
         # The renormalisation below clips the noise masks to the rotation arc.
         self._set_field_rotation(pa)
 
+        rdi = getattr(self, "reduction_type", None) == "rdi"
         re_reduction_parameters = self.reduction_parameters.merge(
             guess_position=yx_candidate_position,
             use_multiprocess=False,
@@ -3773,7 +3775,15 @@ class DetectionAnalysis(object):
             data_auto_crop=True,
             yx_known_companion_position=None,
             remove_known_companions=False,
+            rdi_model=rdi,
         )
+        if rdi:
+            # Only the model of the maps is fitted, with the reference fraction of the map run.
+            re_reduction_parameters = re_reduction_parameters.merge(
+                temporal_model=False, temporal_plus_spatial_model=False, spatial_model=False,
+                local_temporal_model=False, local_spatial_model=False,
+                rdi_components_fraction=self.component_fraction,
+            )
         detection_products_orig = copy.deepcopy(self.detection_products)
         all_results = run_complete_reduction(
             data_full=data_full.copy(),
@@ -3788,6 +3798,7 @@ class DetectionAnalysis(object):
             bad_pixel_mask_full=bad_pixel_mask_full,
             xy_image_centers=xy_image_centers,
             amplitude_modulation_full=amplitude_modulation_full,
+            reference_data_full=reference_data_full,
             verbose=verbose,
         )
         
@@ -3930,6 +3941,7 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         return_spectra=False,
         base_positions=None,
+        reference_data_full=None,
     ):
         """
         Extract high-fidelity spectra for candidate companions using full reduction.
@@ -3984,6 +3996,9 @@ class DetectionAnalysis(object):
             Source positions relative to the image centre excluded from the
             renormalisation besides the candidates. Defaults to
             ``self.reduction_parameters.yx_known_companion_position``.
+        reference_data_full : ndarray, optional
+            Reference cube (wavelength, reference frame, y, x) aligned with
+            data_full. Required when the maps read are of ``reduction_type="rdi"``.
 
         Returns
         -------
@@ -4099,6 +4114,7 @@ class DetectionAnalysis(object):
                 amplitude_modulation_full=amplitude_modulation_full,
                 verbose=False,
                 base_positions=base_positions,
+                reference_data_full=reference_data_full,
             )
             candidate_spectra.append(candidate_spectrum)
 
@@ -4864,6 +4880,7 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         file_paths=None,
         save=True,
+        reference_data_full=None,
     ):
         """
         Perform robust template matching detection with two-iteration bias correction.
@@ -4936,6 +4953,10 @@ class DetectionAnalysis(object):
         save : bool, optional
             Whether to save intermediate detection products and results to disk.
             Default is True.
+        reference_data_full : ndarray, optional
+            Reference cube (wavelength, reference frame, y, x) aligned with
+            data_full, used to re-reduce candidates when the maps read are of
+            ``reduction_type="rdi"``.
 
         Returns
         -------
@@ -5131,6 +5152,7 @@ class DetectionAnalysis(object):
                 amplitude_modulation_full=amplitude_modulation_full,
                 return_spectra=True,
                 base_positions=template_base_positions,
+                reference_data_full=reference_data_full,
             )
 
             companion_table, validated_companion_table = self.detection_summary(
@@ -5283,6 +5305,7 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         file_paths=None,
         save=True,
+        reference_data_full=None,
     ):
         if self.templates:
             for key in self.templates:
@@ -5312,6 +5335,7 @@ class DetectionAnalysis(object):
                         amplitude_modulation_full=amplitude_modulation_full,
                         file_paths=file_paths,
                         save=save,
+                        reference_data_full=reference_data_full,
                     )
                 except Exception:
                     # One template failing must not cost the templates after it
@@ -5572,6 +5596,7 @@ class DetectionAnalysis(object):
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
         save_initial_detection_products=False,
+        reference_data_full=None,
     ):
 
         self._set_field_rotation(pa)
@@ -5615,6 +5640,7 @@ class DetectionAnalysis(object):
                 xy_image_centers=xy_image_centers,
                 amplitude_modulation_full=amplitude_modulation_full,
                 return_spectra=True,
+                reference_data_full=reference_data_full,
             )
 
             # companion_table, validated_companion_table = self.detection_summary(
@@ -5758,7 +5784,8 @@ class DetectionAnalysis(object):
         save_initial_detection_products=True,
         per_channel_min_channel_fraction=0.5,
         per_channel_independent_channels=False,
-        template_names=None):
+        template_names=None,
+        reference_data_full=None):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = _to_reduction_config(reduction_parameters)
@@ -5824,6 +5851,7 @@ class DetectionAnalysis(object):
             amplitude_modulation_full=amplitude_modulation_full,
             file_paths=None,
             save=True,
+            reference_data_full=reference_data_full,
         )
         
         try:

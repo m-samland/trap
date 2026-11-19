@@ -13,6 +13,7 @@ import pytest
 from astropy.io import fits
 
 from trap import makesource, regression
+from trap.detection import DetectionAnalysis
 from trap.parameters import Instrument, ReductionRuntimeState, TrapReductionConfig, trap_config_for_irdis
 from trap.reduction_wrapper import run_complete_reduction
 from trap.regression import run_trap_with_model_rdi, run_trap_with_model_spatial
@@ -293,3 +294,47 @@ def test_parallel_and_serial_rdi_maps_agree(cube, tmp_path):
         np.testing.assert_allclose(
             _rdi_map(tmp_path / "parallel", wavelength_index), _rdi_map(tmp_path / "serial", wavelength_index),
             rtol=1e-10, atol=0.0, equal_nan=True)
+
+
+def _rdi_analysis(folder):
+    analysis = DetectionAnalysis()
+    analysis.read_output(0.3, result_folder=str(folder), reduction_type="rdi")
+    return analysis
+
+
+def test_read_output_reads_rdi_maps(cube, tmp_path):
+    _reduce(cube, tmp_path)
+    analysis = _rdi_analysis(tmp_path)
+    assert list(analysis.wavelength_indices) == [0, 1]
+    assert analysis.detection_cube.shape[0] == 2
+    assert analysis.reduction_parameters.rdi_model
+
+
+def _rereduce(analysis, cube, reference):
+    data, psf, _, pa = cube
+    return analysis.rereduce_single_position(
+        candidate_index=0, yx_candidate_position=POSITION, data_full=data, flux_psf_full=psf, pa=pa, wavelength_indices=[0, 1],
+        temporal_components_fraction=0.2, reference_data_full=reference)
+
+
+def test_rereduce_single_position_with_rdi_recovers_the_spectrum(cube, tmp_path, rdi_calls):
+    _reduce(cube, tmp_path)
+    analysis = _rdi_analysis(tmp_path)
+    analysis.contrast_table_and_normalization(save=False)
+    rdi_calls.clear()
+    spectrum = _rereduce(analysis, cube, cube[2])
+    assert len(rdi_calls) == 2
+    np.testing.assert_allclose(spectrum.contrast, [2e-3, 2e-3], rtol=0.1)
+    center = analysis.detection_cube.shape[-1] // 2
+    map_contrast = analysis.detection_cube[:, 0, center + int(POSITION[0]), center + int(POSITION[1])]
+    np.testing.assert_allclose(spectrum.contrast, map_contrast, rtol=1e-6)
+
+
+def test_rdi_rereduction_without_reference_is_refused(cube, tmp_path, rdi_calls):
+    _reduce(cube, tmp_path)
+    analysis = _rdi_analysis(tmp_path)
+    analysis.contrast_table_and_normalization(save=False)
+    rdi_calls.clear()
+    with pytest.raises(ValueError, match="reference"):
+        _rereduce(analysis, cube, None)
+    assert rdi_calls == []
