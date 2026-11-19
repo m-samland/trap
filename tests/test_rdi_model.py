@@ -274,10 +274,15 @@ def test_nan_reference_pixels_shrink_only_overlapping_reduction_masks(cube, tmp_
     assert np.isfinite(contrast[center + 6, center])
 
 
-def test_rdi_runs_once_for_several_temporal_fractions(cube, tmp_path):
-    _reduce(cube, tmp_path, fractions=(0.1, 0.2), temporal_model=True, wavelength_indices=[0])
-    assert [path.name for path in tmp_path.glob("detection_lam00_*_rdi.fits")] == ["detection_lam00_rdifrac0.30_rdi.fits"]
-    assert len(list(tmp_path.glob("detection_lam00_*_temporal.fits"))) == 2
+def test_rdi_runs_once_for_several_temporal_fractions(cube, rdi_calls):
+    # The rdi file name has no temporal fraction, so a second run would only overwrite it; count the fits instead.
+    results = _reduce(
+        cube, fractions=(0.1, 0.2), temporal_model=True, wavelength_indices=[0], reduce_single_position=True,
+        guess_position=POSITION)
+    assert len(rdi_calls) == 1
+    assert "rdi" in results["0.1"]["0"]
+    assert "rdi" not in results["0.2"]["0"]
+    assert "temporal" in results["0.2"]["0"]
 
 
 def test_parallel_and_serial_rdi_maps_agree(cube, tmp_path):
