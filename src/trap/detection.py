@@ -2111,100 +2111,88 @@ def _combine_templates_best_snr(per_template_tables, search_radius):
     return combined.sort_values("separation", ignore_index=True)
 
 
-_PER_CHANNEL_OVERRIDE_COLS = [
-    "x",
-    "y",
-    "x_relative",
-    "y_relative",
-    "separation",
-    "position_angle",
-    "x_relative_sigma",
-    "y_relative_sigma",
-    "xy_relative_corr",
-    "separation_sigma",
-    "position_angle_sigma",
-    "radial_sigma_stat",
-    "tangential_sigma_stat",
-    "channels_above_threshold",
-]
+_PER_CHANNEL_DIAGNOSTIC_COLUMNS = {
+    "per_channel_x_relative": "x_relative",
+    "per_channel_y_relative": "y_relative",
+    "per_channel_separation": "separation",
+    "per_channel_position_angle": "position_angle",
+    "per_channel_radial_sigma": "radial_sigma_stat",
+    "per_channel_tangential_sigma": "tangential_sigma_stat",
+    "per_channel_chi2_red_radial": "chi2_red_radial",
+    "per_channel_chi2_red_tangential": "chi2_red_tangential",
+    "per_channel_n_channels": "channels_above_threshold",
+}
+_PER_CHANNEL_DISCREPANCY_SIGMA = 3.0
 
 
-def _override_astrometry_from_per_channel(
-    overall_table,
-    per_channel_table,
-    search_radius,
-    n_channels_total=None,
-    min_channel_fraction=0.5,
-):
-    """Make per-channel astrometry the reported position/σ of each source, when
-    it rests on enough of the data to be an improvement.
+def _per_channel_distance_sigma(reported, per_channel):
+    """Distance between the reported and the per-channel position in units of their combined σ.
 
-    The spectral collapse maximises detection SNR, not astrometric accuracy: it
-    folds in channels with no signal at the source, whose speckle structure
-    biases the centroid. On 51 Eri **IRDIS** (2 channels) that is a real defect —
-    the collapse sits ~9 mas / 2.6σ off GRAVITY because the signal-free K2
-    channel carries a large weight, while the single detected channel (K1) is
-    within 0.7 mas.
+    Mahalanobis distance in the (radial, tangential) frame of the reported
+    position, with the two covariances summed. Both positions come from the
+    same pixels, so the sum overstates the variance of their difference and the
+    distance is conservative.
+    """
+    alpha = np.arctan2(float(reported["y_relative"]), float(reported["x_relative"]))
+    dx = float(per_channel["x_relative"]) - float(reported["x_relative"])
+    dy = float(per_channel["y_relative"]) - float(reported["y_relative"])
+    radial = dx * np.cos(alpha) + dy * np.sin(alpha)
+    tangential = -dx * np.sin(alpha) + dy * np.cos(alpha)
+    var_radial = float(reported["radial_sigma_stat"]) ** 2 + float(per_channel["radial_sigma_stat"]) ** 2
+    var_tangential = float(reported["tangential_sigma_stat"]) ** 2 + float(per_channel["tangential_sigma_stat"]) ** 2
+    return float(np.sqrt(radial**2 / var_radial + tangential**2 / var_tangential))
 
-    That reasoning does **not** extend to a many-channel IFS cube, and applying
-    it there makes the astrometry worse. On 51 Eri IFS only 2 of 37 channels
-    clear ``candidate_threshold``, so the "cleaner" position discards ~95% of the
-    signal (including the entire J-band peak) and is selected by the very noise
-    that promoted those channels above threshold; the collapse, where signal-free
-    channels get low template weight and their speckle contributions average
-    down, lands 4.4 mas closer to GRAVITY.
 
-    The override therefore requires the contributing channels to be at least
-    ``min_channel_fraction`` of ``n_channels_total``. A 2-channel DBI detection
-    in one channel (0.5) passes; 2 of 37 IFS channels (0.054) does not, and the
-    collapse is kept (``astrometry_source == "collapse"``). Passing
-    ``n_channels_total=None`` disables the gate. Detection significance, spectrum
-    and template diagnostics are left untouched either way, and
-    ``per_channel_astrometry.csv`` is still written for inspection.
+def _attach_per_channel_diagnostics(overall_table, per_channel_table, search_radius):
+    """Add the per-channel astrometry of each source as diagnostic columns.
+
+    The reported position and σ stay those of the template fit
+    (``astrometry_source == "template"``). Each source gets the nearest
+    per-channel measurement within ``search_radius``: its position, σ, reduced
+    χ² of the channel combination and number of channels, the distance to the
+    reported position in units of the combined σ
+    (``per_channel_distance_sigma``) and ``per_channel_position_discrepant``
+    when that distance exceeds 3. A large distance or reduced χ² means the
+    formal σ misses effects that differ between channels. Without a match the
+    columns are NaN and the flag is False.
+
+    Parameters
+    ----------
+    overall_table : pandas.DataFrame
+        Combined table, one row per source and wavelength.
+    per_channel_table : pandas.DataFrame or None
+        Output of `measure_per_channel_astrometry`.
+    search_radius : float
+        Largest distance in pixels for a per-channel match.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copy of ``overall_table`` with the diagnostic columns.
     """
     out = overall_table.copy()
-    out["astrometry_source"] = "collapse"
+    out["astrometry_source"] = "template"
+    for column in (*_PER_CHANNEL_DIAGNOSTIC_COLUMNS, "per_channel_distance_sigma"):
+        out[column] = np.nan
+    out["per_channel_position_discrepant"] = False
     if per_channel_table is None or len(per_channel_table) == 0:
         return out
 
-    pc = per_channel_table.reset_index(drop=True)
-    pc_pos = pc[["x_relative", "y_relative"]].values.astype(float)
-    cols = [c for c in _PER_CHANNEL_OVERRIDE_COLS if c in pc.columns and c in out.columns]
-
-    min_channels = None
-    if n_channels_total is not None and "channels_above_threshold" in pc.columns:
-        min_channels = min_channel_fraction * float(n_channels_total)
-
-    if "candidate_id" in out.columns:
-        groups = list(out.groupby("candidate_id").groups.values())
-    else:
-        groups = [out.index]
-
-    for idx in groups:
-        rep = out.loc[idx[0]]
-        dist = np.hypot(
-            pc_pos[:, 0] - float(rep["x_relative"]),
-            pc_pos[:, 1] - float(rep["y_relative"]),
-        )
-        j = int(np.argmin(dist))
-        if dist[j] > search_radius:
+    per_channel = per_channel_table.reset_index(drop=True)
+    positions = per_channel[["x_relative", "y_relative"]].to_numpy(dtype=float)
+    groups = out.groupby("candidate_id").groups.values() if "candidate_id" in out.columns else [out.index]
+    for index in groups:
+        reported = out.loc[index[0]]
+        distance = np.hypot(positions[:, 0] - float(reported["x_relative"]), positions[:, 1] - float(reported["y_relative"]))
+        nearest = int(np.argmin(distance))
+        if distance[nearest] > search_radius:
             continue
-        if min_channels is not None:
-            n_used = float(pc.iloc[j]["channels_above_threshold"])
-            if n_used < min_channels:
-                logger.info(
-                    "Per-channel astrometry uses %g of %g channels (< %.0f%% of "
-                    "them); keeping the template-collapse position. The "
-                    "per-channel measurement is still written to "
-                    "per_channel_astrometry.csv.",
-                    n_used,
-                    float(n_channels_total),
-                    100 * min_channel_fraction,
-                )
-                continue
-        for c in cols:
-            out.loc[idx, c] = pc.iloc[j][c]
-        out.loc[idx, "astrometry_source"] = "per_channel"
+        match = per_channel.iloc[nearest]
+        for column, source in _PER_CHANNEL_DIAGNOSTIC_COLUMNS.items():
+            out.loc[index, column] = float(match[source]) if source in match.index else np.nan
+        distance_sigma = _per_channel_distance_sigma(reported, match)
+        out.loc[index, "per_channel_distance_sigma"] = distance_sigma
+        out.loc[index, "per_channel_position_discrepant"] = bool(distance_sigma > _PER_CHANNEL_DISCREPANCY_SIGMA)
     return out
 
 
@@ -5440,8 +5428,8 @@ class DetectionAnalysis(object):
         in the source-aligned (r, t) frame.
 
         Template-independent — it runs on the per-channel detection maps
-        (`self.detection_cube`), so it is the astrometrically-clean alternative
-        to the spectral collapse used for detection. Returns the combined
+        (`self.detection_cube`), and the combined tables carry it as a
+        diagnostic next to the template position. Returns the combined
         per-source table (one row per source, `_combine_channels_rt_frame`
         applied) or ``None`` when no channel yields a candidate above threshold.
         ``base_positions`` is passed to `complete_candidate_table`.
@@ -5490,11 +5478,20 @@ class DetectionAnalysis(object):
         Args:
             validated_only (bool, optional): If True, only combines the validated companion tables.
                 If False, combines all companion tables. Defaults to True.
-            per_channel_min_channel_fraction (float, optional): Minimum share of the
-                reduced wavelength channels that must individually clear the detection
-                threshold before the per-channel astrometry replaces the template-collapse
-                position. See `_override_astrometry_from_per_channel`. Defaults to 0.5.
+            per_channel_min_channel_fraction (float, optional): No longer has an effect,
+                since the per-channel astrometry no longer replaces the template position;
+                kept so existing callers keep working. A value other than 0.5 logs a warning.
+
+        The reported position and σ are those of the best template's fit. The
+        per-channel astrometry is added as diagnostic columns, see
+        `_attach_per_channel_diagnostics`.
         """
+        if per_channel_min_channel_fraction != 0.5:
+            logger.warning(
+                "per_channel_min_channel_fraction=%s has no effect: the per-channel astrometry "
+                "is reported as a diagnostic and no longer replaces the template position.",
+                per_channel_min_channel_fraction,
+            )
         
         output_dir_matching = os.path.join(
             self.reduction_parameters.result_folder, "template_matching/"
@@ -5541,20 +5538,10 @@ class DetectionAnalysis(object):
                 n = int(np.sum(mask))
                 best_companion_matches.loc[mask, "candidate_id"] = np.array([idx]).repeat(n)
 
-            # The template collapse is optimal for detection SNR, not astrometry.
-            # Where a source is detected in *enough* individual channels, its
-            # per-channel inverse-variance position/σ replaces the collapse position
-            # (which a signal-free channel can bias); the collapse remains as fallback.
-            wavelength_indices = getattr(self, "wavelength_indices", None)
-            n_channels_total = (
-                len(wavelength_indices) if wavelength_indices is not None else None
-            )
-            best_companion_matches = _override_astrometry_from_per_channel(
+            best_companion_matches = _attach_per_channel_diagnostics(
                 best_companion_matches,
                 getattr(self, "per_channel_astrometry", None),
                 search_radius=search_radius,
-                n_channels_total=n_channels_total,
-                min_channel_fraction=per_channel_min_channel_fraction,
             )
 
             spectra_cols = [
@@ -5563,6 +5550,7 @@ class DetectionAnalysis(object):
                 "xy_relative_corr", "separation", "separation_sigma",
                 "position_angle", "position_angle_sigma",
                 "radial_sigma_stat", "tangential_sigma_stat", "astrometry_source",
+                *_PER_CHANNEL_DIAGNOSTIC_COLUMNS, "per_channel_distance_sigma", "per_channel_position_discrepant",
                 "template_name", "best_template", "n_templates_above_threshold",
                 "astrometry_template_disagreement",
                 "x_relative_sigma_template_scatter", "y_relative_sigma_template_scatter",
@@ -5878,12 +5866,9 @@ class DetectionAnalysis(object):
             # Diagnostics only; never worth losing the tables below over.
             logger.exception("Contrast plotting failed; continuing.")
 
-        # Per-channel astrometry (template-independent) drives the reported
-        # position/σ; the template collapse is optimal for detection SNR, not
-        # for astrometry. Measured once here and merged into both overall tables.
-        # It is a refinement of an astrometry the collapse already provides, so
-        # a failure here must not cost the overall tables — which is exactly what
-        # used to happen, since they are written after this call.
+        # The per-channel astrometry is a diagnostic next to the template
+        # position, so a failure here must not cost the overall tables, which
+        # are written after this call.
         try:
             self.per_channel_astrometry = self.measure_per_channel_astrometry(
                 wavelength_indices=wavelength_indices,
@@ -5897,8 +5882,8 @@ class DetectionAnalysis(object):
             )
         except Exception:
             logger.exception(
-                "Per-channel astrometry failed; falling back to the "
-                "template-collapse astrometry for the combined tables."
+                "Per-channel astrometry failed; the combined tables get no "
+                "per-channel diagnostics."
             )
             self.per_channel_astrometry = None
         if self.per_channel_astrometry is not None:
