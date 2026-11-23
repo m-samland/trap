@@ -1502,13 +1502,18 @@ def fit_planet_parameters(
     fix_orientation=True,
     plot=False,
     phi_source=None,
+    position_snr_image=None,
 ):
     """Fit A/B/C on the three detection images per the astrometry-uncertainty
     spec:
 
-    - A: raw SNR image (``detection_image[2]``), fully free → authoritative
-      position, empirical widths ``x_fwhm_free``/``y_fwhm_free``, orientation
-      ``theta_free``, and LevMar centroid covariance.
+    - A: raw SNR image (``detection_image[2]``), or ``position_snr_image`` when
+      given, fully free → position, empirical widths
+      ``x_fwhm_free``/``y_fwhm_free``, orientation ``theta_free``, and LevMar
+      centroid covariance. The template path passes the template S/N built with
+      the formal uncertainty, since its ``detection_image[2]`` divides by a ring
+      factor that changes with the trial position's separation and so moves the
+      peak.
     - B: contrast image, position clamped to A's sub-pixel centroid → physical
       contrast amplitude at the radially-unbiased location.
     - C: norm-SNR image, position clamped to A → calibrated ``SNR_local`` at
@@ -1520,9 +1525,8 @@ def fit_planet_parameters(
     compatibility but are ignored: Fit A is always free (that is the point of
     the three-role setup).
     """
-    # Fit A: raw SNR image, fully free.
     snr_image_parameters = fit_2d_gaussian(
-        detection_image[2],
+        detection_image[2] if position_snr_image is None else position_snr_image,
         yx_position=yx_position,
         x_stddev=x_stddev,
         y_stddev=y_stddev,
@@ -3386,10 +3390,13 @@ class DetectionAnalysis(object):
         deviation_threshold=0.1,
         plot=False,
         base_positions=None,
+        position_snr_cube=None,
     ):
         """Fits 2D Gaussians to contrast, snr, and normalized snr images for candidate position.
         The normalization excludes ``base_positions`` and the candidate itself; ``base_positions``
         defaults to `self.reduction_parameters.yx_known_companion_position`.
+        ``position_snr_cube``, indexed like ``detection_cube``, gives the images Fit A takes the
+        position from instead of the S/N plane (see `fit_planet_parameters`).
 
         The resulting tables include both fit results from unconstrained fits and fits with fixed `x_stddev`, `y_stddev`,
         and `theta` of the 2D Gaussian, where the `theta` parameter is given by the position angle.
@@ -3465,6 +3472,7 @@ class DetectionAnalysis(object):
                 mask_deviating=mask_deviating,
                 deviation_threshold=deviation_threshold,
                 plot=plot,
+                position_snr_image=None if position_snr_cube is None else position_snr_cube[detection_product_index],
             )
 
             # Fit A is already a free fit, so the "_free" columns downstream
@@ -3574,6 +3582,7 @@ class DetectionAnalysis(object):
         candidate_exclusion_radius=None,
         max_candidates=DEFAULT_MAX_CANDIDATES,
         base_positions=None,
+        position_snr_cube=None,
     ):
         """
         Consolidate candidate detections with 2D Gaussian fitting and duplicate removal.
@@ -3614,6 +3623,9 @@ class DetectionAnalysis(object):
             Source positions relative to the image centre excluded from the
             renormalisation besides the candidates. Defaults to
             ``self.reduction_parameters.yx_known_companion_position``.
+        position_snr_cube : array_like, optional
+            Images, indexed like ``detection_cube``, that Fit A takes the position
+            from instead of the S/N plane. See `fit_candidates`.
 
         Returns
         -------
@@ -3702,6 +3714,7 @@ class DetectionAnalysis(object):
             detection_products=detection_products,
             plot=False,
             base_positions=base_positions,
+            position_snr_cube=position_snr_cube,
         )
         
         # Group per-wavelength detections of the same source (within
@@ -5031,6 +5044,8 @@ class DetectionAnalysis(object):
             save=save,
             base_positions=configured_positions,
         )
+        position_snr_image = detection_products.get("position_snr_image")
+        position_snr_cube = None if position_snr_image is None else position_snr_image[None]
 
         candidates_initial = self.find_candidates_all_wavelengths(
             detection_cube=detection_cube,
@@ -5056,6 +5071,7 @@ class DetectionAnalysis(object):
             candidate_exclusion_radius=candidate_exclusion_radius,
             max_candidates=max_candidates,
             base_positions=configured_positions,
+            position_snr_cube=position_snr_cube,
         )
 
         if candidates_fit_initial is None:
@@ -5103,6 +5119,7 @@ class DetectionAnalysis(object):
                 candidate_exclusion_radius=candidate_exclusion_radius,
                 max_candidates=max_candidates,
                 base_positions=template_base_positions,
+                position_snr_cube=position_snr_cube,
             )
             
             # Check if candidates survived the second iteration validation

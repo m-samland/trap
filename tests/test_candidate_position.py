@@ -67,3 +67,113 @@ def test_formal_fit_uses_correlation_with_formal_sigma(monkeypatch):
     cube, products = analysis.template_matching_detection(template, file_paths={}, save=False)
     reduced = _reduced(cube[0, 2])
     assert np.allclose(products["position_snr_image"][reduced], 2 * cube[0, 2][reduced])
+
+
+def _source_maps(size=41, separation=10.0, sigma_psf=1.5, amplitude=20.0, noise=0.0, seed=0):
+    """Template S/N with the formal uncertainty, and the ring-scaled one with a factor falling outward."""
+    centre = size // 2
+    yy, xx = np.mgrid[:size, :size]
+    snr = amplitude * np.exp(-((yy - centre) ** 2 + (xx - centre - separation) ** 2) / (2 * sigma_psf**2))
+    snr = snr + np.random.default_rng(seed).normal(0.0, noise, snr.shape)
+    radius = np.hypot(yy - centre, xx - centre)
+    ring_scaled = snr * np.exp((radius - separation) / 3.0)
+    contrast = snr * 1e-5
+    detection_image = np.stack([contrast, np.full_like(snr, 1e-5), ring_scaled])
+    contrast_table = pd.DataFrame({"sep (pix)": np.arange(size), "snr_normalization": np.ones(size)})
+    return detection_image, ring_scaled, snr, contrast_table, (centre, int(centre + separation))
+
+
+def _fit(detection_image, normalized, contrast_table, seed, position_snr_image=None):
+    from trap.detection import fit_planet_parameters
+
+    return fit_planet_parameters(
+        detection_image=detection_image,
+        normalized_detection_image=normalized,
+        contrast_table=contrast_table,
+        yx_position=seed,
+        x_stddev=1.5,
+        y_stddev=1.5,
+        box_size=11,
+        position_snr_image=position_snr_image,
+    )
+
+
+def _separation(result, centre=20):
+    return float(np.hypot(result["y"].values[0] - centre, result["x"].values[0] - centre))
+
+
+def test_fit_a_on_formal_map_removes_the_ring_bias():
+    detection_image, ring_scaled, snr, table, seed = _source_maps(noise=0.01)
+    ring_results = _fit(detection_image, ring_scaled, table, seed)
+    formal_results = _fit(detection_image, ring_scaled, table, seed, position_snr_image=snr)
+
+    assert _separation(ring_results[1]) > 10.2
+    assert abs(_separation(formal_results[1]) - 10.0) < 0.05
+    for contrast_result, snr_result, norm_result in (ring_results, formal_results):
+        for other in (contrast_result, norm_result):
+            assert np.isclose(other["x"].values[0], snr_result["x"].values[0])
+            assert np.isclose(other["y"].values[0], snr_result["y"].values[0])
+
+
+def test_fit_a_sigma_does_not_depend_on_the_map_scale():
+    detection_image, ring_scaled, snr, table, seed = _source_maps(noise=0.5)
+    single = _fit(detection_image, ring_scaled, table, seed, position_snr_image=snr)[1]
+    scaled = _fit(detection_image, ring_scaled, table, seed, position_snr_image=3 * snr)[1]
+    for column in ("radial_sigma_fit", "tangential_sigma_fit"):
+        assert np.isfinite(single[column].values[0])
+        assert np.isclose(single[column].values[0], scaled[column].values[0], rtol=1e-6)
+
+
+def test_fit_a_on_position_image_with_nan_box_fails_cleanly():
+    detection_image, ring_scaled, snr, table, seed = _source_maps()
+    results = _fit(detection_image, ring_scaled, table, seed, position_snr_image=np.full_like(snr, np.nan))
+    for result in results:
+        assert not result["fit_ok"].values[0]
+
+
+def _stubbed_run(tmp_path, monkeypatch, position_snr_image=None):
+    from test_template_path_masks import CONFIGURED, _run_template_path, _stubbed_template_analysis
+
+    analysis, _ = _stubbed_template_analysis(tmp_path, monkeypatch, configured=[CONFIGURED])
+    if position_snr_image is not None:
+        products = {"position_snr_image": position_snr_image}
+        monkeypatch.setattr(analysis, "template_matching_detection", lambda *args, **kwargs: (np.empty(0), products))
+    seen = {}
+    original_complete = analysis.complete_candidate_table
+    original_extract = analysis.extract_candidate_spectra
+
+    def complete_candidate_table(**kwargs):
+        seen.setdefault("position_snr_cube", []).append(kwargs.get("position_snr_cube"))
+        return original_complete(**kwargs)
+
+    def extract_candidate_spectra(**kwargs):
+        seen["positions"] = np.asarray(kwargs["yx_candidate_positions"], dtype=float)
+        return original_extract(**kwargs)
+
+    monkeypatch.setattr(analysis, "complete_candidate_table", complete_candidate_table)
+    monkeypatch.setattr(analysis, "extract_candidate_spectra", extract_candidate_spectra)
+    _run_template_path(analysis)
+    return analysis, seen
+
+
+def test_run_template_matching_without_position_image_uses_plane_2(tmp_path, monkeypatch):
+    _, seen = _stubbed_run(tmp_path, monkeypatch)
+    assert seen["position_snr_cube"] and all(cube is None for cube in seen["position_snr_cube"])
+
+
+def test_run_template_matching_passes_the_position_image_to_both_passes(tmp_path, monkeypatch):
+    image = np.arange(21 * 21, dtype=float).reshape(21, 21)
+    _, seen = _stubbed_run(tmp_path, monkeypatch, position_snr_image=image)
+    assert len(seen["position_snr_cube"]) == 2 * 2
+    for cube in seen["position_snr_cube"]:
+        assert cube.shape == (1, 21, 21) and np.array_equal(cube[0], image)
+
+
+def test_spectrum_is_extracted_at_the_reported_position(tmp_path, monkeypatch):
+    analysis, seen = _stubbed_run(tmp_path, monkeypatch)
+    for template in analysis.templates.values():
+        table = template.companion_table
+        assert table is not None and len(table)
+        for candidate_id, rows in table.groupby("candidate_id"):
+            reported = rows[["y_relative", "x_relative"]].to_numpy(dtype=float)
+            assert np.allclose(reported, seen["positions"][int(candidate_id)])
