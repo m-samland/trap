@@ -1963,6 +1963,31 @@ def _remove_stale_outputs(output_dir, filenames):
             pass
 
 
+def _t_type_fit_flags(n_reduced_channels, photometry=False):
+    """Whether the T-type template fits a constant offset and a slope in wavelength.
+
+    Both absorb a residual common to all channels when there are channels to
+    spare. With two or fewer channels, amplitude and offset are as many unknowns
+    as data: the offset takes up the band sum and the amplitude only measures
+    the band difference, so the map becomes a colour map that does not peak at
+    the source.
+
+    Parameters
+    ----------
+    n_reduced_channels : int
+        Number of wavelength channels the template fit runs on.
+    photometry : bool
+        Whether the instrument is a photometric one, which never gets a slope.
+
+    Returns
+    -------
+    tuple of bool
+        ``(fit_offset, fit_slope)``.
+    """
+    enough_channels = n_reduced_channels > 2
+    return enough_channels, enough_channels and not photometry
+
+
 def _solve_template_pixel(design_matrix, contrasts, uncertainties, correlation=None):
     """Amplitude of the last design column and its uncertainty for one pixel's template fit.
 
@@ -4535,13 +4560,12 @@ class DetectionAnalysis(object):
                     model_param=stellar_parameters
                 )
 
-        if (
-            instrument.instrument_type == "photometry"
-            or len(instrument.wavelengths) <= 2
-        ):
-            t_type_slope_fit = False
-        else:
-            t_type_slope_fit = True
+        n_reduced_channels = len(
+            instrument.wavelengths if self.wavelength_indices is None else self.wavelength_indices
+        )
+        t_type_offset_fit, t_type_slope_fit = _t_type_fit_flags(
+            n_reduced_channels, photometry=instrument.instrument_type == "photometry"
+        )
 
         if "L-type" in template_names:
             self.templates["L-type"] = SpectralTemplate(
@@ -4566,7 +4590,7 @@ class DetectionAnalysis(object):
                 stellar_modelbox=stellar_modelbox,
                 wavelength_indices=self.wavelength_indices,
                 correct_transmission=correct_transmission,
-                fit_offset=True,
+                fit_offset=t_type_offset_fit,
                 fit_slope=t_type_slope_fit,
                 number_of_pca_regressors=0,
                 use_spectral_correlation=use_spectral_correlation,

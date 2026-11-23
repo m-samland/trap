@@ -136,3 +136,35 @@ def test_detection_entry_point_forwards_template_names():
         detection.DetectionAnalysis.detection_and_characterization_with_template_matching
     )
     assert signature.parameters["template_names"].default is None
+
+
+@pytest.mark.parametrize(
+    "n_channels, photometry, expected",
+    [(1, False, (False, False)), (2, False, (False, False)), (3, False, (True, True)), (39, True, (True, False))],
+)
+def test_t_type_fit_flags(n_channels, photometry, expected):
+    assert detection._t_type_fit_flags(n_channels, photometry=photometry) == expected
+
+
+class _RecordingTemplate(_Template):
+    def __init__(self, name, companion_modelbox, stellar_modelbox, **kwargs):
+        super().__init__(name, companion_modelbox, stellar_modelbox)
+        self.fit_offset = kwargs["fit_offset"]
+        self.fit_slope = kwargs["fit_slope"]
+
+
+@pytest.mark.parametrize("wavelength_indices, expected", [([5, 6], (False, False)), ([4, 5, 6], (True, True))])
+def test_t_type_offset_follows_the_reduced_channels(stub_species, monkeypatch, wavelength_indices, expected):
+    monkeypatch.setattr(detection, "SpectralTemplate", _RecordingTemplate)
+    analysis = _analysis()
+    analysis.instrument = SimpleNamespace(
+        instrument_type="spectroscopy",
+        wavelengths=np.linspace(0.95, 1.65, 39) * u.micron,
+        filters=None,
+    )
+    analysis.wavelength_indices = np.array(wavelength_indices)
+    analysis.add_default_templates(
+        stellar_modelbox=None, species_database_directory="db", template_names=("T-type",),
+    )
+    t_type = analysis.templates["T-type"]
+    assert (t_type.fit_offset, t_type.fit_slope) == expected
