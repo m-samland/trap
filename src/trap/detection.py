@@ -1959,6 +1959,38 @@ def _remove_stale_outputs(output_dir, filenames):
             pass
 
 
+def _solve_template_pixel(design_matrix, contrasts, uncertainties, correlation=None):
+    """Amplitude of the last design column and its uncertainty for one pixel's template fit.
+
+    Parameters
+    ----------
+    design_matrix : ndarray
+        Shape (n_channels, n_parameters); the template is the last column.
+    contrasts, uncertainties : ndarray
+        Per-channel contrast and its uncertainty at the pixel.
+    correlation : ndarray, optional
+        Channel correlation matrix; the covariance is then
+        ``uncertainties[:, None] * correlation * uncertainties[None, :]``.
+
+    Returns
+    -------
+    tuple of float
+        Amplitude and its standard deviation.
+    """
+    if correlation is not None:
+        covariance = uncertainties[:, None] * correlation * uncertainties[None, :]
+        parameters, variances = pca_regression.solve_linear_equation_with_correlation(
+            design_matrix=design_matrix.T,
+            data=contrasts,
+            inverse_covariance_matrix=np.linalg.inv(covariance),
+        )
+    else:
+        parameters, variances = pca_regression.solve_linear_equation_simple(
+            design_matrix=design_matrix.T, data=contrasts, inverse_covariance=1.0 / uncertainties**2
+        )
+    return float(parameters[-1]), float(np.sqrt(variances[-1]))
+
+
 def _combine_templates_best_snr(per_template_tables, search_radius):
     """Cross-template combination per Section 5 of the astrometry-uncertainty
     spec. Each element of ``per_template_tables`` is one template's companion
@@ -4600,6 +4632,12 @@ class DetectionAnalysis(object):
                 Radial contrast curves and normalization factors
             - 'normalized_detection_cube' : list of ndarray
                 Normalized detection maps for candidate identification
+            - 'position_snr_image' : ndarray
+                S/N of the same template fit with the formal per-channel
+                uncertainty (detection cube plane 1) instead of the ring-scaled
+                one. Fit A takes the candidate position from it, because a
+                factor that changes with the separation of the trial position
+                moves the peak of the map.
 
         Notes
         -----
@@ -4652,8 +4690,10 @@ class DetectionAnalysis(object):
             "float64"
         ).copy()  # / detection1.reduction_parameters.contrast_curve_sigma
         
+        formal_uncertainty_cube = self.detection_cube[:, 1].astype("float64").copy()
         contrast_cube[contrast_cube == 0.0] = np.nan
         uncertainty_cube[uncertainty_cube == 0.0] = np.nan
+        formal_uncertainty_cube[formal_uncertainty_cube == 0.0] = np.nan
         
         yx_dim = [contrast_cube.shape[-2], contrast_cube.shape[-1]]
         yx_center_output = [yx_dim[0] // 2, yx_dim[1]]
@@ -4673,6 +4713,7 @@ class DetectionAnalysis(object):
         position_indices = np.argwhere(reduced_positions_mask)
 
         template_matched_image = np.zeros((3, yx_dim[0], yx_dim[1]))
+        position_snr_image = np.zeros((yx_dim[0], yx_dim[1]))
 
         # median_contrast = bn.nanmedian(contrast_cube, axis=0)
         # regressors_centered = contrast_cube - median_contrast
@@ -4699,28 +4740,15 @@ class DetectionAnalysis(object):
                 yx_pixel, yx_center_output
             )
 
+            psi_ij = None
             if template.use_spectral_correlation:
                 separation = np.sqrt(relative_coords[0] ** 2 + relative_coords[1] ** 2)
-
                 psi_ij = correlation_at(
                     separation,
                     self.empirical_correlation["matrices"],
                     self.empirical_correlation["fit"],
                     self.empirical_correlation["wavelengths"],
                 )
-                cov_ij = uncertainties[:, None] * psi_ij * uncertainties[None, :]
-                # cov_ij_norm = (
-                #     uncertainties_norm[:, None] * psi_ij * uncertainties_norm[None, :]
-                # )
-                # plot_scale(cov_ij)
-                # plt.show()
-                inv_cov_ij = np.linalg.inv(cov_ij)
-            else:
-                cov_ij = np.identity(len(contrasts)) * uncertainties**2
-                inv_cov = 1.0 / uncertainties**2
-            # if show:
-            # plot_scale(np.dot(inverse, cov_ij))
-            # plt.show()
 
             model_components = []
 
@@ -4764,38 +4792,15 @@ class DetectionAnalysis(object):
             else:
                 A = model_matrix.T
 
-            if template.use_spectral_correlation:
-                (
-                    P,
-                    P_sigma_squared,
-                ) = pca_regression.solve_linear_equation_with_correlation(
-                    design_matrix=A.T,
-                    data=contrasts,
-                    inverse_covariance_matrix=inv_cov_ij,
-                )
-            else:
-                P, P_sigma_squared = pca_regression.solve_linear_equation_simple(
-                    design_matrix=A.T, data=contrasts, inverse_covariance=inv_cov
-                )
+            amplitude, sigma = _solve_template_pixel(A, contrasts, uncertainties, psi_ij)
+            template_matched_image[0, yx_pixel[0], yx_pixel[1]] = amplitude
+            template_matched_image[1, yx_pixel[0], yx_pixel[1]] = sigma
+            template_matched_image[2, yx_pixel[0], yx_pixel[1]] = amplitude / sigma
 
-            # fit_parameters, err_fit_parameters, sigma_hat_sqr = pca_regression.ols(
-            #     design_matrix=A, data=contrasts_norm, covariance=cov_ij_norm)
-
-            # P, P_sigma, _ = pca_regression.ols(
-            #     design_matrix=A, data=contrasts, covariance=cov_ij)
-
-            # P = P * contrasts_mean
-            # P_sigma_squared = P_sigma**2  # * np.abs(contrasts_mean))**2
-            # fit_parameters[-1] * mean_data
-            # reconstructed_lightcurve = np.dot(A, P)
-
-            template_matched_image[0, yx_pixel[0], yx_pixel[1]] = P[-1]
-            template_matched_image[1, yx_pixel[0], yx_pixel[1]] = np.sqrt(
-                P_sigma_squared[-1]
+            formal_amplitude, formal_sigma = _solve_template_pixel(
+                A, contrasts, formal_uncertainty_cube[:, yx_pixel[0], yx_pixel[1]], psi_ij
             )
-            template_matched_image[2, yx_pixel[0], yx_pixel[1]] = P[-1] / np.sqrt(
-                P_sigma_squared[-1]
-            )
+            position_snr_image[yx_pixel[0], yx_pixel[1]] = formal_amplitude / formal_sigma
 
         if file_paths is None:
             file_paths = {}
@@ -4829,6 +4834,8 @@ class DetectionAnalysis(object):
             file_paths=file_paths,
             mask_above_sigma=detection_threshold,
         )
+
+        detection_products_matched["position_snr_image"] = position_snr_image
 
         detection_cube = np.expand_dims(template_matched_image, axis=0)
         detection_products = detection_products_matched
