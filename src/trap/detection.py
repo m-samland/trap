@@ -5082,7 +5082,7 @@ class DetectionAnalysis(object):
             save=save,
             base_positions=configured_positions,
         )
-        position_snr_image = detection_products.get("position_snr_image")
+        position_snr_image = (detection_products or {}).get("position_snr_image")
         position_snr_cube = None if position_snr_image is None else position_snr_image[None]
 
         candidates_initial = self.find_candidates_all_wavelengths(
