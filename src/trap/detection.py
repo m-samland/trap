@@ -1988,6 +1988,32 @@ def _t_type_fit_flags(n_reduced_channels, photometry=False):
     return enough_channels, enough_channels and not photometry
 
 
+def _flag_low_snr_spectra(table, threshold):
+    """Mark candidates whose extracted spectrum has no channel at or above ``threshold``.
+
+    Such a source is only detected by the template fit over all channels. Its
+    spectrum is still extracted and reported; ``spectrum_low_snr`` tells the
+    reader that no single channel measures it. A NaN ``snr`` counts as below.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Companion table with one row per candidate and wavelength, with
+        ``candidate_id`` and ``snr``.
+    threshold : float
+        Candidate threshold on the per-channel S/N.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copy of ``table`` with the boolean column ``spectrum_low_snr``.
+    """
+    out = table.copy()
+    detected = (out["snr"] >= threshold).groupby(out["candidate_id"]).transform("any")
+    out["spectrum_low_snr"] = ~detected.astype(bool)
+    return out
+
+
 def _solve_template_pixel(design_matrix, contrasts, uncertainties, correlation=None):
     """Amplitude of the last design column and its uncertainty for one pixel's template fit.
 
@@ -5196,6 +5222,9 @@ class DetectionAnalysis(object):
             # yx_known_companion_position = np.unique(
             #     validated_companion_table[['y_relative', 'x_relative']].values, axis=0)
 
+            companion_table = _flag_low_snr_spectra(companion_table, candidate_threshold)
+            validated_companion_table = _flag_low_snr_spectra(validated_companion_table, candidate_threshold)
+
             companion_table.to_csv(
                 os.path.join(
                     output_dir_matching, f"companion_table_{template_name}.csv"
@@ -5555,7 +5584,7 @@ class DetectionAnalysis(object):
                 "astrometry_template_disagreement",
                 "x_relative_sigma_template_scatter", "y_relative_sigma_template_scatter",
                 "separation_sigma_template_scatter", "position_angle_sigma_template_scatter",
-                "norm_snr_fit_free", "peak_pixel_snr",
+                "norm_snr_fit_free", "peak_pixel_snr", "spectrum_low_snr",
                 "wavelength_index", "wavelength", "contrast", "uncertainty",
             ]
             spectra_present = [

@@ -177,3 +177,38 @@ def test_spectrum_is_extracted_at_the_reported_position(tmp_path, monkeypatch):
         for candidate_id, rows in table.groupby("candidate_id"):
             reported = rows[["y_relative", "x_relative"]].to_numpy(dtype=float)
             assert np.allclose(reported, seen["positions"][int(candidate_id)])
+
+
+def test_low_snr_flag_per_candidate():
+    from trap.detection import _flag_low_snr_spectra
+
+    table = pd.DataFrame(
+        {
+            "candidate_id": [0, 0, 1, 1, 2, 2],
+            "snr": [3.0, 5.0, 3.0, 4.0, np.nan, np.nan],
+        }
+    )
+    flagged = _flag_low_snr_spectra(table, 4.75)
+    assert flagged["spectrum_low_snr"].tolist() == [False, False, True, True, True, True]
+    assert "spectrum_low_snr" not in table
+
+
+def test_low_snr_flag_reaches_the_combined_tables(tmp_path):
+    from test_astrometry_uncertainty import _fake_template_table
+
+    from trap.detection import _flag_low_snr_spectra
+
+    analysis = DetectionAnalysis.__new__(DetectionAnalysis)
+    analysis.reduction_parameters = SimpleNamespace(result_folder=str(tmp_path))
+    tables = {}
+    for name, x_rel, snr in (("T-type", 8.0, 10.0), ("flat", 8.1, 9.0)):
+        table = _fake_template_table(name, x_rel, 0.0, snr=snr).assign(snr=[3.0, 4.0])
+        tables[name] = _flag_low_snr_spectra(table, 4.75)
+    analysis.templates = {name: SimpleNamespace(companion_table=t, validated_companion_table=t) for name, t in tables.items()}
+    analysis.combine_template_matched_companion_tables(search_radius=3.0, validated_only=True)
+
+    folder = tmp_path / "template_matching"
+    for name in ("overall_validated_companion_detections.csv", "overall_validated_companion_detections_spectra.csv"):
+        written = pd.read_csv(folder / name)
+        assert written["spectrum_low_snr"].astype(bool).all()
+        assert "per_channel_distance_sigma" in written
