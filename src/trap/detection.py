@@ -2080,14 +2080,16 @@ def _solve_template_pixel(design_matrix, contrasts, uncertainties, correlation=N
     return float(parameters[-1]), float(np.sqrt(variances[-1]))
 
 
-def _template_noise_ratio(design_matrix, assumed_uncertainties, true_uncertainties, correlation=None):
+def _template_noise_ratio(
+    design_matrix, assumed_uncertainties, true_uncertainties, assumed_correlation=None, true_correlation=None
+):
     """Noise standard deviation of a template S/N solved with one uncertainty when the data have another.
 
     The amplitude is the last design column's, solved by generalised least
     squares with ``assumed_uncertainties`` (and ``correlation``); its S/N is the
     amplitude over the σ this solve reports. The ratio of the amplitude's
-    standard deviation under ``true_uncertainties`` to that σ is the S/N's
-    noise standard deviation, one when both uncertainties agree.
+    standard deviation under ``true_uncertainties`` (and ``true_correlation``)
+    to that σ is the S/N's noise standard deviation, one when both agree.
 
     Parameters
     ----------
@@ -2095,21 +2097,30 @@ def _template_noise_ratio(design_matrix, assumed_uncertainties, true_uncertainti
         Shape (n_channels, n_parameters); the template is the last column.
     assumed_uncertainties, true_uncertainties : ndarray
         Per-channel uncertainties used in the solve and of the data.
-    correlation : ndarray, optional
-        Channel correlation matrix, the same for both.
+    assumed_correlation, true_correlation : ndarray, optional
+        Channel correlation matrices of the solve and of the data; None is the
+        identity.
 
     Returns
     -------
     float
-        Noise standard deviation of the S/N, NaN when an uncertainty is not finite.
+        Noise standard deviation of the S/N, NaN when an uncertainty is not
+        finite or the solve is singular.
     """
     if not (np.isfinite(assumed_uncertainties).all() and np.isfinite(true_uncertainties).all()):
         return np.nan
-    psi = np.identity(len(assumed_uncertainties)) if correlation is None else correlation
-    assumed_inverse = np.linalg.inv(assumed_uncertainties[:, None] * psi * assumed_uncertainties[None, :])
-    normal_inverse = np.linalg.inv(design_matrix.T @ assumed_inverse @ design_matrix)
+    identity = np.identity(len(assumed_uncertainties))
+    assumed_psi = identity if assumed_correlation is None else assumed_correlation
+    true_psi = identity if true_correlation is None else true_correlation
+    try:
+        assumed_inverse = np.linalg.inv(assumed_uncertainties[:, None] * assumed_psi * assumed_uncertainties[None, :])
+        normal_inverse = np.linalg.inv(design_matrix.T @ assumed_inverse @ design_matrix)
+    except np.linalg.LinAlgError:
+        return np.nan
     gain = assumed_inverse @ design_matrix @ normal_inverse[:, -1]
-    true_variance = gain @ (true_uncertainties[:, None] * psi * true_uncertainties[None, :]) @ gain
+    true_variance = gain @ (true_uncertainties[:, None] * true_psi * true_uncertainties[None, :]) @ gain
+    if not true_variance > 0 or not normal_inverse[-1, -1] > 0:
+        return np.nan
     return float(np.sqrt(true_variance / normal_inverse[-1, -1]))
 
 
@@ -2133,19 +2144,22 @@ def _ring_factors_at_separation(uncertainty_cube, formal_uncertainty_cube, separ
     Returns
     -------
     ndarray or None
-        Factor per channel, or None when a channel has no finite positive factor.
+        Factor per channel. A channel without a finite positive factor gets the
+        median of the others; None when no channel has one.
     """
     yy, xx = np.indices(uncertainty_cube.shape[-2:])
     annulus = np.abs(np.hypot(yy - yx_center[0], xx - yx_center[1]) - separation) <= half_width
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = uncertainty_cube[:, annulus] / formal_uncertainty_cube[:, annulus]
-    if ratio.shape[1] == 0 or not np.isfinite(ratio).any(axis=1).all():
+    if ratio.shape[1] == 0:
         return None
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         factors = np.nanmedian(np.where(np.isfinite(ratio), ratio, np.nan), axis=1)
-    if not (np.isfinite(factors).all() and (factors > 0).all()):
+    valid = np.isfinite(factors) & (factors > 0)
+    if not valid.any():
         return None
+    factors[~valid] = np.median(factors[valid])
     return factors
 
 
@@ -2295,7 +2309,7 @@ def _attach_per_channel_diagnostics(overall_table, per_channel_table, match_radi
     per_channel_table : pandas.DataFrame or None
         Output of `measure_per_channel_astrometry`.
     match_radius : float
-        Largest distance in pixels for a per-channel match, about one FWHM.
+        Largest distance in pixels for a per-channel match, about two FWHM.
 
     Returns
     -------
@@ -4845,17 +4859,19 @@ class DetectionAnalysis(object):
         a noise-normalisation factor per channel that changes with separation.
         Inside a fit box that factor rises towards the star and moves the S/N
         peak outward. Here each channel's factor is frozen at the candidate's
-        separation, so the box has no radial tilt, while channels the ring finds
+        separation, and so is the channel correlation when the template uses
+        it, so the box has no radial tilt, while channels the ring finds
         noisier keep their lower weight. That weighting matters most when TRAP
         ran without inverse variance, since the formal uncertainty then assumes
         the same noise in every channel.
 
         The noise of this S/N image is one at the candidate's separation and
         follows the ring factors elsewhere in the box, so the second image gives
-        its standard deviation from the ring-scaled uncertainty of each pixel,
-        for Fit A to weight its pixels with. When a channel has no finite
-        positive factor at the candidate's separation, all factors are set to
-        one and the noise image is one.
+        its standard deviation from the ring-scaled uncertainty and channel
+        correlation of each pixel, for Fit A to weight its pixels with. A
+        channel without a finite positive factor at the candidate's separation
+        takes the median factor of the others; when no channel has one, all
+        factors are set to one and the noise image is one.
 
         Parameters
         ----------
@@ -4884,7 +4900,7 @@ class DetectionAnalysis(object):
         ring_factors = _ring_factors_at_separation(uncertainty_cube, formal_uncertainty_cube, separation, yx_center)
         if ring_factors is None:
             logger.warning(
-                "No finite noise-normalisation factor in every channel at separation %.1f px; the position "
+                "No finite noise-normalisation factor in any channel at separation %.1f px; the position "
                 "of the candidate at (y, x) = (%.1f, %.1f) is fitted with the formal uncertainty alone.",
                 separation, yx_position[0], yx_position[1],
             )
@@ -4893,6 +4909,14 @@ class DetectionAnalysis(object):
 
         if template.use_spectral_correlation and getattr(self, "empirical_correlation", None) is None:
             self.make_spectral_correlation_matrices()
+        frozen_correlation = None
+        if template.use_spectral_correlation:
+            frozen_correlation = correlation_at(
+                separation,
+                self.empirical_correlation["matrices"],
+                self.empirical_correlation["fit"],
+                self.empirical_correlation["wavelengths"],
+            )
 
         image = np.full(yx_dim, np.nan)
         noise = np.full(yx_dim, np.nan)
@@ -4906,9 +4930,13 @@ class DetectionAnalysis(object):
                     template, (y, x), contrast_cube, reduced_positions_mask, wavelengths
                 )
                 frozen_uncertainties = formal_uncertainty_cube[:, y, x] * ring_factors
-                amplitude, sigma = _solve_template_pixel(A, contrasts, frozen_uncertainties, psi_ij)
+                amplitude, sigma = _solve_template_pixel(A, contrasts, frozen_uncertainties, frozen_correlation)
                 image[y, x] = amplitude / sigma
-                noise[y, x] = _template_noise_ratio(A, frozen_uncertainties, uncertainty_cube[:, y, x], psi_ij)
+                ring_uncertainties = uncertainty_cube[:, y, x]
+                ring_uncertainties = np.where(np.isfinite(ring_uncertainties), ring_uncertainties, frozen_uncertainties)
+                noise[y, x] = _template_noise_ratio(
+                    A, frozen_uncertainties, ring_uncertainties, frozen_correlation, psi_ij
+                )
         return image, noise
 
     def template_matching_detection(
@@ -5673,7 +5701,13 @@ class DetectionAnalysis(object):
         return candidates_fit["snr_image"]
 
     def _per_channel_match_radius(self, fallback):
-        """Largest PSF FWHM in pixels of the reduced channels, or ``fallback`` without one."""
+        """Twice the largest PSF FWHM in pixels of the reduced channels, at most ``fallback``.
+
+        A per-channel position up to two FWHM from the reported one still counts
+        as the same source, so a large offset is flagged instead of read as a
+        missing per-channel detection; the one-to-one pairing keeps a neighbour
+        from taking it.
+        """
         fwhm = getattr(getattr(self, "instrument", None), "fwhm", None)
         if fwhm is None:
             return fallback
@@ -5682,7 +5716,7 @@ class DetectionAnalysis(object):
             fwhm = fwhm[np.asarray(self.wavelength_indices)]
         if not np.isfinite(fwhm).any():
             return fallback
-        return float(np.nanmax(fwhm))
+        return float(min(2.0 * np.nanmax(fwhm), fallback))
 
     def combine_template_matched_companion_tables(
         self,

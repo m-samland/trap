@@ -98,16 +98,47 @@ def test_position_image_uses_the_correlation(monkeypatch):
     assert np.allclose(image[_box(image)], expected)
 
 
+def test_channel_without_ring_factor_takes_the_median_of_the_others(monkeypatch, caplog):
+    size = 15
+    ring = np.stack([np.full((size, size), 2.0), np.full((size, size), 4.0), np.full((size, size), np.nan)])
+    analysis, template = _template_analysis(monkeypatch, 3, contrast=1.0, formal=1.0, ring=ring, size=size)
+    with caplog.at_level(logging.WARNING):
+        image, noise = analysis.template_position_snr_image(template, (7, 11), box_size=3)
+    assert "formal uncertainty alone" not in caplog.text
+    expected = np.sum(1 / np.array([2.0, 4.0, 3.0]) ** 2) / np.sqrt(np.sum(1 / np.array([2.0, 4.0, 3.0]) ** 2))
+    assert np.allclose(image[_box(image)], expected)
+    assert np.allclose(noise[_box(image)], 1.0)
+
+
 def test_position_image_falls_back_to_the_formal_uncertainty(monkeypatch, caplog):
     size = 15
-    ring = np.ones((2, size, size))
-    ring[1] = np.nan
-    analysis, template = _template_analysis(monkeypatch, 2, contrast=1.0, formal=1.0, ring=ring, size=size)
+    analysis, template = _template_analysis(monkeypatch, 2, contrast=1.0, formal=1.0, ring=np.nan, size=size)
     with caplog.at_level(logging.WARNING):
         image, noise = analysis.template_position_snr_image(template, (7, 11), box_size=3)
     assert "formal uncertainty alone" in caplog.text
     assert np.allclose(image[_box(image)], np.sqrt(2))
     assert np.allclose(noise[_box(image)], 1.0)
+
+
+def test_position_image_freezes_the_correlation(monkeypatch):
+    size = 15
+    near = np.array([[1.0, 0.6], [0.6, 1.0]])
+    far = np.array([[1.0, -0.4], [-0.4, 1.0]])
+    contrast = np.array([1.0, 2.0])[:, None, None] * np.ones((2, size, size))
+    analysis, template = _template_analysis(monkeypatch, 2, contrast=contrast, formal=1.0, ring=1.0, correlation=True,
+                                            size=size)
+    analysis.empirical_correlation["matrices"] = np.stack([near, far])
+    analysis.empirical_correlation["fit"] = pd.DataFrame(
+        {"separation": [3.6, 6.0], "fitted": [False, False], "flagged": [False, False]}
+    )
+    image, noise = analysis.template_position_snr_image(template, (7, 11), box_size=3)
+    box = _box(image)
+    inverse = np.linalg.inv(near)
+    expected = (np.ones(2) @ inverse @ np.array([1.0, 2.0])) / np.sqrt(np.ones(2) @ inverse @ np.ones(2))
+    assert np.allclose(image[box], expected)
+    radius = _radius(size)
+    assert np.allclose(noise[box & (radius < 4.8)], 1.0)
+    assert not np.allclose(noise[box & (radius > 4.8)], 1.0)
 
 
 def test_position_image_skips_unreduced_pixels(monkeypatch):
@@ -132,9 +163,21 @@ def test_noise_ratio_with_correlation_and_offset():
     inverse = np.linalg.inv(assumed[:, None] * psi * assumed[None, :])
     normal_inverse = np.linalg.inv(design.T @ inverse @ design)
     snr = draws @ (inverse @ design @ normal_inverse[:, -1]) / np.sqrt(normal_inverse[-1, -1])
-    assert np.isclose(_template_noise_ratio(design, assumed, true, psi), snr.std(), rtol=0.02)
-    assert np.isclose(_template_noise_ratio(design, assumed, 3 * assumed, psi), 3.0)
-    assert np.isnan(_template_noise_ratio(design, assumed, np.array([1.0, np.nan, 1.0, 1.0]), psi))
+    assert np.isclose(_template_noise_ratio(design, assumed, true, psi, psi), snr.std(), rtol=0.02)
+    assert np.isclose(_template_noise_ratio(design, assumed, 3 * assumed, psi, psi), 3.0)
+    assert np.isnan(_template_noise_ratio(design, assumed, np.array([1.0, np.nan, 1.0, 1.0]), psi, psi))
+
+    true_psi = np.identity(4)
+    draws = rng.multivariate_normal(np.zeros(4), true[:, None] * true_psi * true[None, :], size=40000)
+    snr = draws @ (inverse @ design @ normal_inverse[:, -1]) / np.sqrt(normal_inverse[-1, -1])
+    assert np.isclose(_template_noise_ratio(design, assumed, true, psi, true_psi), snr.std(), rtol=0.02)
+
+
+def test_noise_ratio_of_a_singular_design_is_nan():
+    from trap.detection import _template_noise_ratio
+
+    design = np.column_stack([np.ones(3), np.ones(3)])
+    assert np.isnan(_template_noise_ratio(design, np.ones(3), np.ones(3)))
 
 
 def test_weighted_fit_ignores_a_noisy_side():

@@ -582,7 +582,8 @@ def test_match_radius_is_the_largest_reduced_fwhm():
     analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
     analysis.instrument = SimpleNamespace(fwhm=np.array([3.0, 4.5, 9.0]))
     analysis.wavelength_indices = np.array([0, 1])
-    assert analysis._per_channel_match_radius(15.0) == pytest.approx(4.5)
+    assert analysis._per_channel_match_radius(15.0) == pytest.approx(9.0)
+    assert analysis._per_channel_match_radius(6.0) == pytest.approx(6.0)
     analysis.instrument = SimpleNamespace(fwhm=None)
     assert analysis._per_channel_match_radius(15.0) == 15.0
 
