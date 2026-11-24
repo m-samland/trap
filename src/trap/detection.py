@@ -4042,16 +4042,17 @@ class DetectionAnalysis(object):
         component_key = str(temporal_components_fraction[0])
         missing_channels = []
         for wavelength_index in wavelength_indices:
-            # A channel is absent or None when its PSF is unusable or too few pixels
-            # remain at this position.
+            # A channel, or its model's entry, is absent or None when its PSF is unusable
+            # or too few pixels (or reference frames) remain at this position.
             channel_result = all_results[component_key].get(str(wavelength_index))
-            if channel_result is None:
+            model_result = None if channel_result is None else channel_result.get(self.reduction_type)
+            if model_result is None:
                 missing_channels.append(int(wavelength_index))
                 contrast.append(np.nan)
                 uncertainty.append(np.nan)
                 continue
-            contrast.append(channel_result[self.reduction_type].measured_contrast)
-            uncertainty.append(channel_result[self.reduction_type].contrast_uncertainty)
+            contrast.append(model_result.measured_contrast)
+            uncertainty.append(model_result.contrast_uncertainty)
         if missing_channels:
             logger.warning(
                 "No result at position %s in %d channels %s; their spectrum entries are NaN.",

@@ -111,6 +111,27 @@ def test_number_of_components_is_the_fraction_of_reference_frames(synthetic, con
     assert result.number_of_pca_regressors == 18
 
 
+def test_number_of_components_is_capped_at_half_the_fitted_pixels(synthetic, config, runtime, monkeypatch, caplog):
+    data, model, reference, _, mask = synthetic
+    brightest = np.argsort(np.where(mask, model.sum(axis=0), -np.inf), axis=None)[-60:]
+    small_mask = np.zeros_like(mask)
+    small_mask.flat[brightest] = True
+    requested = []
+    original = regression._reference_basis
+
+    def recording(training_matrix, n_components, scaling):
+        requested.append(n_components)
+        return original(training_matrix, n_components, scaling)
+
+    monkeypatch.setattr(regression, "_reference_basis", recording)
+    with caplog.at_level("DEBUG", logger=regression.logger.name):
+        result = run_trap_with_model_rdi(data, model, reference, config.merge(rdi_components_fraction=0.9), POSITION,
+                                         small_mask, runtime=runtime, yx_center=YX_CENTER)
+    assert requested == [30]
+    assert result.number_of_pca_regressors == 30
+    assert "capped" in caplog.text
+
+
 def test_reference_frames_with_nonfinite_pixels_in_the_mask_are_dropped(synthetic, config, runtime, monkeypatch):
     _, _, reference, _, mask = synthetic
     reference = reference.copy()

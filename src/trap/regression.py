@@ -1237,13 +1237,19 @@ def run_trap_with_model_spatial(
 def _reference_basis(training_matrix, n_components, scaling):
     """Leading principal components of the reference frames.
 
-    Args:
-        training_matrix: ``(n_pixel, n_reference_frame)`` matrix of reference pixels.
-        n_components: Number of components to keep.
-        scaling: Scaling passed to `pca_regression.matrix_scaling`, or None.
+    Parameters
+    ----------
+    training_matrix : numpy.ndarray
+        ``(n_pixel, n_reference_frame)`` matrix of reference pixels.
+    n_components : int
+        Number of components to keep.
+    scaling : str or None
+        Scaling passed to `pca_regression.matrix_scaling`.
 
-    Returns:
-        numpy.ndarray: ``(n_pixel, n_components)`` basis of spatial components.
+    Returns
+    -------
+    numpy.ndarray
+        ``(n_pixel, n_components)`` basis of spatial components.
     """
     return pca_regression.compute_SVD(training_matrix, n_components=n_components, scaling=scaling)[0]
 
@@ -1263,26 +1269,40 @@ def run_trap_with_model_rdi(
     One basis is built from the reference frames and used for every science frame,
     together with a constant offset and the companion model, as in the spatial model.
     The reference frames contain no companion, so neither a protection angle nor time
-    masks are needed.
+    masks are needed. The number of components is the fraction `rdi_components_fraction`
+    of the finite reference frames, at most half the number of fitted pixels.
 
-    Args:
-        data: Science cube ``(n_frame, y, x)``.
-        model: Companion model cube with the shape of `data`.
-        reference_data: Reference cube ``(n_reference_frame, y, x)`` on the pixel grid of `data`.
-        reduction_parameters: `~trap.parameters.TrapReductionConfig` with `pca_scaling` and
-            `rdi_components_fraction`.
-        planet_relative_yx_pos: Relative (yx)-position of the tested position. Accepted for the
-            interface shared with the other models; the fit does not use it.
-        reduction_mask: Boolean mask of the pixels fitted.
-        runtime: `~trap.parameters.ReductionRuntimeState`. Accepted for the shared interface.
-        yx_center: Image centre used in the reduction. Defaults to the middle of the image.
-        yx_center_injection: Accepted for the shared interface.
-        inverse_variance_reduction_area: Inverse variance of the pixels in `reduction_mask`, or None.
-        true_contrast: Contrast of an injected signal, or None.
+    Parameters
+    ----------
+    data : numpy.ndarray
+        Science cube ``(n_frame, y, x)``.
+    model : numpy.ndarray
+        Companion model cube with the shape of `data`.
+    reference_data : numpy.ndarray
+        Reference cube ``(n_reference_frame, y, x)`` on the pixel grid of `data`.
+    reduction_parameters : trap.parameters.TrapReductionConfig
+        Configuration with `pca_scaling` and `rdi_components_fraction`.
+    planet_relative_yx_pos : array_like
+        Relative (yx)-position of the tested position. Accepted for the interface shared
+        with the other models; the fit does not use it.
+    reduction_mask : numpy.ndarray
+        Boolean mask of the pixels fitted.
+    runtime : trap.parameters.ReductionRuntimeState, optional
+        Accepted for the shared interface.
+    yx_center : tuple of float, optional
+        Image centre used in the reduction. Defaults to the middle of the image.
+    yx_center_injection : tuple of float, optional
+        Accepted for the shared interface.
+    inverse_variance_reduction_area : numpy.ndarray, optional
+        Inverse variance of the pixels in `reduction_mask`.
+    true_contrast : float, optional
+        Contrast of an injected signal.
 
-    Returns:
-        ~trap.analyze_data.Result or None: The regression result for all science frames, or
-        None when fewer than 3 reference frames are finite inside `reduction_mask`.
+    Returns
+    -------
+    trap.analyze_data.Result or None
+        The regression result for all science frames, or None when fewer than 3 reference
+        frames are finite inside `reduction_mask`.
     """
     yx_dim = (data.shape[-2], data.shape[-1])
     if yx_center is None:
@@ -1296,6 +1316,13 @@ def run_trap_with_model_rdi(
         return None
 
     number_of_pca_regressors = max(1, int(round(n_finite_frames * reduction_parameters.rdi_components_fraction)))
+    # Close to the number of fitted pixels the companion model becomes degenerate with the
+    # basis, which happens when many reference frames meet a small reduction mask.
+    pixel_cap = max(1, int(np.sum(reduction_mask)) // 2)
+    if number_of_pca_regressors > pixel_cap:
+        logger.debug("RDI components capped from %d to %d, half the %d fitted pixels",
+                     number_of_pca_regressors, pixel_cap, int(np.sum(reduction_mask)))
+        number_of_pca_regressors = pixel_cap
     basis = _reference_basis(
         reference_pixels[finite_frames].T, number_of_pca_regressors, reduction_parameters.pca_scaling)
 
@@ -1322,21 +1349,35 @@ def _fit_frames_with_bases(
         return_input_data=False):
     """Fit every frame with its spatial basis, a constant offset and the companion model.
 
-    Args:
-        data: Science cube ``(n_frame, y, x)``.
-        model: Companion model cube with the shape of `data`.
-        reduction_mask: Boolean mask of the pixels fitted.
-        bases: Sequence whose entry ``idx`` is the ``(n_pixel, n_components)`` basis of frame ``idx``.
-        reduction_parameters: `~trap.parameters.TrapReductionConfig`.
-        number_of_pca_regressors: Number of components reported in the result.
-        yx_center: Image centre used in the reduction.
-        local_model: If True, each frame is fitted only where its companion model is positive.
-        inverse_variance_reduction_area: Inverse variance of the pixels in `reduction_mask`, or None.
-        true_contrast: Contrast of an injected signal, or None.
-        return_input_data: If True, `data` is kept in the result.
+    Parameters
+    ----------
+    data : numpy.ndarray
+        Science cube ``(n_frame, y, x)``.
+    model : numpy.ndarray
+        Companion model cube with the shape of `data`.
+    reduction_mask : numpy.ndarray
+        Boolean mask of the pixels fitted.
+    bases : sequence of numpy.ndarray
+        Entry ``idx`` is the ``(n_pixel, n_components)`` basis of frame ``idx``.
+    reduction_parameters : trap.parameters.TrapReductionConfig
+        Reduction configuration.
+    number_of_pca_regressors : int
+        Number of components reported in the result.
+    yx_center : tuple of float
+        Image centre used in the reduction.
+    local_model : bool, optional
+        If True, each frame is fitted only where its companion model is positive.
+    inverse_variance_reduction_area : numpy.ndarray, optional
+        Inverse variance of the pixels in `reduction_mask`.
+    true_contrast : float, optional
+        Contrast of an injected signal.
+    return_input_data : bool, optional
+        If True, `data` is kept in the result.
 
-    Returns:
-        ~trap.analyze_data.Result: The regression result for all frames.
+    Returns
+    -------
+    trap.analyze_data.Result
+        The regression result for all frames.
     """
     make_reconstructed_lightcurve = reduction_parameters.make_reconstructed_lightcurve
 

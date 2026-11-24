@@ -6,6 +6,8 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 ## [Unreleased]
 
 ### Added
+- **A reference-star differential imaging model (`rdi_model=True`) fits each science frame with principal components of a reference cube passed as `reference_data_full`.**
+  The reference must be aligned to the science cube, with the same wavelengths, image size and star pixel; the model writes `*_rdi.fits` maps that detection and template matching read with `reduction_type="rdi"` ([#70](https://github.com/m-samland/trap/issues/70)).
 - **The noise normalisation of the detection maps excludes the whole footprint of sources above 10 sigma instead of a fixed 11 px disk.** Uncertainties drop at the separation of bright companions, also for fainter sources on the same ring, so rerun the detection step. Setting `noise_mask_region_snr=None` restores the disks ([#87](https://github.com/m-samland/trap/pull/87)).
 - **Each detection writes the noise correlation between wavelength channels per separation to `spectral_correlation_*.fits`**, with a fitted model that gives an invertible matrix at any separation; template matching uses it with `use_spectral_correlation=True` ([#87](https://github.com/m-samland/trap/pull/87)).
 

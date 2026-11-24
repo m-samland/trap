@@ -318,19 +318,21 @@ class TestCandidateWithoutFiniteChannel:
 
 
 class TestRereduceMissingChannel:
-    @pytest.mark.parametrize("missing", ["none", "absent"])
+    @pytest.mark.parametrize("missing", ["none", "absent", "model_none"])
     def test_missing_channel_gives_nan_entry(self, monkeypatch, caplog, missing):
         channel = {"temporal": SimpleNamespace(measured_contrast=2e-5, contrast_uncertainty=1e-6)}
         results = {"0": channel, "2": channel}
         if missing == "none":
             results["1"] = None
+        elif missing == "model_none":
+            results["1"] = {"temporal": None}
         monkeypatch.setattr(detection, "run_complete_reduction", lambda **kwargs: {"0.15": results})
         analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
         analysis.reduction_type = "temporal"
         analysis.reduction_parameters = SimpleNamespace(merge=lambda **kwargs: None)
         analysis.instrument = SimpleNamespace(wavelengths=np.array([1.0, 1.1, 1.2]) * u.micron)
         table = {"sep (pix)": np.array([5.0, 50.0]), "snr_normalization": np.array([1.0, 1.0])}
-        analysis.wavelength_indices = np.array([0, 1, 2] if missing == "none" else [0, 2])
+        analysis.wavelength_indices = np.array([0, 2] if missing == "absent" else [0, 1, 2])
         analysis.detection_products = {"contrast_tables": [table] * len(analysis.wavelength_indices)}
         analysis.contrast_table_and_normalization = lambda **kwargs: None
 

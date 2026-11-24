@@ -553,9 +553,11 @@ def _run_rdi_model(
     drops it); pixels that are non-finite in any other reference frame, such as a masked
     companion track, leave the mask of this position only.
 
-    Returns:
-        ~trap.analyze_data.Result or None: None when fewer than `min_pixels` pixels remain
-        or too few reference frames are finite.
+    Returns
+    -------
+    trap.analyze_data.Result or None
+        None when fewer than `min_pixels` pixels remain or too few reference frames are
+        finite.
     """
     if reference_data is None:
         raise ValueError("rdi_model requires a reference cube (reference_data).")
@@ -1719,6 +1721,8 @@ def run_complete_reduction(
         cube and keeps all its frames (``bad_frames`` apply to the science
         cube only). A reference pixel that is non-finite (e.g. a masked
         companion) is left out of the RDI fit at the positions it overlaps.
+        Only the shape is checked against the science cube; matching the
+        wavelength grid is up to the caller.
 
     Returns
     -------
