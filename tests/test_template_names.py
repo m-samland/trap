@@ -140,7 +140,13 @@ def test_detection_entry_point_forwards_template_names():
 
 @pytest.mark.parametrize(
     "n_channels, photometry, expected",
-    [(1, False, (False, False)), (2, False, (False, False)), (3, False, (True, True)), (39, True, (True, False))],
+    [
+        (1, False, (False, False)),
+        (2, False, (False, False)),
+        (3, False, (True, False)),
+        (4, False, (True, True)),
+        (39, True, (True, False)),
+    ],
 )
 def test_t_type_fit_flags(n_channels, photometry, expected):
     assert detection._t_type_fit_flags(n_channels, photometry=photometry) == expected
@@ -153,7 +159,9 @@ class _RecordingTemplate(_Template):
         self.fit_slope = kwargs["fit_slope"]
 
 
-@pytest.mark.parametrize("wavelength_indices, expected", [([5, 6], (False, False)), ([4, 5, 6], (True, True))])
+@pytest.mark.parametrize(
+    "wavelength_indices, expected", [([5, 6], (False, False)), ([4, 5, 6], (True, False)), ([3, 4, 5, 6], (True, True))]
+)
 def test_t_type_offset_follows_the_reduced_channels(stub_species, monkeypatch, wavelength_indices, expected):
     monkeypatch.setattr(detection, "SpectralTemplate", _RecordingTemplate)
     analysis = _analysis()

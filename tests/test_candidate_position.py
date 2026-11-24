@@ -1,8 +1,6 @@
-"""Candidate position of the template path from the template S/N with the formal uncertainty.
+"""Candidate position of the template path from the template S/N with frozen ring factors."""
 
-See docs/superpowers/specs/2026-11-23-candidate-position-formal-sigma-design.md.
-"""
-
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,18 +11,19 @@ from trap.detection import DetectionAnalysis
 from trap.parameters import TrapReductionConfig
 
 
-def _template_analysis(monkeypatch, n_channels, contrast, formal, ring, correlation=False):
+def _template_analysis(monkeypatch, n_channels, contrast, formal, ring, correlation=False, size=9):
     analysis = DetectionAnalysis(reduction_parameters=TrapReductionConfig())
     analysis.instrument = SimpleNamespace(wavelengths=np.linspace(1.0, 1.2, n_channels) * u.micron)
     analysis.wavelength_indices = np.arange(n_channels)
-    shape = (n_channels, 9, 9)
+    shape = (n_channels, size, size)
     analysis.detection_cube = np.stack(
         [np.broadcast_to(contrast, shape), np.broadcast_to(formal, shape), np.ones(shape)], axis=1
     ).astype(float)
     analysis.detection_products = {"uncertainty_cube": np.broadcast_to(ring, shape).astype(float)}
-    if correlation:
+    if correlation is not False:
+        matrix = correlation if isinstance(correlation, np.ndarray) else np.identity(n_channels)
         analysis.empirical_correlation = {
-            "matrices": np.identity(n_channels)[None],
+            "matrices": matrix[None],
             "fit": pd.DataFrame({"separation": [3.0], "fitted": [False], "flagged": [False]}),
             "wavelengths": np.linspace(1.0, 1.2, n_channels),
         }
@@ -33,40 +32,139 @@ def _template_analysis(monkeypatch, n_channels, contrast, formal, ring, correlat
         name="flat",
         fit_offset=False,
         fit_slope=False,
-        use_spectral_correlation=correlation,
+        use_spectral_correlation=correlation is not False,
         number_of_pca_regressors=0,
         normalized_contrast_modelbox=SimpleNamespace(flux=np.ones(n_channels)),
     )
     return analysis, template
 
 
-def _reduced(cube_plane):
-    mask = cube_plane != 0
-    assert mask.sum() > 70
-    return mask
+def _radius(size):
+    yy, xx = np.indices((size, size))
+    return np.hypot(yy - size // 2, xx - size // 2)
 
 
-def test_position_image_uses_the_formal_uncertainty(monkeypatch):
-    analysis, template = _template_analysis(monkeypatch, 3, contrast=1.0, formal=1.0, ring=2.0)
-    cube, products = analysis.template_matching_detection(template, file_paths={}, save=False)
-    reduced = _reduced(cube[0, 2])
-    assert np.allclose(cube[0, 2][reduced], np.sqrt(3) / 2)
-    assert np.allclose(products["position_snr_image"][reduced], np.sqrt(3))
+def _box(image):
+    return np.isfinite(image)
 
 
-def test_position_image_equals_plane_2_when_ring_factor_is_one(monkeypatch):
+def test_position_image_freezes_the_ring_factor_at_the_candidate(monkeypatch):
+    size = 21
+    ring = 1.0 + 0.2 * _radius(size)
+    analysis, template = _template_analysis(monkeypatch, 3, contrast=1.0, formal=1.0, ring=ring, size=size)
+    cube, _ = analysis.template_matching_detection(template, file_paths={}, save=False)
+    image, noise = analysis.template_position_snr_image(template, (10, 16), box_size=5)
+
+    box = _box(image)
+    assert box.sum() == 7 * 7
+    assert np.ptp(image[box]) < 1e-12
+    assert np.allclose(image[box], np.sqrt(3) / (1.0 + 0.2 * 6.0), rtol=0.02)
+    assert np.ptp(cube[0, 2][box]) > 0.1
+    assert np.allclose(noise[box], ring[box] / (1.0 + 0.2 * 6.0), rtol=0.02)
+    assert np.allclose(cube[0, 2][box] * noise[box], image[box])
+
+
+def test_position_image_keeps_the_channel_weights(monkeypatch):
     rng = np.random.default_rng(1)
-    sigma = rng.uniform(0.5, 2.0, size=(3, 9, 9))
-    analysis, template = _template_analysis(monkeypatch, 3, contrast=rng.normal(size=(3, 9, 9)), formal=sigma, ring=sigma)
-    cube, products = analysis.template_matching_detection(template, file_paths={}, save=False)
-    assert np.allclose(products["position_snr_image"], cube[0, 2])
+    size = 15
+    formal = rng.uniform(0.5, 2.0, size=(3, size, size))
+    ring = formal * np.array([1.0, 2.5, 1.0])[:, None, None]
+    contrast = rng.normal(size=(3, size, size))
+    analysis, template = _template_analysis(monkeypatch, 3, contrast=contrast, formal=formal, ring=ring, size=size)
+    cube, _ = analysis.template_matching_detection(template, file_paths={}, save=False)
+    image, noise = analysis.template_position_snr_image(template, (7, 11), box_size=5)
+    box = _box(image)
+    assert box.sum() > 20
+    assert np.allclose(image[box], cube[0, 2][box])
+    assert np.allclose(noise[box], 1.0)
 
 
-def test_formal_fit_uses_correlation_with_formal_sigma(monkeypatch):
-    analysis, template = _template_analysis(monkeypatch, 2, contrast=1.0, formal=1.0, ring=2.0, correlation=True)
-    cube, products = analysis.template_matching_detection(template, file_paths={}, save=False)
-    reduced = _reduced(cube[0, 2])
-    assert np.allclose(products["position_snr_image"][reduced], 2 * cube[0, 2][reduced])
+def test_position_image_uses_the_correlation(monkeypatch):
+    size = 15
+    psi = np.array([[1.0, 0.5, 0.2], [0.5, 1.0, 0.3], [0.2, 0.3, 1.0]])
+    contrast = np.array([1.0, 2.0, 0.5])[:, None, None] * np.ones((3, size, size))
+    formal = np.array([1.0, 1.5, 0.8])[:, None, None] * np.ones((3, size, size))
+    factors = np.array([1.2, 2.0, 1.0])
+    analysis, template = _template_analysis(
+        monkeypatch, 3, contrast=contrast, formal=formal, ring=formal * factors[:, None, None], correlation=psi, size=size
+    )
+    image, noise = analysis.template_position_snr_image(template, (7, 11), box_size=3)
+    assert np.allclose(noise[_box(image)], 1.0)
+
+    sigma = np.array([1.0, 1.5, 0.8]) * factors
+    inverse = np.linalg.inv(sigma[:, None] * psi * sigma[None, :])
+    t = np.ones(3)
+    expected = (t @ inverse @ np.array([1.0, 2.0, 0.5])) / np.sqrt(t @ inverse @ t)
+    assert np.allclose(image[_box(image)], expected)
+
+
+def test_position_image_falls_back_to_the_formal_uncertainty(monkeypatch, caplog):
+    size = 15
+    ring = np.ones((2, size, size))
+    ring[1] = np.nan
+    analysis, template = _template_analysis(monkeypatch, 2, contrast=1.0, formal=1.0, ring=ring, size=size)
+    with caplog.at_level(logging.WARNING):
+        image, noise = analysis.template_position_snr_image(template, (7, 11), box_size=3)
+    assert "formal uncertainty alone" in caplog.text
+    assert np.allclose(image[_box(image)], np.sqrt(2))
+    assert np.allclose(noise[_box(image)], 1.0)
+
+
+def test_position_image_skips_unreduced_pixels(monkeypatch):
+    size = 15
+    contrast = np.ones((2, size, size))
+    contrast[0, 7, 11] = 0.0
+    analysis, template = _template_analysis(monkeypatch, 2, contrast=contrast, formal=1.0, ring=1.0, size=size)
+    image, _ = analysis.template_position_snr_image(template, (7, 11), box_size=3)
+    assert np.isnan(image[7, 11])
+    assert _box(image).sum() == 5 * 5 - 1
+
+
+def test_noise_ratio_with_correlation_and_offset():
+    from trap.detection import _template_noise_ratio
+
+    rng = np.random.default_rng(3)
+    design = np.column_stack([np.ones(4), rng.uniform(0.5, 1.5, 4)])
+    psi = np.array([[1, 0.3, 0.1, 0], [0.3, 1, 0.3, 0.1], [0.1, 0.3, 1, 0.3], [0, 0.1, 0.3, 1.0]])
+    assumed = np.array([1.0, 2.0, 1.5, 1.0])
+    true = assumed * np.array([1.5, 0.7, 1.2, 2.0])
+    draws = rng.multivariate_normal(np.zeros(4), true[:, None] * psi * true[None, :], size=40000)
+    inverse = np.linalg.inv(assumed[:, None] * psi * assumed[None, :])
+    normal_inverse = np.linalg.inv(design.T @ inverse @ design)
+    snr = draws @ (inverse @ design @ normal_inverse[:, -1]) / np.sqrt(normal_inverse[-1, -1])
+    assert np.isclose(_template_noise_ratio(design, assumed, true, psi), snr.std(), rtol=0.02)
+    assert np.isclose(_template_noise_ratio(design, assumed, 3 * assumed, psi), 3.0)
+    assert np.isnan(_template_noise_ratio(design, assumed, np.array([1.0, np.nan, 1.0, 1.0]), psi))
+
+
+def test_weighted_fit_ignores_a_noisy_side():
+    from trap.detection import fit_2d_gaussian
+
+    yy, xx = np.indices((21, 21))
+    image = 10 * np.exp(-((yy - 10) ** 2 + (xx - 10) ** 2) / (2 * 1.5**2))
+    image[9:12, 12:15] += 4.0
+    noise = np.ones_like(image)
+    noise[:, 12:] = 50.0
+    kwargs = dict(yx_position=(10, 10), x_stddev=1.5, y_stddev=1.5, box_size=11, fix_width=False, fix_orientation=False)
+    unweighted = fit_2d_gaussian(image, **kwargs)
+    weighted = fit_2d_gaussian(image, weights=1 / noise, **kwargs)
+    assert unweighted["yx_fit_position_orig"][1] > 10.2
+    assert abs(weighted["yx_fit_position_orig"][1] - 10.0) < 0.05
+    no_weights = fit_2d_gaussian(image, weights=np.full_like(image, np.nan), **kwargs)
+    assert not no_weights["fit_ok"]
+
+
+def test_weighted_fit_sigma_does_not_depend_on_the_weight_scale():
+    from trap.detection import fit_2d_gaussian
+
+    rng = np.random.default_rng(4)
+    yy, xx = np.indices((21, 21))
+    noise = 1.0 + 0.1 * (21 - xx)
+    image = 10 * np.exp(-((yy - 10) ** 2 + (xx - 10) ** 2) / (2 * 1.5**2)) + noise * rng.normal(size=noise.shape)
+    kwargs = dict(yx_position=(10, 10), x_stddev=1.5, y_stddev=1.5, box_size=11, fix_width=False, fix_orientation=False)
+    covariances = [fit_2d_gaussian(image, weights=scale / noise, **kwargs)["param_cov_xy"] for scale in (1.0, 5.0)]
+    assert np.all(np.isfinite(covariances[0]))
+    assert np.allclose(covariances[0], covariances[1], rtol=1e-6)
 
 
 def _source_maps(size=41, separation=10.0, sigma_psf=1.5, amplitude=20.0, noise=0.0, seed=0):
@@ -131,19 +229,18 @@ def test_fit_a_on_position_image_with_nan_box_fails_cleanly():
         assert not result["fit_ok"].values[0]
 
 
-def _stubbed_run(tmp_path, monkeypatch, position_snr_image=None):
+def _stubbed_run(tmp_path, monkeypatch, position_stub=None):
     from test_template_path_masks import CONFIGURED, _run_template_path, _stubbed_template_analysis
 
     analysis, _ = _stubbed_template_analysis(tmp_path, monkeypatch, configured=[CONFIGURED])
-    if position_snr_image is not None:
-        products = {"position_snr_image": position_snr_image}
-        monkeypatch.setattr(analysis, "template_matching_detection", lambda *args, **kwargs: (np.empty(0), products))
+    if position_stub is not None:
+        monkeypatch.setattr(analysis, "template_position_snr_image", position_stub)
     seen = {}
     original_complete = analysis.complete_candidate_table
     original_extract = analysis.extract_candidate_spectra
 
     def complete_candidate_table(**kwargs):
-        seen.setdefault("position_snr_cube", []).append(kwargs.get("position_snr_cube"))
+        seen.setdefault("position_snr_function", []).append(kwargs.get("position_snr_function"))
         return original_complete(**kwargs)
 
     def extract_candidate_spectra(**kwargs):
@@ -156,17 +253,18 @@ def _stubbed_run(tmp_path, monkeypatch, position_snr_image=None):
     return analysis, seen
 
 
-def test_run_template_matching_without_position_image_uses_plane_2(tmp_path, monkeypatch):
-    _, seen = _stubbed_run(tmp_path, monkeypatch)
-    assert seen["position_snr_cube"] and all(cube is None for cube in seen["position_snr_cube"])
+def test_run_template_matching_passes_the_position_function_to_both_passes(tmp_path, monkeypatch):
+    calls = []
 
+    def position_stub(template, yx_position, box_size, inner_mask_radius):
+        calls.append((template.name, tuple(yx_position), box_size))
 
-def test_run_template_matching_passes_the_position_image_to_both_passes(tmp_path, monkeypatch):
-    image = np.arange(21 * 21, dtype=float).reshape(21, 21)
-    _, seen = _stubbed_run(tmp_path, monkeypatch, position_snr_image=image)
-    assert len(seen["position_snr_cube"]) == 2 * 2
-    for cube in seen["position_snr_cube"]:
-        assert cube.shape == (1, 21, 21) and np.array_equal(cube[0], image)
+    _, seen = _stubbed_run(tmp_path, monkeypatch, position_stub=position_stub)
+    functions = seen["position_snr_function"]
+    assert len(functions) == 2 * 2
+    for function in functions:
+        function((3, 4), box_size=11)
+    assert sorted(calls) == [("first", (3, 4), 11)] * 2 + [("second", (3, 4), 11)] * 2
 
 
 def test_spectrum_is_extracted_at_the_reported_position(tmp_path, monkeypatch):

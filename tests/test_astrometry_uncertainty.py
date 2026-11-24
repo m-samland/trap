@@ -515,7 +515,7 @@ def test_diagnostics_keep_the_template_position():
         ]
     )
     per_channel = pd.DataFrame([{**_per_channel_row(-8.55, -36.12, channels=1), "chi2_red_radial": 1.7}])
-    out = detection._attach_per_channel_diagnostics(overall, per_channel, search_radius=3.0)
+    out = detection._attach_per_channel_diagnostics(overall, per_channel, match_radius=3.0)
     assert (out["astrometry_source"] == "template").all()
     assert np.allclose(out["x_relative"], -9.17)
     assert np.allclose(out["radial_sigma_stat"], 0.34)
@@ -531,12 +531,12 @@ def test_diagnostics_keep_the_template_position():
 def test_distance_is_mahalanobis_in_the_source_frame():
     overall = pd.DataFrame([_collapse_overall_row(0, 10.0, 0.0, wavelength_index=0, sr=0.3, st=0.4)])
     close = pd.DataFrame([_per_channel_row(10.5, 0.4, sr=0.4, st=0.3)])
-    out = detection._attach_per_channel_diagnostics(overall, close, search_radius=3.0)
+    out = detection._attach_per_channel_diagnostics(overall, close, match_radius=3.0)
     assert out["per_channel_distance_sigma"].iloc[0] == pytest.approx(np.sqrt(1.64))
     assert not out["per_channel_position_discrepant"].iloc[0]
 
     far_radially = pd.DataFrame([_per_channel_row(12.0, 0.0, sr=0.4, st=0.3)])
-    out = detection._attach_per_channel_diagnostics(overall, far_radially, search_radius=3.0)
+    out = detection._attach_per_channel_diagnostics(overall, far_radially, match_radius=3.0)
     assert out["per_channel_distance_sigma"].iloc[0] == pytest.approx(4.0)
     assert out["per_channel_position_discrepant"].iloc[0]
 
@@ -548,12 +548,43 @@ def test_distance_is_mahalanobis_in_the_source_frame():
 )
 def test_diagnostics_without_per_channel_source(per_channel):
     overall = pd.DataFrame([_collapse_overall_row(0, -9.17, -36.76, wavelength_index=0)])
-    out = detection._attach_per_channel_diagnostics(overall, per_channel, search_radius=3.0)
+    out = detection._attach_per_channel_diagnostics(overall, per_channel, match_radius=3.0)
     assert (out["astrometry_source"] == "template").all()
     assert np.allclose(out["x_relative"], -9.17)
     assert out["per_channel_x_relative"].isna().all()
     assert out["per_channel_distance_sigma"].isna().all()
     assert not out["per_channel_position_discrepant"].any()
+
+
+def test_diagnostics_pair_sources_one_to_one():
+    """A faint source next to a companion does not take the companion's per-channel position."""
+    overall = pd.DataFrame(
+        [
+            _collapse_overall_row(0, 10.0, 0.0, wavelength_index=0, sr=0.1, st=0.1),
+            _collapse_overall_row(1, 12.5, 0.0, wavelength_index=0, sr=0.1, st=0.1),
+        ]
+    )
+    per_channel = pd.DataFrame([_per_channel_row(10.1, 0.0, sr=0.1, st=0.1)])
+    out = detection._attach_per_channel_diagnostics(overall, per_channel, match_radius=4.0)
+    companion, faint = out.iloc[0], out.iloc[1]
+    assert companion["per_channel_x_relative"] == pytest.approx(10.1)
+    assert np.isnan(faint["per_channel_x_relative"])
+    assert not faint["per_channel_position_discrepant"]
+
+    both = pd.DataFrame([_per_channel_row(12.4, 0.0, sr=0.1, st=0.1), _per_channel_row(10.1, 0.0, sr=0.1, st=0.1)])
+    out = detection._attach_per_channel_diagnostics(overall, both, match_radius=4.0)
+    assert out["per_channel_x_relative"].tolist() == pytest.approx([10.1, 12.4])
+
+
+def test_match_radius_is_the_largest_reduced_fwhm():
+    from types import SimpleNamespace
+
+    analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+    analysis.instrument = SimpleNamespace(fwhm=np.array([3.0, 4.5, 9.0]))
+    analysis.wavelength_indices = np.array([0, 1])
+    assert analysis._per_channel_match_radius(15.0) == pytest.approx(4.5)
+    analysis.instrument = SimpleNamespace(fwhm=None)
+    assert analysis._per_channel_match_radius(15.0) == 15.0
 
 
 def test_min_channel_fraction_other_than_default_warns(tmp_path, caplog):

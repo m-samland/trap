@@ -6,6 +6,7 @@ Routines used in TRAP
 """
 
 import copy
+import functools
 import logging
 import os
 import re
@@ -1298,7 +1299,15 @@ def fit_2d_gaussian(
     fix_orientation=True,
     plot=False,
     fixed_position=None,
+    weights=None,
 ):
+    """Fit a 2D Gaussian in a ``box_size`` cutout of ``image``.
+
+    ``weights``, an image like ``image``, weights each pixel's residual (one
+    over its noise standard deviation); pixels with a non-finite or
+    non-positive weight are left out. The weights are relative: the parameter
+    covariance is scaled by the weighted residuals, as it is without weights.
+    """
     if yx_center is None:
         yx_center = (image.shape[0] // 2.0, image.shape[1] // 2)
     # spot fitting
@@ -1309,6 +1318,11 @@ def fit_2d_gaussian(
     cutout = Cutout2D(image, (cx, cy), box_size)
 
     finite_mask = np.logical_and(np.isfinite(cutout.data), cutout.data != 0.0)
+    weight_cutout = None
+    if weights is not None:
+        weight_cutout = Cutout2D(weights, (cx, cy), box_size).data
+        with np.errstate(invalid="ignore"):
+            finite_mask &= np.isfinite(weight_cutout) & (weight_cutout > 0)
 
     # Too few finite pixels to constrain even the 3-parameter fallback below.
     # Historically an all-NaN cutout raised, which aborted the whole target: it
@@ -1366,6 +1380,19 @@ def fit_2d_gaussian(
         g_init.x_mean.fixed = True
         g_init.y_mean.fixed = True
 
+    def _fit(fitter, model, select):
+        if weight_cutout is None:
+            return fitter(model, xx[select], yy[select], cutout.data[select])
+        pixel_weights = weight_cutout[select]
+        result = fitter(model, xx[select], yy[select], cutout.data[select], weights=pixel_weights)
+        # astropy takes weights as absolute and then skips curve_fit's scaling by
+        # the residuals; restore it so the weights only set the relative pixel weights.
+        dof = int(np.count_nonzero(select)) - sum(not result.fixed[name] for name in result.param_names)
+        if fitter.fit_info.get("param_cov") is not None and dof > 0:
+            residuals = pixel_weights * (cutout.data[select] - result(xx[select], yy[select]))
+            fitter.fit_info["param_cov"] = fitter.fit_info["param_cov"] * np.sum(residuals**2) / dof
+        return result
+
     def _extract_param_cov_xy(par):
         param_cov_full = fitter.fit_info.get("param_cov", None)
         # Free-parameter names in the order LevMar exposes them:
@@ -1395,7 +1422,7 @@ def fit_2d_gaussian(
     # routinely drives x_stddev into its lower bound on speckle structure.
     fitter = fitting.TRFLSQFitter(calc_uncertainties=True)
     try:
-        par = fitter(g_init, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask])
+        par = _fit(fitter, g_init, finite_mask)
     except Exception as error:
         # Speckles are not Gaussian. When the free fit still fails, retry with
         # the shape locked to the instrument PSF so only position and amplitude
@@ -1412,9 +1439,7 @@ def fit_2d_gaussian(
         g_retry.theta.fixed = True
         fitter = fitting.TRFLSQFitter(calc_uncertainties=True)
         try:
-            par = fitter(
-                g_retry, xx[finite_mask], yy[finite_mask], cutout.data[finite_mask]
-            )
+            par = _fit(fitter, g_retry, finite_mask)
         except Exception as retry_error:
             logger.warning(
                 "Constrained 2D Gaussian fit at (y, x) = (%s, %s) failed as well "
@@ -1446,7 +1471,8 @@ def fit_2d_gaussian(
             y_stddev=par.y_stddev.value,
             theta=par.theta.value,
         )
-        par = fitter(g_init, xx[mask], yy[mask], cutout.data[mask])
+        mask = mask & finite_mask
+        par = _fit(fitter, g_init, mask)
         model = par(xx, yy)
         param_cov_xy, param_names = _extract_param_cov_xy(par)
 
@@ -1503,6 +1529,7 @@ def fit_planet_parameters(
     plot=False,
     phi_source=None,
     position_snr_image=None,
+    position_noise_image=None,
 ):
     """Fit A/B/C on the three detection images per the astrometry-uncertainty
     spec:
@@ -1510,10 +1537,14 @@ def fit_planet_parameters(
     - A: raw SNR image (``detection_image[2]``), or ``position_snr_image`` when
       given, fully free → position, empirical widths
       ``x_fwhm_free``/``y_fwhm_free``, orientation ``theta_free``, and LevMar
-      centroid covariance. The template path passes the template S/N built with
-      the formal uncertainty, since its ``detection_image[2]`` divides by a ring
-      factor that changes with the trial position's separation and so moves the
-      peak.
+      centroid covariance. The template path passes the template S/N with each
+      channel's ring factor frozen at the candidate's separation
+      (`DetectionAnalysis.template_position_snr_image`), since its
+      ``detection_image[2]`` divides by a ring factor that rises towards the
+      star across the fit box and so moves the peak outward. The noise of that
+      image still rises towards the star, so Fit A weights its pixels by one
+      over ``position_noise_image``, the noise standard deviation of
+      ``position_snr_image``.
     - B: contrast image, position clamped to A's sub-pixel centroid → physical
       contrast amplitude at the radially-unbiased location.
     - C: norm-SNR image, position clamped to A → calibrated ``SNR_local`` at
@@ -1527,6 +1558,7 @@ def fit_planet_parameters(
     """
     snr_image_parameters = fit_2d_gaussian(
         detection_image[2] if position_snr_image is None else position_snr_image,
+        weights=None if position_noise_image is None else 1.0 / position_noise_image,
         yx_position=yx_position,
         x_stddev=x_stddev,
         y_stddev=y_stddev,
@@ -1967,10 +1999,13 @@ def _t_type_fit_flags(n_reduced_channels, photometry=False):
     """Whether the T-type template fits a constant offset and a slope in wavelength.
 
     Both absorb a residual common to all channels when there are channels to
-    spare. With two or fewer channels, amplitude and offset are as many unknowns
-    as data: the offset takes up the band sum and the amplitude only measures
-    the band difference, so the map becomes a colour map that does not peak at
-    the source.
+    spare. Each needs one channel more than the parameters before it, or the
+    amplitude stops measuring the template. With two channels and an offset,
+    the offset takes up the band sum and the amplitude measures only the band
+    difference, a colour map that does not peak at the source. With three
+    channels, offset and slope, the amplitude measures only the curvature, and a
+    source with a flat spectrum gets zero. The offset is therefore fitted from
+    three channels on and the slope from four.
 
     Parameters
     ----------
@@ -1984,8 +2019,7 @@ def _t_type_fit_flags(n_reduced_channels, photometry=False):
     tuple of bool
         ``(fit_offset, fit_slope)``.
     """
-    enough_channels = n_reduced_channels > 2
-    return enough_channels, enough_channels and not photometry
+    return n_reduced_channels >= 3, n_reduced_channels >= 4 and not photometry
 
 
 def _flag_low_snr_spectra(table, threshold):
@@ -2044,6 +2078,75 @@ def _solve_template_pixel(design_matrix, contrasts, uncertainties, correlation=N
             design_matrix=design_matrix.T, data=contrasts, inverse_covariance=1.0 / uncertainties**2
         )
     return float(parameters[-1]), float(np.sqrt(variances[-1]))
+
+
+def _template_noise_ratio(design_matrix, assumed_uncertainties, true_uncertainties, correlation=None):
+    """Noise standard deviation of a template S/N solved with one uncertainty when the data have another.
+
+    The amplitude is the last design column's, solved by generalised least
+    squares with ``assumed_uncertainties`` (and ``correlation``); its S/N is the
+    amplitude over the σ this solve reports. The ratio of the amplitude's
+    standard deviation under ``true_uncertainties`` to that σ is the S/N's
+    noise standard deviation, one when both uncertainties agree.
+
+    Parameters
+    ----------
+    design_matrix : ndarray
+        Shape (n_channels, n_parameters); the template is the last column.
+    assumed_uncertainties, true_uncertainties : ndarray
+        Per-channel uncertainties used in the solve and of the data.
+    correlation : ndarray, optional
+        Channel correlation matrix, the same for both.
+
+    Returns
+    -------
+    float
+        Noise standard deviation of the S/N, NaN when an uncertainty is not finite.
+    """
+    if not (np.isfinite(assumed_uncertainties).all() and np.isfinite(true_uncertainties).all()):
+        return np.nan
+    psi = np.identity(len(assumed_uncertainties)) if correlation is None else correlation
+    assumed_inverse = np.linalg.inv(assumed_uncertainties[:, None] * psi * assumed_uncertainties[None, :])
+    normal_inverse = np.linalg.inv(design_matrix.T @ assumed_inverse @ design_matrix)
+    gain = assumed_inverse @ design_matrix @ normal_inverse[:, -1]
+    true_variance = gain @ (true_uncertainties[:, None] * psi * true_uncertainties[None, :]) @ gain
+    return float(np.sqrt(true_variance / normal_inverse[-1, -1]))
+
+
+def _ring_factors_at_separation(uncertainty_cube, formal_uncertainty_cube, separation, yx_center, half_width=1.0):
+    """Noise-normalisation factor of each channel at one separation.
+
+    The factor is the ring-scaled over the formal uncertainty, taken as the
+    median over the pixels within ``half_width`` of ``separation``.
+
+    Parameters
+    ----------
+    uncertainty_cube, formal_uncertainty_cube : ndarray
+        Shape (n_channels, ny, nx), NaN where a channel has no reduction.
+    separation : float
+        Separation in pixels from ``yx_center``.
+    yx_center : tuple of int
+        Star position (y, x) in pixels.
+    half_width : float
+        Half-width of the annulus in pixels.
+
+    Returns
+    -------
+    ndarray or None
+        Factor per channel, or None when a channel has no finite positive factor.
+    """
+    yy, xx = np.indices(uncertainty_cube.shape[-2:])
+    annulus = np.abs(np.hypot(yy - yx_center[0], xx - yx_center[1]) - separation) <= half_width
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = uncertainty_cube[:, annulus] / formal_uncertainty_cube[:, annulus]
+    if ratio.shape[1] == 0 or not np.isfinite(ratio).any(axis=1).all():
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        factors = np.nanmedian(np.where(np.isfinite(ratio), ratio, np.nan), axis=1)
+    if not (np.isfinite(factors).all() and (factors > 0).all()):
+        return None
+    return factors
 
 
 def _combine_templates_best_snr(per_template_tables, search_radius):
@@ -2169,18 +2272,21 @@ def _per_channel_distance_sigma(reported, per_channel):
     return float(np.sqrt(radial**2 / var_radial + tangential**2 / var_tangential))
 
 
-def _attach_per_channel_diagnostics(overall_table, per_channel_table, search_radius):
+def _attach_per_channel_diagnostics(overall_table, per_channel_table, match_radius):
     """Add the per-channel astrometry of each source as diagnostic columns.
 
     The reported position and σ stay those of the template fit
-    (``astrometry_source == "template"``). Each source gets the nearest
-    per-channel measurement within ``search_radius``: its position, σ, reduced
-    χ² of the channel combination and number of channels, the distance to the
-    reported position in units of the combined σ
-    (``per_channel_distance_sigma``) and ``per_channel_position_discrepant``
-    when that distance exceeds 3. A large distance or reduced χ² means the
+    (``astrometry_source == "template"``). Sources and per-channel measurements
+    are paired one to one within ``match_radius``, closest pairs first, so a
+    faint source next to a companion does not take the companion's measurement.
+    A matched source gets its position, σ, reduced χ² of the channel combination
+    and number of channels, the distance to the reported position in units of
+    the combined σ (``per_channel_distance_sigma``) and
+    ``per_channel_position_discrepant`` when that distance exceeds
+    ``_PER_CHANNEL_DISCREPANCY_SIGMA``. A large distance or reduced χ² means the
     formal σ misses effects that differ between channels. Without a match the
-    columns are NaN and the flag is False.
+    columns are NaN and the flag is False; a NaN σ gives a NaN distance and
+    leaves the flag False.
 
     Parameters
     ----------
@@ -2188,8 +2294,8 @@ def _attach_per_channel_diagnostics(overall_table, per_channel_table, search_rad
         Combined table, one row per source and wavelength.
     per_channel_table : pandas.DataFrame or None
         Output of `measure_per_channel_astrometry`.
-    search_radius : float
-        Largest distance in pixels for a per-channel match.
+    match_radius : float
+        Largest distance in pixels for a per-channel match, about one FWHM.
 
     Returns
     -------
@@ -2206,14 +2312,26 @@ def _attach_per_channel_diagnostics(overall_table, per_channel_table, search_rad
 
     per_channel = per_channel_table.reset_index(drop=True)
     positions = per_channel[["x_relative", "y_relative"]].to_numpy(dtype=float)
-    groups = out.groupby("candidate_id").groups.values() if "candidate_id" in out.columns else [out.index]
-    for index in groups:
-        reported = out.loc[index[0]]
-        distance = np.hypot(positions[:, 0] - float(reported["x_relative"]), positions[:, 1] - float(reported["y_relative"]))
-        nearest = int(np.argmin(distance))
-        if distance[nearest] > search_radius:
+    groups = list(out.groupby("candidate_id").groups.values()) if "candidate_id" in out.columns else [out.index]
+    reported_positions = np.array(
+        [[float(out.loc[index[0], "x_relative"]), float(out.loc[index[0], "y_relative"])] for index in groups]
+    )
+    distances = np.hypot(
+        reported_positions[:, None, 0] - positions[None, :, 0], reported_positions[:, None, 1] - positions[None, :, 1]
+    )
+    candidates = sorted((pair for pair in np.ndindex(distances.shape) if distances[pair] <= match_radius),
+                        key=lambda pair: distances[pair])
+    pairs, used_groups, used_channels = [], set(), set()
+    for group_index, channel_index in candidates:
+        if group_index in used_groups or channel_index in used_channels:
             continue
-        match = per_channel.iloc[nearest]
+        pairs.append((group_index, channel_index))
+        used_groups.add(group_index)
+        used_channels.add(channel_index)
+    for group_index, channel_index in pairs:
+        index = groups[group_index]
+        reported = out.loc[index[0]]
+        match = per_channel.iloc[channel_index]
         for column, source in _PER_CHANNEL_DIAGNOSTIC_COLUMNS.items():
             out.loc[index, column] = float(match[source]) if source in match.index else np.nan
         distance_sigma = _per_channel_distance_sigma(reported, match)
@@ -3429,13 +3547,14 @@ class DetectionAnalysis(object):
         deviation_threshold=0.1,
         plot=False,
         base_positions=None,
-        position_snr_cube=None,
+        position_snr_function=None,
     ):
         """Fits 2D Gaussians to contrast, snr, and normalized snr images for candidate position.
         The normalization excludes ``base_positions`` and the candidate itself; ``base_positions``
         defaults to `self.reduction_parameters.yx_known_companion_position`.
-        ``position_snr_cube``, indexed like ``detection_cube``, gives the images Fit A takes the
-        position from instead of the S/N plane (see `fit_planet_parameters`).
+        ``position_snr_function(yx_position, box_size=...)`` returns, per candidate, the image Fit A
+        takes the position from instead of the S/N plane and its noise standard deviation (see
+        `fit_planet_parameters`).
 
         The resulting tables include both fit results from unconstrained fits and fits with fixed `x_stddev`, `y_stddev`,
         and `theta` of the 2D Gaussian, where the `theta` parameter is given by the position angle.
@@ -3493,6 +3612,12 @@ class DetectionAnalysis(object):
                 x_stddev_seed = x_stddev
                 y_stddev_seed = y_stddev
 
+            position_snr_image = position_noise_image = None
+            if position_snr_function is not None:
+                position_snr_image, position_noise_image = position_snr_function(
+                    candidates[["y", "x"]].values[candidate_idx], box_size=box_size
+                )
+
             (
                 contrast_image_result,
                 snr_image_result,
@@ -3511,7 +3636,8 @@ class DetectionAnalysis(object):
                 mask_deviating=mask_deviating,
                 deviation_threshold=deviation_threshold,
                 plot=plot,
-                position_snr_image=None if position_snr_cube is None else position_snr_cube[detection_product_index],
+                position_snr_image=position_snr_image,
+                position_noise_image=position_noise_image,
             )
 
             # Fit A is already a free fit, so the "_free" columns downstream
@@ -3621,7 +3747,7 @@ class DetectionAnalysis(object):
         candidate_exclusion_radius=None,
         max_candidates=DEFAULT_MAX_CANDIDATES,
         base_positions=None,
-        position_snr_cube=None,
+        position_snr_function=None,
     ):
         """
         Consolidate candidate detections with 2D Gaussian fitting and duplicate removal.
@@ -3662,9 +3788,9 @@ class DetectionAnalysis(object):
             Source positions relative to the image centre excluded from the
             renormalisation besides the candidates. Defaults to
             ``self.reduction_parameters.yx_known_companion_position``.
-        position_snr_cube : array_like, optional
-            Images, indexed like ``detection_cube``, that Fit A takes the position
-            from instead of the S/N plane. See `fit_candidates`.
+        position_snr_function : callable, optional
+            Returns the image Fit A takes a candidate's position from instead
+            of the S/N plane, and its noise. See `fit_candidates`.
 
         Returns
         -------
@@ -3753,7 +3879,7 @@ class DetectionAnalysis(object):
             detection_products=detection_products,
             plot=False,
             base_positions=base_positions,
-            position_snr_cube=position_snr_cube,
+            position_snr_function=position_snr_function,
         )
         
         # Group per-wavelength detections of the same source (within
@@ -4626,6 +4752,165 @@ class DetectionAnalysis(object):
                 species_database_directory=species_database_directory,
             )
 
+    def _template_matching_inputs(self, inner_mask_radius):
+        """Per-channel contrast, ring-scaled and formal uncertainty cubes and the pixels template matching fits.
+
+        Zeros in the cubes mark pixels without a reduction and become NaN. The
+        fitted pixels have a finite, non-zero contrast in every channel and lie
+        outside ``inner_mask_radius``.
+        """
+        contrast_cube = self.detection_cube[:, 0].astype("float64").copy()
+        uncertainty_cube = self.detection_products["uncertainty_cube"].astype("float64").copy()
+        formal_uncertainty_cube = self.detection_cube[:, 1].astype("float64").copy()
+        for cube in (contrast_cube, uncertainty_cube, formal_uncertainty_cube):
+            cube[cube == 0.0] = np.nan
+        yx_dim = contrast_cube.shape[-2:]
+        center_mask = regressor_selection.make_signal_mask(
+            yx_dim, (0, 0), inner_mask_radius, relative_pos=True, yx_center=None
+        )
+        reduced_positions_mask = np.all(np.isfinite(contrast_cube), axis=0) & ~center_mask
+        return contrast_cube, uncertainty_cube, formal_uncertainty_cube, reduced_positions_mask
+
+    def _template_pixel_system(self, template, yx_pixel, contrast_cube, reduced_positions_mask, wavelengths):
+        """Design matrix, per-channel contrasts and channel correlation of one pixel's template fit.
+
+        The template is the last column of the design matrix; the correlation is
+        None unless ``template.use_spectral_correlation``.
+        """
+        contrasts = contrast_cube[:, yx_pixel[0], yx_pixel[1]]
+        yx_dim = contrast_cube.shape[-2:]
+        yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
+        relative_coords = image_coordinates.absolute_yx_to_relative_yx(
+            yx_pixel, yx_center_output
+        )
+
+        psi_ij = None
+        if template.use_spectral_correlation:
+            separation = np.sqrt(relative_coords[0] ** 2 + relative_coords[1] ** 2)
+            psi_ij = correlation_at(
+                separation,
+                self.empirical_correlation["matrices"],
+                self.empirical_correlation["fit"],
+                self.empirical_correlation["wavelengths"],
+            )
+
+        model_components = []
+
+        if template.fit_offset:
+            model_components.append(np.ones(contrasts.shape[0]))
+        if template.fit_slope:
+            model_components.append(wavelengths.value)
+        if template.normalized_contrast_modelbox.flux is not None:
+            model_components.append(
+                template.normalized_contrast_modelbox.flux[None, :]
+            )
+
+        if len(model_components) > 0:
+            model_matrix = np.vstack(model_components)
+        else:
+            raise ValueError(
+                "No model present to fit. Provide `model`, `fit_offset` or `fit_slope`"
+            )
+
+        if template.number_of_pca_regressors > 0:
+            local_config = self.reduction_parameters.merge(target_pix_mask_radius=11)
+            regressor_pool_mask_global = (
+                regressor_selection.make_regressor_pool_for_pixel(
+                    reduction_parameters=local_config,
+                    yx_pixel=yx_pixel,
+                    yx_dim=yx_dim,
+                    yx_center=yx_center_output,
+                    known_companion_mask=None,
+                )
+            )
+            regressor_pool_mask_global = np.logical_and(
+                regressor_pool_mask_global, reduced_positions_mask
+            )
+            training_matrix = contrast_cube[:][:, regressor_pool_mask_global]
+            B_full, _, _, _ = pca_regression.compute_SVD(
+                training_matrix, n_components=None, scaling=None
+            )  # 'temp-median')
+            B = B_full[:, :template.number_of_pca_regressors]
+            A = np.hstack((B, model_matrix.T))
+        # A = np.ones(len(uncertainties))[:, None]
+        else:
+            A = model_matrix.T
+
+        return A, contrasts, psi_ij
+
+    def template_position_snr_image(self, template, yx_position, box_size=11, inner_mask_radius=1.0):
+        """Template S/N in the box around a candidate, from which Fit A takes its position, and its noise.
+
+        The ring-scaled uncertainty of the detection map is the formal one times
+        a noise-normalisation factor per channel that changes with separation.
+        Inside a fit box that factor rises towards the star and moves the S/N
+        peak outward. Here each channel's factor is frozen at the candidate's
+        separation, so the box has no radial tilt, while channels the ring finds
+        noisier keep their lower weight. That weighting matters most when TRAP
+        ran without inverse variance, since the formal uncertainty then assumes
+        the same noise in every channel.
+
+        The noise of this S/N image is one at the candidate's separation and
+        follows the ring factors elsewhere in the box, so the second image gives
+        its standard deviation from the ring-scaled uncertainty of each pixel,
+        for Fit A to weight its pixels with. When a channel has no finite
+        positive factor at the candidate's separation, all factors are set to
+        one and the noise image is one.
+
+        Parameters
+        ----------
+        template : SpectralTemplate
+            Template whose fit is repeated.
+        yx_position : array_like
+            Candidate position (y, x) in image pixels.
+        box_size : int
+            Size of the fit box; pixels up to one beyond its half-width are filled.
+        inner_mask_radius : float
+            Radius around the star left out, as in `template_matching_detection`.
+
+        Returns
+        -------
+        tuple of ndarray
+            S/N and its noise standard deviation, images of the detection map's
+            shape, NaN outside the box and at pixels without a reduction.
+        """
+        wavelengths = self.instrument.wavelengths[self.wavelength_indices]
+        contrast_cube, uncertainty_cube, formal_uncertainty_cube, reduced_positions_mask = (
+            self._template_matching_inputs(inner_mask_radius)
+        )
+        yx_dim = contrast_cube.shape[-2:]
+        yx_center = (yx_dim[0] // 2, yx_dim[1] // 2)
+        separation = float(np.hypot(yx_position[0] - yx_center[0], yx_position[1] - yx_center[1]))
+        ring_factors = _ring_factors_at_separation(uncertainty_cube, formal_uncertainty_cube, separation, yx_center)
+        if ring_factors is None:
+            logger.warning(
+                "No finite noise-normalisation factor in every channel at separation %.1f px; the position "
+                "of the candidate at (y, x) = (%.1f, %.1f) is fitted with the formal uncertainty alone.",
+                separation, yx_position[0], yx_position[1],
+            )
+            ring_factors = np.ones(contrast_cube.shape[0])
+            uncertainty_cube = formal_uncertainty_cube
+
+        if template.use_spectral_correlation and getattr(self, "empirical_correlation", None) is None:
+            self.make_spectral_correlation_matrices()
+
+        image = np.full(yx_dim, np.nan)
+        noise = np.full(yx_dim, np.nan)
+        half_width = box_size // 2 + 1
+        y0, x0 = (int(round(float(value))) for value in yx_position)
+        for y in range(max(y0 - half_width, 0), min(y0 + half_width + 1, yx_dim[0])):
+            for x in range(max(x0 - half_width, 0), min(x0 + half_width + 1, yx_dim[1])):
+                if not reduced_positions_mask[y, x]:
+                    continue
+                A, contrasts, psi_ij = self._template_pixel_system(
+                    template, (y, x), contrast_cube, reduced_positions_mask, wavelengths
+                )
+                frozen_uncertainties = formal_uncertainty_cube[:, y, x] * ring_factors
+                amplitude, sigma = _solve_template_pixel(A, contrasts, frozen_uncertainties, psi_ij)
+                image[y, x] = amplitude / sigma
+                noise[y, x] = _template_noise_ratio(A, frozen_uncertainties, uncertainty_cube[:, y, x], psi_ij)
+        return image, noise
+
     def template_matching_detection(
         self,
         template,
@@ -4683,12 +4968,6 @@ class DetectionAnalysis(object):
                 Radial contrast curves and normalization factors
             - 'normalized_detection_cube' : list of ndarray
                 Normalized detection maps for candidate identification
-            - 'position_snr_image' : ndarray
-                S/N of the same template fit with the formal per-channel
-                uncertainty (detection cube plane 1) instead of the ring-scaled
-                one. Fit A takes the candidate position from it, because a
-                factor that changes with the separation of the trial position
-                moves the peak of the map.
 
         Notes
         -----
@@ -4733,125 +5012,24 @@ class DetectionAnalysis(object):
         """
         template_name = template.name
 
-        # wavelengths = np.zeros(self.instrument.wavelengths.shape)
         wavelengths = self.instrument.wavelengths[self.wavelength_indices]
-
-        contrast_cube = self.detection_cube[:, 0].astype("float64").copy()
-        uncertainty_cube = self.detection_products["uncertainty_cube"].astype(
-            "float64"
-        ).copy()  # / detection1.reduction_parameters.contrast_curve_sigma
-        
-        formal_uncertainty_cube = self.detection_cube[:, 1].astype("float64").copy()
-        contrast_cube[contrast_cube == 0.0] = np.nan
-        uncertainty_cube[uncertainty_cube == 0.0] = np.nan
-        formal_uncertainty_cube[formal_uncertainty_cube == 0.0] = np.nan
-        
-        yx_dim = [contrast_cube.shape[-2], contrast_cube.shape[-1]]
-        yx_center_output = [yx_dim[0] // 2, yx_dim[1]]
-
-        reduced_positions_mask = np.logical_and(
-            np.all(np.isfinite(contrast_cube), axis=0),
-            ~np.any(contrast_cube == 0.0, axis=0),
-        )
-        # self.reduction_parameters.annulus_width = 3
-
-        center_mask = regressor_selection.make_signal_mask(
-            yx_dim, (0, 0), inner_mask_radius, relative_pos=True, yx_center=None
-        )
-
-        reduced_positions_mask = np.logical_and(reduced_positions_mask, ~center_mask)
-
+        contrast_cube, uncertainty_cube, _, reduced_positions_mask = self._template_matching_inputs(inner_mask_radius)
+        yx_dim = contrast_cube.shape[-2:]
         position_indices = np.argwhere(reduced_positions_mask)
 
         template_matched_image = np.zeros((3, yx_dim[0], yx_dim[1]))
-        position_snr_image = np.zeros((yx_dim[0], yx_dim[1]))
 
-        # median_contrast = bn.nanmedian(contrast_cube, axis=0)
-        # regressors_centered = contrast_cube - median_contrast
-
-        # position_indices = [[32, 77]]
-        # number_of_pca_regressors = int(np.round(38 * 0.1))
-        # wavelength_indices = self.wavelength_indices
         if template.use_spectral_correlation and getattr(self, "empirical_correlation", None) is None:
             self.make_spectral_correlation_matrices()
 
-        for _, yx_pixel in tqdm(enumerate(position_indices)):
-            # wavelength indices are not applicable to contrast cube when not all wavelengths are reduced
-            # contrasts = contrast_cube[wavelength_indices, yx_pixel[0], yx_pixel[1]]
-            contrasts = contrast_cube[:, yx_pixel[0], yx_pixel[1]]
-            # contrasts = contrasts[self.good_residual_mask].astype('float64')
-            uncertainties = uncertainty_cube[:, yx_pixel[0], yx_pixel[1]]
-
-            # contrasts_mean = np.mean(contrasts)
-            # contrasts_norm = contrasts / contrasts_mean
-            # uncertainties_norm = uncertainties / contrasts_mean
-
-            yx_center_output = (yx_dim[0] // 2, yx_dim[1] // 2)
-            relative_coords = image_coordinates.absolute_yx_to_relative_yx(
-                yx_pixel, yx_center_output
+        for yx_pixel in tqdm(position_indices):
+            A, contrasts, psi_ij = self._template_pixel_system(
+                template, yx_pixel, contrast_cube, reduced_positions_mask, wavelengths
             )
-
-            psi_ij = None
-            if template.use_spectral_correlation:
-                separation = np.sqrt(relative_coords[0] ** 2 + relative_coords[1] ** 2)
-                psi_ij = correlation_at(
-                    separation,
-                    self.empirical_correlation["matrices"],
-                    self.empirical_correlation["fit"],
-                    self.empirical_correlation["wavelengths"],
-                )
-
-            model_components = []
-
-            if template.fit_offset:
-                model_components.append(np.ones(contrasts.shape[0]))
-            if template.fit_slope:
-                model_components.append(wavelengths.value)
-            if template.normalized_contrast_modelbox.flux is not None:
-                model_components.append(
-                    template.normalized_contrast_modelbox.flux[None, :]
-                )
-
-            if len(model_components) > 0:
-                model_matrix = np.vstack(model_components)
-            else:
-                raise ValueError(
-                    "No model present to fit. Provide `model`, `fit_offset` or `fit_slope`"
-                )
-
-            if template.number_of_pca_regressors > 0:
-                local_config = self.reduction_parameters.merge(target_pix_mask_radius=11)
-                regressor_pool_mask_global = (
-                    regressor_selection.make_regressor_pool_for_pixel(
-                        reduction_parameters=local_config,
-                        yx_pixel=yx_pixel,
-                        yx_dim=yx_dim,
-                        yx_center=yx_center_output,
-                        known_companion_mask=None,
-                    )
-                )
-                regressor_pool_mask_global = np.logical_and(
-                    regressor_pool_mask_global, reduced_positions_mask
-                )
-                training_matrix = contrast_cube[:][:, regressor_pool_mask_global]
-                B_full, _, _, _ = pca_regression.compute_SVD(
-                    training_matrix, n_components=None, scaling=None
-                )  # 'temp-median')
-                B = B_full[:, :template.number_of_pca_regressors]
-                A = np.hstack((B, model_matrix.T))
-            # A = np.ones(len(uncertainties))[:, None]
-            else:
-                A = model_matrix.T
-
-            amplitude, sigma = _solve_template_pixel(A, contrasts, uncertainties, psi_ij)
+            amplitude, sigma = _solve_template_pixel(A, contrasts, uncertainty_cube[:, yx_pixel[0], yx_pixel[1]], psi_ij)
             template_matched_image[0, yx_pixel[0], yx_pixel[1]] = amplitude
             template_matched_image[1, yx_pixel[0], yx_pixel[1]] = sigma
             template_matched_image[2, yx_pixel[0], yx_pixel[1]] = amplitude / sigma
-
-            formal_amplitude, formal_sigma = _solve_template_pixel(
-                A, contrasts, formal_uncertainty_cube[:, yx_pixel[0], yx_pixel[1]], psi_ij
-            )
-            position_snr_image[yx_pixel[0], yx_pixel[1]] = formal_amplitude / formal_sigma
 
         if file_paths is None:
             file_paths = {}
@@ -4885,8 +5063,6 @@ class DetectionAnalysis(object):
             file_paths=file_paths,
             mask_above_sigma=detection_threshold,
         )
-
-        detection_products_matched["position_snr_image"] = position_snr_image
 
         detection_cube = np.expand_dims(template_matched_image, axis=0)
         detection_products = detection_products_matched
@@ -5082,8 +5258,9 @@ class DetectionAnalysis(object):
             save=save,
             base_positions=configured_positions,
         )
-        position_snr_image = (detection_products or {}).get("position_snr_image")
-        position_snr_cube = None if position_snr_image is None else position_snr_image[None]
+        position_snr_function = functools.partial(
+            self.template_position_snr_image, template, inner_mask_radius=inner_mask_radius
+        )
 
         candidates_initial = self.find_candidates_all_wavelengths(
             detection_cube=detection_cube,
@@ -5109,7 +5286,7 @@ class DetectionAnalysis(object):
             candidate_exclusion_radius=candidate_exclusion_radius,
             max_candidates=max_candidates,
             base_positions=configured_positions,
-            position_snr_cube=position_snr_cube,
+            position_snr_function=position_snr_function,
         )
 
         if candidates_fit_initial is None:
@@ -5157,7 +5334,7 @@ class DetectionAnalysis(object):
                 candidate_exclusion_radius=candidate_exclusion_radius,
                 max_candidates=max_candidates,
                 base_positions=template_base_positions,
-                position_snr_cube=position_snr_cube,
+                position_snr_function=position_snr_function,
             )
             
             # Check if candidates survived the second iteration validation
@@ -5495,6 +5672,18 @@ class DetectionAnalysis(object):
             return None
         return candidates_fit["snr_image"]
 
+    def _per_channel_match_radius(self, fallback):
+        """Largest PSF FWHM in pixels of the reduced channels, or ``fallback`` without one."""
+        fwhm = getattr(getattr(self, "instrument", None), "fwhm", None)
+        if fwhm is None:
+            return fallback
+        fwhm = np.asarray(getattr(fwhm, "value", fwhm), dtype=float)
+        if self.wavelength_indices is not None:
+            fwhm = fwhm[np.asarray(self.wavelength_indices)]
+        if not np.isfinite(fwhm).any():
+            return fallback
+        return float(np.nanmax(fwhm))
+
     def combine_template_matched_companion_tables(
         self,
         search_radius=15,
@@ -5570,7 +5759,7 @@ class DetectionAnalysis(object):
             best_companion_matches = _attach_per_channel_diagnostics(
                 best_companion_matches,
                 getattr(self, "per_channel_astrometry", None),
-                search_radius=search_radius,
+                match_radius=self._per_channel_match_radius(search_radius),
             )
 
             spectra_cols = [
@@ -5933,7 +6122,6 @@ class DetectionAnalysis(object):
         self.combine_template_matched_companion_tables(
             search_radius=search_radius,
             validated_only=False,
-            per_channel_min_channel_fraction=per_channel_min_channel_fraction,
         )
 
         validated_tables = [

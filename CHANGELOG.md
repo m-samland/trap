@@ -10,13 +10,13 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/) and [Sem
 - **Each detection writes the noise correlation between wavelength channels per separation to `spectral_correlation_*.fits`**, with a fitted model that gives an invertible matrix at any separation; template matching uses it with `use_spectral_correlation=True` ([#87](https://github.com/m-samland/trap/pull/87)).
 
 ### Changed
-- **The T-type template no longer fits an offset or a slope when two or fewer channels are reduced.**
-  With two channels the offset left a map of the band difference, so IRDIS dual-band T-type detection maps, contrast curves and candidates change; rerun the detection step ([#89](https://github.com/m-samland/trap/pull/89)).
+- **The T-type template fits a constant offset only with three or more reduced channels and a slope only with four or more.**
+  With fewer channels these terms turned the map into a colour or curvature map, so IRDIS dual-band T-type maps, contrast curves, candidates and positions change (51 Eri b moves by about 1 px); rerun the detection step ([#89](https://github.com/m-samland/trap/pull/89)).
 
 ### Fixed
 - **Template matching measures the position and the spectrum of each candidate at the source.**
-  The position used to come from a map that peaks outside companions close to the star, so spectra near the star rise (most in K) and positions move by up to about 0.2 px where the per-channel position was reported before; validated candidates can change near the threshold, so rerun the detection step.
-  The combined tables report the template position with the per-channel astrometry as diagnostic columns (`per_channel_*`) and a `spectrum_low_snr` flag for candidates no single channel detects, and `per_channel_min_channel_fraction` no longer has an effect ([#89](https://github.com/m-samland/trap/pull/89)).
+  Positions close to the star move inward, spectra there rise (most in K) and validated candidates can change near the threshold, so rerun the detection step.
+  The combined tables add the per-channel astrometry as diagnostic `per_channel_*` columns and a `spectrum_low_snr` flag, and `per_channel_min_channel_fraction` no longer has an effect ([#89](https://github.com/m-samland/trap/pull/89)).
 - **Template matching no longer depends on the order of the templates and masks the configured companions from the first template on.** Its saved contrast curves and noise mask exclude the configured and validated sources, so rerun template-matching detections to update them ([#87](https://github.com/m-samland/trap/pull/87)).
 - **Candidate validation keeps bright companions and companions at configured positions that the shape tests used to reject, and rejects residuals on the rotation arc of a bright companion.** A candidate counts as bright when its peak pixel reaches `shape_validation_max_snr` and its fit is at least half a FWHM wide, so edge fits and hot pixels still get the shape tests. The new `validation` column of the companion tables says why a candidate passed or failed, so rerun the detection step to update validated candidates ([#86](https://github.com/m-samland/trap/issues/86), [#87](https://github.com/m-samland/trap/pull/87)).
 - **Detections no longer rewrite the species model grids.** A grid already in the database is only read, so the database stops growing and processes sharing it no longer fail on the file lock. Existing databases keep their dead space until you run `h5repack` on them ([#78](https://github.com/m-samland/trap/issues/78)).
