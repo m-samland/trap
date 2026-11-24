@@ -6,6 +6,7 @@ for the mathematical justification of every assertion in this file.
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from trap import detection
 
@@ -504,91 +505,98 @@ def _per_channel_row(x_rel, y_rel, sr=0.58, st=0.20, channels=1):
     }
 
 
-def test_override_uses_per_channel_position_when_within_radius():
-    """A per-channel detection near a source replaces the collapse position/σ
-    on all of that source's wavelength rows, and flags astrometry_source."""
+def test_diagnostics_keep_the_template_position():
+    """The per-channel astrometry is added next to the template position and σ,
+    on all wavelength rows of the source, and never replaces them."""
     overall = pd.DataFrame(
         [
             _collapse_overall_row(0, -9.17, -36.76, wavelength_index=0),
             _collapse_overall_row(0, -9.17, -36.76, wavelength_index=1),
         ]
     )
-    per_channel = pd.DataFrame([_per_channel_row(-8.55, -36.12, channels=1)])
-    out = detection._override_astrometry_from_per_channel(
-        overall, per_channel, search_radius=3.0
-    )
-    assert (out["astrometry_source"] == "per_channel").all()
-    assert np.allclose(out["x_relative"], -8.55)
-    assert np.allclose(out["y_relative"], -36.12)
-    assert np.allclose(out["radial_sigma_stat"], 0.58)
-    # detection significance is left untouched
-    assert np.allclose(out["norm_snr_fit_free"], 6.4)
-
-
-def test_override_falls_back_to_collapse_when_no_per_channel():
-    overall = pd.DataFrame([_collapse_overall_row(0, -9.17, -36.76, wavelength_index=0)])
-    out = detection._override_astrometry_from_per_channel(
-        overall, None, search_radius=3.0
-    )
-    assert (out["astrometry_source"] == "collapse").all()
+    per_channel = pd.DataFrame([{**_per_channel_row(-8.55, -36.12, channels=1), "chi2_red_radial": 1.7}])
+    out = detection._attach_per_channel_diagnostics(overall, per_channel, match_radius=3.0)
+    assert (out["astrometry_source"] == "template").all()
     assert np.allclose(out["x_relative"], -9.17)
+    assert np.allclose(out["radial_sigma_stat"], 0.34)
+    assert np.allclose(out["per_channel_x_relative"], -8.55)
+    assert np.allclose(out["per_channel_y_relative"], -36.12)
+    assert np.allclose(out["per_channel_radial_sigma"], 0.58)
+    assert np.allclose(out["per_channel_chi2_red_radial"], 1.7)
+    assert out["per_channel_chi2_red_tangential"].isna().all()
+    assert np.allclose(out["per_channel_n_channels"], 1)
+    assert np.isfinite(out["per_channel_distance_sigma"]).all()
 
 
-def test_override_ignores_per_channel_source_outside_radius():
+def test_distance_is_mahalanobis_in_the_source_frame():
+    overall = pd.DataFrame([_collapse_overall_row(0, 10.0, 0.0, wavelength_index=0, sr=0.3, st=0.4)])
+    close = pd.DataFrame([_per_channel_row(10.5, 0.4, sr=0.4, st=0.3)])
+    out = detection._attach_per_channel_diagnostics(overall, close, match_radius=3.0)
+    assert out["per_channel_distance_sigma"].iloc[0] == pytest.approx(np.sqrt(1.64))
+    assert not out["per_channel_position_discrepant"].iloc[0]
+
+    far_radially = pd.DataFrame([_per_channel_row(12.0, 0.0, sr=0.4, st=0.3)])
+    out = detection._attach_per_channel_diagnostics(overall, far_radially, match_radius=3.0)
+    assert out["per_channel_distance_sigma"].iloc[0] == pytest.approx(4.0)
+    assert out["per_channel_position_discrepant"].iloc[0]
+
+
+@pytest.mark.parametrize(
+    "per_channel",
+    [None, pd.DataFrame(), pd.DataFrame([_per_channel_row(20.0, 20.0)])],
+    ids=["none", "empty", "outside-radius"],
+)
+def test_diagnostics_without_per_channel_source(per_channel):
     overall = pd.DataFrame([_collapse_overall_row(0, -9.17, -36.76, wavelength_index=0)])
-    far = pd.DataFrame([_per_channel_row(20.0, 20.0)])
-    out = detection._override_astrometry_from_per_channel(
-        overall, far, search_radius=3.0
-    )
-    assert (out["astrometry_source"] == "collapse").all()
+    out = detection._attach_per_channel_diagnostics(overall, per_channel, match_radius=3.0)
+    assert (out["astrometry_source"] == "template").all()
     assert np.allclose(out["x_relative"], -9.17)
+    assert out["per_channel_x_relative"].isna().all()
+    assert out["per_channel_distance_sigma"].isna().all()
+    assert not out["per_channel_position_discrepant"].any()
 
 
-def test_override_rejected_when_too_few_channels_contribute():
-    """51 Eri IFS: 2 of 37 channels clear threshold, so the collapse is kept.
-
-    The per-channel position there is a noise-selected subset that discards ~95%
-    of the signal and lands further from the interferometric truth than the
-    collapse; the coverage gate is what stops it being reported.
-    """
-    overall = pd.DataFrame([_collapse_overall_row(0, -14.40, -58.86, wavelength_index=0)])
-    per_channel = pd.DataFrame([_per_channel_row(-13.24, -58.53, channels=2)])
-    out = detection._override_astrometry_from_per_channel(
-        overall, per_channel, search_radius=3.0, n_channels_total=37
+def test_diagnostics_pair_sources_one_to_one():
+    """A faint source next to a companion does not take the companion's per-channel position."""
+    overall = pd.DataFrame(
+        [
+            _collapse_overall_row(0, 10.0, 0.0, wavelength_index=0, sr=0.1, st=0.1),
+            _collapse_overall_row(1, 12.5, 0.0, wavelength_index=0, sr=0.1, st=0.1),
+        ]
     )
-    assert (out["astrometry_source"] == "collapse").all()
-    assert np.allclose(out["x_relative"], -14.40)
+    per_channel = pd.DataFrame([_per_channel_row(10.1, 0.0, sr=0.1, st=0.1)])
+    out = detection._attach_per_channel_diagnostics(overall, per_channel, match_radius=4.0)
+    companion, faint = out.iloc[0], out.iloc[1]
+    assert companion["per_channel_x_relative"] == pytest.approx(10.1)
+    assert np.isnan(faint["per_channel_x_relative"])
+    assert not faint["per_channel_position_discrepant"]
+
+    both = pd.DataFrame([_per_channel_row(12.4, 0.0, sr=0.1, st=0.1), _per_channel_row(10.1, 0.0, sr=0.1, st=0.1)])
+    out = detection._attach_per_channel_diagnostics(overall, both, match_radius=4.0)
+    assert out["per_channel_x_relative"].tolist() == pytest.approx([10.1, 12.4])
 
 
-def test_override_accepted_for_dbi_single_good_channel():
-    """51 Eri IRDIS: 1 of 2 channels is half the data and clears the gate."""
-    overall = pd.DataFrame([_collapse_overall_row(0, -9.17, -36.76, wavelength_index=0)])
-    per_channel = pd.DataFrame([_per_channel_row(-8.55, -36.12, channels=1)])
-    out = detection._override_astrometry_from_per_channel(
-        overall, per_channel, search_radius=3.0, n_channels_total=2
-    )
-    assert (out["astrometry_source"] == "per_channel").all()
-    assert np.allclose(out["x_relative"], -8.55)
+def test_match_radius_is_the_largest_reduced_fwhm():
+    from types import SimpleNamespace
+
+    analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+    analysis.instrument = SimpleNamespace(fwhm=np.array([3.0, 4.5, 9.0]))
+    analysis.wavelength_indices = np.array([0, 1])
+    assert analysis._per_channel_match_radius(15.0) == pytest.approx(9.0)
+    assert analysis._per_channel_match_radius(6.0) == pytest.approx(6.0)
+    analysis.instrument = SimpleNamespace(fwhm=None)
+    assert analysis._per_channel_match_radius(15.0) == 15.0
 
 
-def test_override_gate_disabled_without_n_channels_total():
-    """Callers that don't say how many channels were reduced keep the old behaviour."""
-    overall = pd.DataFrame([_collapse_overall_row(0, -14.40, -58.86, wavelength_index=0)])
-    per_channel = pd.DataFrame([_per_channel_row(-13.24, -58.53, channels=2)])
-    out = detection._override_astrometry_from_per_channel(
-        overall, per_channel, search_radius=3.0
-    )
-    assert (out["astrometry_source"] == "per_channel").all()
+def test_min_channel_fraction_other_than_default_warns(tmp_path, caplog):
+    from types import SimpleNamespace
 
-
-def test_override_gate_fraction_is_configurable():
-    overall = pd.DataFrame([_collapse_overall_row(0, -14.40, -58.86, wavelength_index=0)])
-    per_channel = pd.DataFrame([_per_channel_row(-13.24, -58.53, channels=2)])
-    out = detection._override_astrometry_from_per_channel(
-        overall, per_channel, search_radius=3.0,
-        n_channels_total=37, min_channel_fraction=0.05,
-    )
-    assert (out["astrometry_source"] == "per_channel").all()
+    analysis = detection.DetectionAnalysis.__new__(detection.DetectionAnalysis)
+    analysis.reduction_parameters = SimpleNamespace(result_folder=str(tmp_path))
+    analysis.templates = {}
+    with caplog.at_level("WARNING", logger=detection.logger.name):
+        analysis.combine_template_matched_companion_tables(per_channel_min_channel_fraction=0.2)
+    assert "no effect" in caplog.text
 
 
 class _StubTemplate:

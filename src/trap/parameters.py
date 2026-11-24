@@ -254,12 +254,8 @@ class DetectionParameters:
     theta_deviation_threshold: float = 25.0
     yx_fwhm_ratio_threshold: Tuple[float, float] = (1.1, 4.5)
     save_initial_detection_products: bool = True
-    # Per-channel astrometry replaces the template-collapse position only when the
-    # channels that individually clear `candidate_threshold` carry a meaningful
-    # share of the data. On a 2-channel DBI observation one good channel (0.5) is
-    # the case the override was designed for; on a 39-channel IFS cube a handful of
-    # threshold-crossing channels is a noise-selected subset, not a cleaner
-    # measurement. See docs/llm_reference/ and the 51 Eri IFS benchmark.
+    # No longer has an effect: the per-channel astrometry is a diagnostic and does
+    # not replace the template position. Kept so existing configurations load.
     per_channel_min_channel_fraction: float = 0.5
     # Speckle residuals are strongly correlated between neighbouring IFS channels,
     # so the per-channel inverse-variance combination must not be allowed to shrink
