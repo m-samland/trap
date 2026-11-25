@@ -14,6 +14,7 @@
 ## Key Features
 
 - **Temporal Systematics Modeling**: Models time-dependent stellar residuals using causal regression for improved contrast at small inner working angles.
+- **Reference-Star Differential Imaging**: An optional model fits each science frame with principal components of an aligned reference-star cube, for sequences with little field rotation.
 - **Automatic Detection and Characterization**: Automatically detect point sources, measure their astrometry per wavelength channel, and extract their spectra.
 - **Spectral Template Matching**: Works with external spectral templates (using [`species`](https://github.com/tomasstolker/species)) for improved detection.
 - **Integral-Field and Dual-Band Data**: Ready-made configurations for IFS and IRDIS-style data, with experimental, opt-in enrichment of the temporal regressor pool using other wavelength slices.

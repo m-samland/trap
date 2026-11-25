@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 import trap.parameters as parameters
@@ -29,3 +31,10 @@ class TestLegacyApiRemoved:
     def test_bridge_methods_gone(self):
         assert not hasattr(TrapReductionConfig, "to_reduction_parameters")
         assert not hasattr(TrapConfig, "get_reduction_parameters")
+
+
+def test_rdi_fields_are_appended_at_the_end():
+    names = [f.name for f in dataclasses.fields(TrapReductionConfig)]
+    assert names[-2:] == ["rdi_model", "rdi_components_fraction"]
+    assert TrapReductionConfig().rdi_model is False
+    assert TrapReductionConfig().rdi_components_fraction == 0.3

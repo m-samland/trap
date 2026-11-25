@@ -15,8 +15,8 @@ import pytest
 from astropy.io import fits
 
 from trap.detection import DetectionAnalysis, detection_file_paths
-from trap.parameters import trap_config_for_irdis
-from trap.reduction_wrapper import run_name
+from trap.parameters import TrapReductionConfig, trap_config_for_irdis
+from trap.reduction_wrapper import _models_to_run, run_name
 from trap.utils import save_object
 
 
@@ -159,3 +159,15 @@ def test_read_output_takes_an_explicit_prefix(tmp_path):
     assert np.nanmax(analysis.detection_cube) == 1.0
     analysis.read_output(0.2, result_folder=str(tmp_path))
     assert np.nanmax(analysis.detection_cube) == 2.0
+
+
+def test_rdi_model_is_found_by_its_rdi_fraction(tmp_path):
+    _touch(tmp_path, "detection_lam00_rdifrac0.30_rdi.fits", "detection_lam01_rdifrac0.30_rdi.fits",
+           "detection_lam00_rdifrac0.50_rdi.fits", "detection_lam00_delta0.75_spatialfrac0.30_spatial.fits")
+    assert _names(detection_file_paths(tmp_path, "rdi", 0.3)) == [
+        "detection_lam00_rdifrac0.30_rdi.fits", "detection_lam01_rdifrac0.30_rdi.fits"]
+
+
+def test_models_to_run_lists_rdi_last():
+    config = TrapReductionConfig().merge(spatial_model=True, rdi_model=True)
+    assert _models_to_run(config) == ["temporal", "spatial", "rdi"]

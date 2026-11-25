@@ -1135,13 +1135,10 @@ def run_trap_with_model_spatial(
     """
 
     pca_scaling = reduction_parameters.pca_scaling
-    make_reconstructed_lightcurve = reduction_parameters.make_reconstructed_lightcurve
 
     yx_dim = (data.shape[-2], data.shape[-1])
     if yx_center is None:
         yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
-
-    ntime = data.shape[0]
 
     local_model = reduction_parameters.local_spatial_model
     # Local model here means only area where PSF is located
@@ -1149,21 +1146,6 @@ def run_trap_with_model_spatial(
     #     n_reduction_pix = np.sum(model[0] > 0)  # PSF model always same size
     # else:
     #     n_reduction_pix = np.sum(reduction_mask)  # PSF model always same size
-
-    # Make array to contain stellar PSF model result
-    model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
-    model_cube[:] = np.nan
-
-    noise_model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
-    noise_model_cube[:] = np.nan
-
-    # Contrast, uncertainty, snr for each fit
-    reduced_result = np.empty((ntime, 3))
-    reduced_result[:] = np.nan
-
-    psf_amplitude = np.zeros(ntime)
-    psf_sigma_squared = np.zeros(ntime)
-    sigma_squared_systematics = np.zeros(ntime)
 
     # Compute other times to use for model
     separation = np.sqrt(
@@ -1190,6 +1172,7 @@ def run_trap_with_model_spatial(
         gram = frames.T @ frames
         shared_gram = bool(np.all(np.isfinite(gram)))
 
+    bases = []
     for idx, psf_model_frame in enumerate(model):
         if local_model:
             reduction_mask = psf_model_frame > 0.
@@ -1197,14 +1180,6 @@ def run_trap_with_model_spatial(
         #     reduction_mask = np.logical_and(reduction_mask, ~bad_pixel_mask)
 
         time_mask = time_masks[idx]
-        # Pixel data to fit
-        y = data[idx, reduction_mask]  # Array of pixels affected in frame
-        model_for_pixel = model[idx, reduction_mask]
-
-        # Add constant offset to fit in model
-        constant_offset = np.ones_like(y)
-        model_matrix = np.vstack((constant_offset, model_for_pixel))
-        # Transpose data with respect to temporal approach
         # flux_overlap_fraction = compute_flux_overlap(idx, model)
         # time_mask = flux_overlap_fraction < reduction_parameters.spatial_exclusion_flux_overlap
         if np.sum(time_mask) < 3:  # require at least 5 reference frames
@@ -1243,7 +1218,199 @@ def run_trap_with_model_spatial(
         #         plt.close()
         #         plt.plot(np.cumsum(S_full) / np.sum(S_full))
         #         plt.show()
+        bases.append(B)
 
+    return _fit_frames_with_bases(
+        data=data,
+        model=model,
+        reduction_mask=reduction_mask,
+        bases=bases,
+        reduction_parameters=reduction_parameters,
+        number_of_pca_regressors=int(np.median(components_per_frame)),
+        yx_center=yx_center,
+        local_model=local_model,
+        inverse_variance_reduction_area=inverse_variance_reduction_area,
+        true_contrast=true_contrast,
+        return_input_data=return_input_data)
+
+
+def _reference_basis(training_matrix, n_components, scaling):
+    """Leading principal components of the reference frames.
+
+    Parameters
+    ----------
+    training_matrix : numpy.ndarray
+        ``(n_pixel, n_reference_frame)`` matrix of reference pixels.
+    n_components : int
+        Number of components to keep.
+    scaling : str or None
+        Scaling passed to `pca_regression.matrix_scaling`.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n_pixel, n_components)`` basis of spatial components.
+    """
+    return pca_regression.compute_SVD(training_matrix, n_components=n_components, scaling=scaling)[0]
+
+
+def run_trap_with_model_rdi(
+        data, model, reference_data,
+        reduction_parameters,
+        planet_relative_yx_pos,
+        reduction_mask,
+        runtime=None,
+        yx_center=None,
+        yx_center_injection=None,
+        inverse_variance_reduction_area=None,
+        true_contrast=None):
+    """Fit each science frame with principal components of planet-free reference frames.
+
+    One basis is built from the reference frames and used for every science frame,
+    together with a constant offset and the companion model, as in the spatial model.
+    The reference frames contain no companion, so neither a protection angle nor time
+    masks are needed. The number of components is the fraction `rdi_components_fraction`
+    of the finite reference frames, at most half the number of fitted pixels.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        Science cube ``(n_frame, y, x)``.
+    model : numpy.ndarray
+        Companion model cube with the shape of `data`.
+    reference_data : numpy.ndarray
+        Reference cube ``(n_reference_frame, y, x)`` on the pixel grid of `data`.
+    reduction_parameters : trap.parameters.TrapReductionConfig
+        Configuration with `pca_scaling` and `rdi_components_fraction`.
+    planet_relative_yx_pos : array_like
+        Relative (yx)-position of the tested position. Accepted for the interface shared
+        with the other models; the fit does not use it.
+    reduction_mask : numpy.ndarray
+        Boolean mask of the pixels fitted.
+    runtime : trap.parameters.ReductionRuntimeState, optional
+        Accepted for the shared interface.
+    yx_center : tuple of float, optional
+        Image centre used in the reduction. Defaults to the middle of the image.
+    yx_center_injection : tuple of float, optional
+        Accepted for the shared interface.
+    inverse_variance_reduction_area : numpy.ndarray, optional
+        Inverse variance of the pixels in `reduction_mask`.
+    true_contrast : float, optional
+        Contrast of an injected signal.
+
+    Returns
+    -------
+    trap.analyze_data.Result or None
+        The regression result for all science frames, or None when fewer than 3 reference
+        frames are finite inside `reduction_mask`.
+    """
+    yx_dim = (data.shape[-2], data.shape[-1])
+    if yx_center is None:
+        yx_center = (yx_dim[0] // 2., yx_dim[1] // 2.)
+
+    reference_pixels = reference_data[:, reduction_mask]
+    finite_frames = np.all(np.isfinite(reference_pixels), axis=1)
+    n_finite_frames = int(np.sum(finite_frames))
+    if n_finite_frames < 3:
+        logger.debug("Returning None for lack of finite reference frames")
+        return None
+
+    number_of_pca_regressors = max(1, int(round(n_finite_frames * reduction_parameters.rdi_components_fraction)))
+    # Close to the number of fitted pixels the companion model becomes degenerate with the
+    # basis, which happens when many reference frames meet a small reduction mask.
+    pixel_cap = max(1, int(np.sum(reduction_mask)) // 2)
+    if number_of_pca_regressors > pixel_cap:
+        logger.debug("RDI components capped from %d to %d, half the %d fitted pixels",
+                     number_of_pca_regressors, pixel_cap, int(np.sum(reduction_mask)))
+        number_of_pca_regressors = pixel_cap
+    basis = _reference_basis(
+        reference_pixels[finite_frames].T, number_of_pca_regressors, reduction_parameters.pca_scaling)
+
+    return _fit_frames_with_bases(
+        data=data,
+        model=model,
+        reduction_mask=reduction_mask,
+        bases=[basis] * data.shape[0],
+        reduction_parameters=reduction_parameters,
+        number_of_pca_regressors=number_of_pca_regressors,
+        yx_center=yx_center,
+        inverse_variance_reduction_area=inverse_variance_reduction_area,
+        true_contrast=true_contrast)
+
+
+def _fit_frames_with_bases(
+        data, model, reduction_mask, bases,
+        reduction_parameters,
+        number_of_pca_regressors,
+        yx_center,
+        local_model=False,
+        inverse_variance_reduction_area=None,
+        true_contrast=None,
+        return_input_data=False):
+    """Fit every frame with its spatial basis, a constant offset and the companion model.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        Science cube ``(n_frame, y, x)``.
+    model : numpy.ndarray
+        Companion model cube with the shape of `data`.
+    reduction_mask : numpy.ndarray
+        Boolean mask of the pixels fitted.
+    bases : sequence of numpy.ndarray
+        Entry ``idx`` is the ``(n_pixel, n_components)`` basis of frame ``idx``.
+    reduction_parameters : trap.parameters.TrapReductionConfig
+        Reduction configuration.
+    number_of_pca_regressors : int
+        Number of components reported in the result.
+    yx_center : tuple of float
+        Image centre used in the reduction.
+    local_model : bool, optional
+        If True, each frame is fitted only where its companion model is positive.
+    inverse_variance_reduction_area : numpy.ndarray, optional
+        Inverse variance of the pixels in `reduction_mask`.
+    true_contrast : float, optional
+        Contrast of an injected signal.
+    return_input_data : bool, optional
+        If True, `data` is kept in the result.
+
+    Returns
+    -------
+    trap.analyze_data.Result
+        The regression result for all frames.
+    """
+    make_reconstructed_lightcurve = reduction_parameters.make_reconstructed_lightcurve
+
+    yx_dim = (data.shape[-2], data.shape[-1])
+    ntime = data.shape[0]
+
+    # Make array to contain stellar PSF model result
+    model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
+    model_cube[:] = np.nan
+
+    noise_model_cube = np.empty((ntime, yx_dim[0], yx_dim[1]))
+    noise_model_cube[:] = np.nan
+
+    # Contrast, uncertainty, snr for each fit
+    reduced_result = np.empty((ntime, 3))
+    reduced_result[:] = np.nan
+
+    psf_amplitude = np.zeros(ntime)
+    psf_sigma_squared = np.zeros(ntime)
+    sigma_squared_systematics = np.zeros(ntime)
+
+    for idx, B in enumerate(bases):
+        if local_model:
+            reduction_mask = model[idx] > 0.
+
+        # Pixel data to fit
+        y = data[idx, reduction_mask]  # Array of pixels affected in frame
+        model_for_pixel = model[idx, reduction_mask]
+
+        # Add constant offset to fit in model
+        constant_offset = np.ones_like(y)
+        model_matrix = np.vstack((constant_offset, model_for_pixel))
+        # Transpose data with respect to temporal approach
         # The fit is needed for the contrast and the refined speckle subtraction below,
         # whether or not the reconstructed cubes are kept.
         if model is None:
@@ -1349,7 +1516,7 @@ def run_trap_with_model_spatial(
         reduced_result=reduced_result,
         reduction_mask=reduction_mask,
         residuals=residuals,
-        number_of_pca_regressors=int(np.median(components_per_frame)),
+        number_of_pca_regressors=number_of_pca_regressors,
         true_contrast=true_contrast,
         yx_center=yx_center,
         signal_weights=signal_weights,

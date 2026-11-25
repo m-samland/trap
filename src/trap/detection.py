@@ -2387,6 +2387,7 @@ _RUN_NAME_PATTERNS = {
     "temporal": _COUNT_AND_FRACTION + r"_temporal",
     "temporal_plus_spatial": _COUNT_AND_FRACTION + r"_delta\d+\.\d{{2}}_spatialfrac(?P<spatial>\d+\.\d{{2}})_temporal_plus_spatial",
     "spatial": r"delta\d+\.\d{{2}}_spatialfrac{fraction}_spatial",
+    "rdi": r"rdifrac{fraction}_rdi",
 }
 
 
@@ -2403,10 +2404,11 @@ def detection_file_paths(result_folder, reduction_type, component_fraction, spat
     ----------
     result_folder : str or path-like
         Folder holding the reduction outputs.
-    reduction_type : {"temporal", "temporal_plus_spatial", "spatial"}
+    reduction_type : {"temporal", "temporal_plus_spatial", "spatial", "rdi"}
         Model whose outputs to select.
     component_fraction : float
-        Temporal component fraction; for ``"spatial"`` the spatial component fraction.
+        Temporal component fraction; for ``"spatial"`` the spatial component fraction;
+        for ``"rdi"`` the reference component fraction.
     spatial_component_fraction : float, optional
         Spatial component fraction of a ``"temporal_plus_spatial"`` run. Needed only when
         the folder holds that run at several spatial fractions.
@@ -2722,7 +2724,7 @@ class DetectionAnalysis(object):
             Path to folder containing reduction outputs. If None, uses
             self.reduction_parameters.result_folder.
         reduction_type : str, optional
-            Type of reduction ("temporal", "spatial", "temporal_plus_spatial").
+            Type of reduction ("temporal", "spatial", "temporal_plus_spatial", "rdi").
             Default is "temporal".
         correlated_residuals : bool, optional
             Whether to read correlated residual outputs. Default is False.
@@ -3982,12 +3984,14 @@ class DetectionAnalysis(object):
         return_all_results=False,
         verbose=False,
         base_positions=None,
+        reference_data_full=None,
     ):
         if wavelength_indices is None:
             wavelength_indices = self.wavelength_indices
         # The renormalisation below clips the noise masks to the rotation arc.
         self._set_field_rotation(pa)
 
+        rdi = getattr(self, "reduction_type", None) == "rdi"
         re_reduction_parameters = self.reduction_parameters.merge(
             guess_position=yx_candidate_position,
             use_multiprocess=False,
@@ -3995,7 +3999,15 @@ class DetectionAnalysis(object):
             data_auto_crop=True,
             yx_known_companion_position=None,
             remove_known_companions=False,
+            rdi_model=rdi,
         )
+        if rdi:
+            # Only the model of the maps is fitted, with the reference fraction of the map run.
+            re_reduction_parameters = re_reduction_parameters.merge(
+                temporal_model=False, temporal_plus_spatial_model=False, spatial_model=False,
+                local_temporal_model=False, local_spatial_model=False,
+                rdi_components_fraction=self.component_fraction,
+            )
         detection_products_orig = copy.deepcopy(self.detection_products)
         all_results = run_complete_reduction(
             data_full=data_full.copy(),
@@ -4010,6 +4022,7 @@ class DetectionAnalysis(object):
             bad_pixel_mask_full=bad_pixel_mask_full,
             xy_image_centers=xy_image_centers,
             amplitude_modulation_full=amplitude_modulation_full,
+            reference_data_full=reference_data_full,
             verbose=verbose,
         )
         
@@ -4029,16 +4042,17 @@ class DetectionAnalysis(object):
         component_key = str(temporal_components_fraction[0])
         missing_channels = []
         for wavelength_index in wavelength_indices:
-            # A channel is absent or None when its PSF is unusable or too few pixels
-            # remain at this position.
+            # A channel, or its model's entry, is absent or None when its PSF is unusable
+            # or too few pixels (or reference frames) remain at this position.
             channel_result = all_results[component_key].get(str(wavelength_index))
-            if channel_result is None:
+            model_result = None if channel_result is None else channel_result.get(self.reduction_type)
+            if model_result is None:
                 missing_channels.append(int(wavelength_index))
                 contrast.append(np.nan)
                 uncertainty.append(np.nan)
                 continue
-            contrast.append(channel_result[self.reduction_type].measured_contrast)
-            uncertainty.append(channel_result[self.reduction_type].contrast_uncertainty)
+            contrast.append(model_result.measured_contrast)
+            uncertainty.append(model_result.contrast_uncertainty)
         if missing_channels:
             logger.warning(
                 "No result at position %s in %d channels %s; their spectrum entries are NaN.",
@@ -4152,6 +4166,7 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         return_spectra=False,
         base_positions=None,
+        reference_data_full=None,
     ):
         """
         Extract high-fidelity spectra for candidate companions using full reduction.
@@ -4206,6 +4221,9 @@ class DetectionAnalysis(object):
             Source positions relative to the image centre excluded from the
             renormalisation besides the candidates. Defaults to
             ``self.reduction_parameters.yx_known_companion_position``.
+        reference_data_full : ndarray, optional
+            Reference cube (wavelength, reference frame, y, x) aligned with
+            data_full. Required when the maps read are of ``reduction_type="rdi"``.
 
         Returns
         -------
@@ -4321,6 +4339,7 @@ class DetectionAnalysis(object):
                 amplitude_modulation_full=amplitude_modulation_full,
                 verbose=False,
                 base_positions=base_positions,
+                reference_data_full=reference_data_full,
             )
             candidate_spectra.append(candidate_spectrum)
 
@@ -5124,6 +5143,7 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         file_paths=None,
         save=True,
+        reference_data_full=None,
     ):
         """
         Perform robust template matching detection with two-iteration bias correction.
@@ -5196,6 +5216,10 @@ class DetectionAnalysis(object):
         save : bool, optional
             Whether to save intermediate detection products and results to disk.
             Default is True.
+        reference_data_full : ndarray, optional
+            Reference cube (wavelength, reference frame, y, x) aligned with
+            data_full, used to re-reduce candidates when the maps read are of
+            ``reduction_type="rdi"``.
 
         Returns
         -------
@@ -5396,6 +5420,7 @@ class DetectionAnalysis(object):
                 amplitude_modulation_full=amplitude_modulation_full,
                 return_spectra=True,
                 base_positions=template_base_positions,
+                reference_data_full=reference_data_full,
             )
 
             companion_table, validated_companion_table = self.detection_summary(
@@ -5551,6 +5576,7 @@ class DetectionAnalysis(object):
         amplitude_modulation_full=None,
         file_paths=None,
         save=True,
+        reference_data_full=None,
     ):
         if self.templates:
             for key in self.templates:
@@ -5580,6 +5606,7 @@ class DetectionAnalysis(object):
                         amplitude_modulation_full=amplitude_modulation_full,
                         file_paths=file_paths,
                         save=save,
+                        reference_data_full=reference_data_full,
                     )
                 except Exception:
                     # One template failing must not cost the templates after it
@@ -5858,6 +5885,7 @@ class DetectionAnalysis(object):
         theta_deviation_threshold=25,
         yx_fwhm_ratio_threshold=[1.1, 4.5],
         save_initial_detection_products=False,
+        reference_data_full=None,
     ):
 
         self._set_field_rotation(pa)
@@ -5901,6 +5929,7 @@ class DetectionAnalysis(object):
                 xy_image_centers=xy_image_centers,
                 amplitude_modulation_full=amplitude_modulation_full,
                 return_spectra=True,
+                reference_data_full=reference_data_full,
             )
 
             # companion_table, validated_companion_table = self.detection_summary(
@@ -6044,7 +6073,8 @@ class DetectionAnalysis(object):
         save_initial_detection_products=True,
         per_channel_min_channel_fraction=0.5,
         per_channel_independent_channels=False,
-        template_names=None):
+        template_names=None,
+        reference_data_full=None):
 
         if reduction_parameters is not None and instrument is not None:
             self.reduction_parameters = _to_reduction_config(reduction_parameters)
@@ -6110,6 +6140,7 @@ class DetectionAnalysis(object):
             amplitude_modulation_full=amplitude_modulation_full,
             file_paths=None,
             save=True,
+            reference_data_full=reference_data_full,
         )
         
         try:

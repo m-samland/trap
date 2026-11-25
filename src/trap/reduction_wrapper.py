@@ -80,6 +80,7 @@ def trap_one_position(
     readnoise=0.0,
     cross_validation=False,
     multiwavelength_regressors=None,
+    reference_data=None,
 ):
     """Runs TRAP on individual position.
 
@@ -116,15 +117,18 @@ def trap_one_position(
         and 'injection_sigma') in `~trap.parameters.TrapReductionConfig`.
     readnoise : scalar
         The detector read noise (e rms/pix/readout).
+    reference_data : array_like, optional
+        Reference cube (reference frame, y, x) on the pixel grid of `data`,
+        required by `rdi_model`.
 
     Returns
     -------
     dictionary
         A dictionary containing the `~trap.regression.Result` object for
-        'temporal', 'temporal_plus_spatial', and 'spatial' keywords, depending
-        on whether the `temporal_model`, `temporal_plus_spatial_model`,
-        and `spatial_model` parameters set in `reduction_parameters` are
-        True.
+        'temporal', 'temporal_plus_spatial', 'spatial' and 'rdi' keywords,
+        depending on whether the `temporal_model`, `temporal_plus_spatial_model`,
+        `spatial_model` and `rdi_model` parameters set in `reduction_parameters`
+        are True.
 
     """
 
@@ -406,6 +410,22 @@ def trap_one_position(
             result.reduction_parameters = reduction_parameters
         results["spatial"] = result
 
+    if reduction_parameters.rdi_model:
+        results["rdi"] = _run_rdi_model(
+            data_reduce=data_reduce,
+            model=model,
+            reference_data=reference_data,
+            reduction_parameters=reduction_parameters,
+            runtime=runtime,
+            signal_position=signal_position,
+            reduction_mask=reduction_mask_used,
+            yx_center=yx_center,
+            yx_center_injection=yx_center_injection,
+            inverse_variance_reduction_area=inverse_variance_reduction_area,
+            true_contrast=true_contrast,
+            min_pixels=min_pixels,
+        )
+
     if (
         reduction_parameters.temporal_model
         and reduction_parameters.temporal_plus_spatial_model
@@ -513,14 +533,75 @@ def trap_one_position(
     return results
 
 
+def _run_rdi_model(
+    data_reduce,
+    model,
+    reference_data,
+    reduction_parameters,
+    runtime,
+    signal_position,
+    reduction_mask,
+    yx_center,
+    yx_center_injection,
+    inverse_variance_reduction_area,
+    true_contrast,
+    min_pixels,
+):
+    """Run the RDI model at one position on the reduction-mask pixels finite in the reference.
+
+    A reference frame that is non-finite over the whole mask leaves the basis (the RDI fit
+    drops it); pixels that are non-finite in any other reference frame, such as a masked
+    companion track, leave the mask of this position only.
+
+    Returns
+    -------
+    trap.analyze_data.Result or None
+        None when fewer than `min_pixels` pixels remain or too few reference frames are
+        finite.
+    """
+    if reference_data is None:
+        raise ValueError("rdi_model requires a reference cube (reference_data).")
+    finite = np.isfinite(reference_data[:, reduction_mask])
+    usable_frames = finite.any(axis=1)
+    usable_pixels = finite[usable_frames].all(axis=0)
+    if int(usable_pixels.sum()) < max(min_pixels, 1):
+        return None
+    if not usable_pixels.all():
+        reduction_mask = reduction_mask.copy()
+        reduction_mask[reduction_mask] = usable_pixels
+        if inverse_variance_reduction_area is not None:
+            inverse_variance_reduction_area = inverse_variance_reduction_area[:, usable_pixels]
+
+    result = regression.run_trap_with_model_rdi(
+        data=data_reduce,
+        model=model,
+        reference_data=reference_data,
+        reduction_parameters=reduction_parameters,
+        planet_relative_yx_pos=signal_position,
+        reduction_mask=reduction_mask,
+        runtime=runtime,
+        yx_center=yx_center,
+        yx_center_injection=yx_center_injection,
+        inverse_variance_reduction_area=inverse_variance_reduction_area,
+        true_contrast=true_contrast,
+    )
+    if result is not None:
+        if reduction_parameters.fit_planet:
+            result.compute_contrast_weighted_average(mask_outliers=True)
+            if reduction_parameters.verbose:
+                logger.debug("%s", result)
+        result.reduction_parameters = reduction_parameters
+    return result
+
+
 def _reduction_parameters_for_fraction(reduction_parameters, comp_index):
     """Settings for the ``comp_index``-th temporal component fraction.
 
-    The spatial model does not depend on the temporal fraction, so it runs with the
+    The spatial and rdi models do not depend on the temporal fraction, so they run with the
     first fraction only instead of repeating the same reduction for each.
     """
-    if comp_index > 0 and reduction_parameters.spatial_model:
-        return reduction_parameters.merge(spatial_model=False)
+    if comp_index > 0 and (reduction_parameters.spatial_model or reduction_parameters.rdi_model):
+        return reduction_parameters.merge(spatial_model=False, rdi_model=False)
     return reduction_parameters
 
 
@@ -543,6 +624,8 @@ def _models_to_run(reduction_parameters):
             models.append("temporal_plus_spatial")
     if reduction_parameters.spatial_model:
         models.append("spatial")
+    if reduction_parameters.rdi_model:
+        models.append("rdi")
     return models
 
 
@@ -683,6 +766,7 @@ def run_trap_search(
     readnoise=0.0,
     use_progress_bar=False,
     multiwavelength_regressors=None,
+    reference_data=None,
 ):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
@@ -720,6 +804,9 @@ def run_trap_search(
         The detector read noise (e rms/pix/readout).
     use_progress_bar : bool
         If True, a progress bar is shown during the reduction.
+    reference_data : array_like or SharedArrayRef, optional
+        Reference cube (reference frame, y, x) on the pixel grid of `data`,
+        required by `rdi_model`.
 
     Returns
     -------
@@ -742,8 +829,10 @@ def run_trap_search(
     inverse_variance_ref = (
         inverse_variance if isinstance(inverse_variance, SharedArrayRef) else None
     )
+    reference_data_ref = reference_data if isinstance(reference_data, SharedArrayRef) else None
     data = shared_arrays.resolve(data)
     inverse_variance = shared_arrays.resolve(inverse_variance)
+    reference_data = shared_arrays.resolve(reference_data)
 
     data = data.astype("float64", copy=data_ref is None)
     flux_psf = flux_psf.astype("float64")
@@ -753,6 +842,8 @@ def run_trap_search(
         inverse_variance = inverse_variance.astype(
             "float64", copy=inverse_variance_ref is None
         )
+    if reference_data is not None:
+        reference_data = reference_data.astype("float64", copy=reference_data_ref is None)
 
     oversampling = reduction_parameters.oversampling
     yx_dim = (data.shape[-2], data.shape[-1])
@@ -797,6 +888,10 @@ def run_trap_search(
             )
         )
         detection_image["spatial"][:] = np.nan
+    if reduction_parameters.rdi_model:
+        detection_image["rdi"] = np.full(
+            (detection_image_dim, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling)), np.nan
+        )
 
     # EDIT: ADDED FOR QUICK CORRELATION TESTS
     detection_image_corr = {}
@@ -812,6 +907,10 @@ def run_trap_search(
         detection_image_corr["spatial"] = np.zeros(
             (6, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
         )
+    if reduction_parameters.rdi_model:
+        detection_image_corr["rdi"] = np.zeros(
+            (6, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
+        )
 
     correlation_matrix_binned = {}
     if reduction_parameters.temporal_model:
@@ -824,6 +923,10 @@ def run_trap_search(
             )
     if reduction_parameters.spatial_model:
         correlation_matrix_binned["spatial"] = np.zeros(
+            (43, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
+        )
+    if reduction_parameters.rdi_model:
+        correlation_matrix_binned["rdi"] = np.zeros(
             (43, int(yx_dim[0] * oversampling), int(yx_dim[1] * oversampling))
         )
 
@@ -871,6 +974,8 @@ def run_trap_search(
             required_bytes = data.nbytes
             if inverse_variance is not None:
                 required_bytes += inverse_variance.nbytes
+            if reference_data is not None and reference_data_ref is None:
+                required_bytes += reference_data.nbytes
             own_store = SharedArrayStore(
                 scratch_dir=getattr(reduction_parameters, "scratch_dir", None),
                 required_bytes=required_bytes,
@@ -880,6 +985,13 @@ def run_trap_search(
                 inverse_variance_ref = own_store.dump(
                     "inverse_variance", inverse_variance
                 )
+        if reference_data is not None and reference_data_ref is None:
+            if own_store is None:
+                own_store = SharedArrayStore(
+                    scratch_dir=getattr(reduction_parameters, "scratch_dir", None),
+                    required_bytes=reference_data.nbytes,
+                )
+            reference_data_ref = own_store.dump("reference", reference_data)
         try:
             with parallel_config(
                 backend="loky",
@@ -903,6 +1015,7 @@ def run_trap_search(
                         contrast_map=contrast_map,
                         readnoise=readnoise,
                         multiwavelength_regressors=multiwavelength_regressors,
+                        reference_data=reference_data_ref,
                     )
                     for region in relative_coords_regions
                 )
@@ -958,6 +1071,7 @@ def run_trap_search(
                 contrast_map=contrast_map,
                 readnoise=readnoise,
                 multiwavelength_regressors=multiwavelength_regressors,
+                reference_data=reference_data,
             )
             fill_detection_image(
                 detection_image,
@@ -1186,6 +1300,7 @@ def trap_search_region(
     readnoise=0.0,
     cross_validation=False,
     multiwavelength_regressors=None,
+    reference_data=None,
 ):
     """Iterates TRAP over grid of positions given by the boolean mask
     `search_region` in the `reduction_parameters` object.
@@ -1207,6 +1322,8 @@ def trap_search_region(
         Cube containing inverse variances for `data`.
     bad_pixel_mask : array_like
         Bad pixel mask for `data`.
+    reference_data : array_like or SharedArrayRef, optional
+        Reference cube (reference frame, y, x) for `rdi_model`.
     result_name : str
         Name for output file.
     yx_center : tuple
@@ -1243,6 +1360,7 @@ def trap_search_region(
     # resolve them to read-only memmaps (plain arrays pass through).
     data = shared_arrays.resolve(data)
     inverse_variance = shared_arrays.resolve(inverse_variance)
+    reference_data = shared_arrays.resolve(reference_data)
 
     sub_region_results = []
     for idx, coords in enumerate(relative_coords):
@@ -1263,6 +1381,7 @@ def trap_search_region(
             readnoise=readnoise,
             cross_validation=cross_validation,
             multiwavelength_regressors=multiwavelength_regressors,
+            reference_data=reference_data,
         )
         sub_region_results.append(result)
     return sub_region_results
@@ -1399,6 +1518,23 @@ def _valid_pixel_mask_for_wavelength(valid_pixel_mask_full, wavelength_index, da
     return cutout.data.astype(bool)
 
 
+def _check_reference_cube(reference_data_full, data_full, reduction_parameters):
+    """Refuse a missing reference for `rdi_model` and a reference that does not match the science cube.
+
+    trap does not align the reference; it must arrive with the science cube's wavelengths
+    and image size. Only its number of frames may differ.
+    """
+    if reference_data_full is None:
+        if reduction_parameters.rdi_model:
+            raise ValueError("rdi_model=True needs a reference cube: pass reference_data_full.")
+        return
+    if reference_data_full.shape[0] != data_full.shape[0] or reference_data_full.shape[-2:] != data_full.shape[-2:]:
+        raise ValueError(
+            "Reference cube shape {} does not match the science cube shape {} in wavelength count "
+            "or image size.".format(tuple(reference_data_full.shape), tuple(data_full.shape))
+        )
+
+
 def _prepare_wavelength_slice(
     wavelength_index,
     data_full,
@@ -1411,14 +1547,16 @@ def _prepare_wavelength_slice(
     yx_center_full,
     yx_center_injection,
     amplitude_modulation,
+    reference_data_full=None,
 ):
-    """Crop the data (and inverse variance) for one wavelength and remove
+    """Crop the data (and inverse variance and reference) for one wavelength and remove
     known companions if configured.
 
     Single source of truth for the per-wavelength data consumed by the
     reduction: used to fill the shared-array store before the loops of
     `run_complete_reduction` (parallel path) and inside the loops (serial
-    and single-position paths).
+    and single-position paths). The reference cube is cropped like the
+    science cube; known companions are only removed from the science cube.
     """
     if reduction_parameters.inject_fake:
         # Return copy of data when injecting fake to not contaminate data
@@ -1449,6 +1587,17 @@ def _prepare_wavelength_slice(
     else:
         inverse_variance = None
 
+    if reference_data_full is None:
+        reference_data = None
+    elif data_crop_size is not None:
+        reference_data = crop_box_from_3D_cube(
+            reference_data_full[wavelength_index],
+            data_crop_size,
+            center_yx=np.round(yx_center_full[wavelength_index]),
+        )
+    else:
+        reference_data = reference_data_full[wavelength_index]
+
     if reduction_parameters.remove_known_companions:
         # NOTE: This currently doesn't remove photon noise from variance map
         # NOTE: Should change to faster implementation of `inject_model_into_data`
@@ -1474,7 +1623,7 @@ def _prepare_wavelength_slice(
                 verbose=False,
             )
 
-    return data, inverse_variance
+    return data, inverse_variance, reference_data
 
 
 def run_complete_reduction(
@@ -1495,6 +1644,7 @@ def run_complete_reduction(
     overwrite=False,
     use_progress_bar=True,
     valid_pixel_mask=None,
+    reference_data_full=None,
 ):
     """Runs complete TRAP reduction on data and produces contrast and
     normalized detection maps as well as contrast curves. This is the most
@@ -1564,6 +1714,15 @@ def run_complete_reduction(
         and regressor masks are intersected with the footprint, and
         positions with fewer than ``reduction_mask_min_pixels`` surviving
         pixels return ``NaN`` in the detection map instead of crashing.
+    reference_data_full : array_like, optional
+        Reference cube (wavelength, reference frame, y, x) for `rdi_model`,
+        already aligned to the science cube: the same wavelengths and image
+        size, the star on the same pixel. It is cropped like the science
+        cube and keeps all its frames (``bad_frames`` apply to the science
+        cube only). A reference pixel that is non-finite (e.g. a masked
+        companion) is left out of the RDI fit at the positions it overlaps.
+        Only the shape is checked against the science cube; matching the
+        wavelength grid is up to the caller.
 
     Returns
     -------
@@ -1579,7 +1738,7 @@ def run_complete_reduction(
         in `reduction_parameters` are True.
         The spatial model does not depend on the temporal fraction and is
         computed with the first fraction only, so its 'spatial' entry appears
-        under the first fraction.
+        under the first fraction. The same holds for the 'rdi' entry.
 
         Otherwise, the return value is None.
 
@@ -1599,6 +1758,8 @@ def run_complete_reduction(
     if instrument.detector_gain != 1:
         flux_psf_full *= instrument.detector_gain
         data_full *= instrument.detector_gain
+        if reference_data_full is not None:
+            reference_data_full = reference_data_full * instrument.detector_gain
 
     if flux_psf_full.ndim < 3:
         flux_psf_full = np.expand_dims(flux_psf_full, axis=0)
@@ -1606,6 +1767,11 @@ def run_complete_reduction(
         data_full = np.expand_dims(data_full, axis=0)
     if inverse_variance_full is not None and inverse_variance_full.ndim < 4:
         inverse_variance_full = np.expand_dims(inverse_variance_full, axis=0)
+    if reference_data_full is not None and reference_data_full.ndim < 4:
+        reference_data_full = np.expand_dims(reference_data_full, axis=0)
+    _check_reference_cube(reference_data_full, data_full, reduction_parameters)
+    if not reduction_parameters.rdi_model:
+        reference_data_full = None
 
     if multiwavelength_mode is not None and data_full.shape[0] < 2:
         warnings.warn("multiwavelength_regressors requires a multi-wavelength cube; disabling it for this call.")
@@ -1789,6 +1955,7 @@ def run_complete_reduction(
     shared_store = None
     data_refs = {}
     inverse_variance_refs = {}
+    reference_refs = {}
     if multiwavelength_mode is not None:
         if reduction_parameters.regressor_wavelength_indices is None:
             regressor_wavelength_set = list(range(data_full.shape[0]))
@@ -1804,12 +1971,15 @@ def run_complete_reduction(
     ):
         n_arrays = 2 if inverse_variance_full is not None else 1
         slice_bytes = int(data_full.shape[1] * np.prod(yx_shape) * np.dtype("float64").itemsize)
+        reference_slice_bytes = 0
+        if reference_data_full is not None:
+            reference_slice_bytes = int(reference_data_full.shape[1] * np.prod(yx_shape) * np.dtype("float64").itemsize)
         if multiwavelength_mode is None:
-            required_bytes = n_arrays * len(wavelength_indices) * slice_bytes
+            required_bytes = len(wavelength_indices) * (n_arrays * slice_bytes + reference_slice_bytes)
         else:
             n_master_slices = len(set(int(index) for index in wavelength_indices) | set(regressor_wavelength_set))
-            # Master cube + one working data/ivar slice alive at a time.
-            required_bytes = (n_master_slices + 2) * slice_bytes
+            # Master cube + one working data/ivar/reference slice alive at a time.
+            required_bytes = (n_master_slices + 2) * slice_bytes + reference_slice_bytes
         shared_store = SharedArrayStore(
             scratch_dir=reduction_parameters.scratch_dir,
             required_bytes=required_bytes,
@@ -1833,7 +2003,7 @@ def run_complete_reduction(
                     amplitude_modulation = np.ones(data_full.shape[1])
                 else:
                     amplitude_modulation = amplitude_modulation_full[wavelength_index, :]
-                data, inverse_variance = _prepare_wavelength_slice(
+                data, inverse_variance, reference_data = _prepare_wavelength_slice(
                     wavelength_index,
                     data_full=data_full,
                     inverse_variance_full=inverse_variance_full,
@@ -1845,6 +2015,7 @@ def run_complete_reduction(
                     yx_center_full=yx_center_full,
                     yx_center_injection=yx_center_injection,
                     amplitude_modulation=amplitude_modulation,
+                    reference_data_full=reference_data_full,
                 )
                 # Workers consume float64 (the cast `run_trap_search` would
                 # otherwise apply); dump that representation directly.
@@ -1859,6 +2030,13 @@ def run_complete_reduction(
                     )
                 else:
                     inverse_variance_refs[wavelength_index] = None
+                if reference_data is not None:
+                    reference_refs[wavelength_index] = shared_store.dump(
+                        "reference_lam{:03d}".format(wavelength_index),
+                        reference_data.astype("float64", copy=False),
+                    )
+                else:
+                    reference_refs[wavelength_index] = None
 
     multiwavelength_state = None
     if multiwavelength_mode is not None:
@@ -1886,7 +2064,7 @@ def run_complete_reduction(
                 amplitude_modulation = np.ones(data_full.shape[1])
             else:
                 amplitude_modulation = amplitude_modulation_full[wavelength_index, :]
-            data, _ = _prepare_wavelength_slice(
+            data, _, _ = _prepare_wavelength_slice(
                 wavelength_index,
                 data_full=data_full,
                 inverse_variance_full=None,
@@ -1950,6 +2128,8 @@ def run_complete_reduction(
             inverse_variance_refs=inverse_variance_refs,
             multiwavelength_state=multiwavelength_state,
             valid_pixel_mask=valid_pixel_mask,
+            reference_data_full=reference_data_full,
+            reference_refs=reference_refs,
         )
     finally:
         if shared_store is not None:
@@ -1984,6 +2164,8 @@ def _run_reduction_loops(
     inverse_variance_refs,
     multiwavelength_state,
     valid_pixel_mask=None,
+    reference_data_full=None,
+    reference_refs=None,
 ):
     """Component/wavelength loops of `run_complete_reduction`.
 
@@ -2089,6 +2271,12 @@ def _run_reduction_loops(
                     reduction_parameters.protection_angle,
                     reduction_parameters.spatial_components_fraction,
                 )
+                basename["rdi"] = "injectedsigma{:.2f}_{}lam{:02d}_rdifrac{:.2f}".format(
+                    reduction_parameters.injection_sigma,
+                    prefix,
+                    wavelength_index,
+                    reduction_parameters.rdi_components_fraction,
+                )
             else:
                 basename["temporal"] = "{}lam{:02d}_ncomp{:03d}_frac{:.2f}".format(
                     prefix,
@@ -2114,6 +2302,11 @@ def _run_reduction_loops(
                     reduction_parameters.protection_angle,
                     reduction_parameters.spatial_components_fraction,
                 )
+                basename["rdi"] = "{}lam{:02d}_rdifrac{:.2f}".format(
+                    prefix,
+                    wavelength_index,
+                    reduction_parameters.rdi_components_fraction,
+                )
             logger.debug("%s", basename["temporal"])
 
             # Having all the different reductions in the output makes it easier to compare but also more complex to refactor
@@ -2125,7 +2318,7 @@ def _run_reduction_loops(
             )
             output_paths = {}
             output_paths_corr = {}
-            for key in ["temporal", "temporal_plus_spatial", "spatial"]:
+            for key in ["temporal", "temporal_plus_spatial", "spatial", "rdi"]:
                 output_paths[key] = OutputPaths.make(
                     result_folder, basename[key], key, sigma
                 )
@@ -2276,13 +2469,15 @@ def _run_reduction_loops(
 
             work_data_name = None
             work_ivar_name = None
+            work_reference_name = None
             if shared_store is not None and wavelength_index in data_refs:
                 # Preprocessed data was dumped to the shared store before the
                 # loops; pass references so workers memmap it read-only.
                 data = data_refs[wavelength_index]
                 inverse_variance = inverse_variance_refs[wavelength_index]
+                reference_data = reference_refs[wavelength_index] if reduction_parameters.rdi_model else None
             else:
-                data, inverse_variance = _prepare_wavelength_slice(
+                data, inverse_variance, reference_data = _prepare_wavelength_slice(
                     wavelength_index,
                     data_full=data_full,
                     inverse_variance_full=inverse_variance_full,
@@ -2294,6 +2489,7 @@ def _run_reduction_loops(
                     yx_center_full=yx_center_full,
                     yx_center_injection=yx_center_injection,
                     amplitude_modulation=amplitude_modulation,
+                    reference_data_full=reference_data_full if reduction_parameters.rdi_model else None,
                 )
                 if shared_store is not None and multiwavelength_state is not None:
                     # Multi-lambda mode keeps only the (lambda, y, x, t) master
@@ -2306,6 +2502,12 @@ def _run_reduction_loops(
                         inverse_variance = shared_store.dump(
                             work_ivar_name,
                             inverse_variance.astype("float64", copy=False),
+                        )
+                    if reference_data is not None:
+                        work_reference_name = "reference_work_c{:02d}_lam{:03d}".format(comp_index, wavelength_index)
+                        reference_data = shared_store.dump(
+                            work_reference_name,
+                            reference_data.astype("float64", copy=False),
                         )
 
             # Per-wavelength gate: any pixel that carries a NaN in any frame of
@@ -2340,6 +2542,7 @@ def _run_reduction_loops(
                     contrast_map=contrast_map,
                     readnoise=instrument.readnoise,
                     multiwavelength_regressors=multiwavelength_regressors,
+                    reference_data=reference_data,
                 )
 
                 wavelength_results["{}".format(wavelength_index)] = results
@@ -2423,6 +2626,7 @@ def _run_reduction_loops(
                     readnoise=instrument.readnoise,
                     use_progress_bar=use_progress_bar,
                     multiwavelength_regressors=multiwavelength_regressors,
+                    reference_data=reference_data,
                 )
 
                 for key in detection_image:
@@ -2449,6 +2653,8 @@ def _run_reduction_loops(
                     shared_store.remove(work_data_name)
                 if work_ivar_name is not None:
                     shared_store.remove(work_ivar_name)
+                if work_reference_name is not None:
+                    shared_store.remove(work_reference_name)
 
         if reduction_parameters.reduce_single_position:
             all_results[
